@@ -305,6 +305,7 @@ const COLUMNS = [
   ['owners', 'risk_note', 'TEXT'],
   ['owners', 'risk_reviewed_at', 'TEXT'],
   ['owners', 'risk_reviewed_by', 'TEXT'],
+  ['owners', 'deleted_at', 'TEXT'],
 ];
 
 export function openDb(path = ':memory:') {
@@ -321,6 +322,7 @@ export function openDb(path = ':memory:') {
   db.exec('CREATE INDEX IF NOT EXISTS owners_signup_ip ON owners(signup_ip, created_at)');
   db.exec('CREATE INDEX IF NOT EXISTS owners_signup_device ON owners(signup_device, created_at)');
   db.exec('CREATE INDEX IF NOT EXISTS owners_risk ON owners(risk_status, created_at)');
+  db.exec('CREATE INDEX IF NOT EXISTS owners_deleted ON owners(deleted_at)');
   return db;
 }
 

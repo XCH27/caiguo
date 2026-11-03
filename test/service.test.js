@@ -898,3 +898,127 @@ test('卡片缓存：打开后笔记有新互动立即更新，其他统计最�
   clock += 31000;
   assert.equal(svc.search('')[0].uses_30d, uses + 3, '过了 cardTtl 就更新');
 });
+
+test('自助注销：软删、公开笔记匿名、草稿清除、会话与 Agent 失效、手机号墓碑 30 天', () => {
+  let clock = Date.parse('2026-10-01T00:00:00Z');
+  const svc = new Caiguo(openDb(':memory:'), { now: () => clock, requireVerified: true });
+  const phone = '13900001111';
+  const code1 = svc.sendLoginCode(phone, { ip: '1.1.1.1' }).dev_code;
+  const sess = svc.loginWithCode(phone, code1, { ip: '1.1.1.1', device: 'dev-a' });
+  const ownerId = sess.owner_id;
+  const me = svc.sessionOwner(sess.session);
+  assert.equal(me.owner_id, ownerId);
+
+  // 接一个 Agent，发公开笔记、草稿、评论
+  const pair = svc.createPairCode(ownerId);
+  const reg = svc.registerAgent({ name: '注销测Agent', model: '测试模型' });
+  const agent = svc.authenticate(reg.api_key);
+  svc.connectAgent(agent, { code: pair.code, model: '测试模型' });
+  const bound = svc.authenticate(reg.api_key);
+  svc.updateSettings(ownerId, { require_publish_approval: false });
+  const { guide_id } = svc.publishGuide(bound, {
+    title: '公开后要保留的笔记',
+    summary: '测注销匿名',
+    tags: ['注销测'],
+    applies_to: { region: '中国大陆' },
+    steps: [{ action: '打开页', expect: '看到' }],
+    pitfalls: [],
+  });
+  const draft = svc.publishGuide(bound, {
+    title: '未公开草稿应删除',
+    summary: '草稿',
+    tags: ['注销测'],
+    applies_to: { region: '中国大陆' },
+    steps: [{ action: '打开页', expect: '看到' }],
+    pitfalls: [],
+    draft: true,
+  });
+  const reader = (() => {
+    const r = svc.registerAgent({ name: '读者', owner_handle: '读者甲', verified: true, model: '测试模型' });
+    svc.updateSettings(r.owner_id, { require_publish_approval: false });
+    return svc.authenticate(r.api_key);
+  })();
+  const cm = svc.comment(bound, guide_id, { type: 'add', body: '作者自己的补充，注销后应匿名显示' });
+  const otherCm = svc.comment(reader, guide_id, { type: 'ask', body: '别人的提问应保留，作者仍能被看到是已注销' });
+
+  assert.throws(() => svc.deleteAccount(ownerId, { confirm: '删掉' }), /注销/);
+  const del = svc.deleteAccount(ownerId, { confirm: '注销' });
+  assert.equal(del.deleted, true);
+  assert.equal(del.phone_cooldown_days, 30);
+
+  // 会话失效、Agent 失效
+  assert.equal(svc.sessionOwner(sess.session), null);
+  assert.throws(() => svc.authenticate(reg.api_key), /无效|停用/);
+
+  // 公开笔记还在，作者显示「已注销用户」；草稿没了
+  const g = svc.getGuide(guide_id);
+  assert.equal(g.author.owner, '已注销用户');
+  assert.equal(g.author.deleted, true);
+  assert.ok(svc.search('公开后要保留').some((x) => x.id === guide_id));
+  assert.equal(svc.db.prepare('SELECT 1 FROM guides WHERE id = ?').get(draft.guide_id), undefined);
+
+  // 评论保留；作者评论匿名，别人的评论还在
+  const comments = svc.commentsOf(guide_id);
+  assert.ok(comments.some((c) => c.id === cm.comment_id && c.owner === '已注销用户' && c.deleted));
+  assert.ok(comments.some((c) => c.id === otherCm.comment_id && c.owner === '读者甲'));
+
+  // 主页打不开
+  assert.throws(() => svc.profile('已注销用户'), /不存在/);
+
+  // 冷却期内不能重注册
+  const code2 = (() => {
+    try { return svc.sendLoginCode(phone, { ip: '1.1.1.1' }).dev_code; }
+    catch (e) { assert.match(e.message, /注销|重新注册/); return null; }
+  })();
+  if (code2) assert.throws(() => svc.loginWithCode(phone, code2, { ip: '1.1.1.1', device: 'dev-a' }), /注销|重新注册/);
+  else assert.ok(true);
+
+  // 31 天后可重新注册成新账号
+  clock += 31 * DAY;
+  const code3 = svc.sendLoginCode(phone, { ip: '2.2.2.2' }).dev_code;
+  const again = svc.loginWithCode(phone, code3, { ip: '2.2.2.2', device: 'dev-b' });
+  assert.equal(again.created, true);
+  assert.notEqual(again.owner_id, ownerId);
+  // 旧公开笔记仍挂在软删账号上、仍匿名
+  assert.equal(svc.getGuide(guide_id).author.owner, '已注销用户');
+});
+
+test('关注标签变更：有误导与修订合并进入关注者事实流', () => {
+  const { svc, mk } = setup();
+  const author = mk('作者云');
+  const follower = mk('关注者');
+  svc.follow(follower.owner_id, { type: 'tag', target: 'Cloudflare' });
+  const { guide_id } = svc.publishGuide(author, {
+    ...GUIDE,
+    title: 'Cloudflare Workers 冷启动避坑',
+    tags: ['Cloudflare', 'Workers'],
+  });
+  // 别人点「有误导」→ 关注该标签的人收到事实流
+  const other = mk('实测乙');
+  svc.react(other, guide_id, { action: 'misleading', context: '实测后发现第 2 步按钮文案已变' });
+  const msgs = svc.messages(follower.owner_id);
+  assert.ok(msgs.some((m) => m.kind === 'followed_mismatch' && m.tag === 'Cloudflare' && m.guide_id === guide_id));
+
+  // 修订合并 → followed_updated
+  const fixer = mk('修订者');
+  const prop = svc.propose(fixer, guide_id, {
+    kind: 'fix',
+    rationale: '第 2 步按钮已改名，按新文案改',
+    base_version: 1,
+    ops: [{ op: 'replace_step', step_id: 's2', set: { action: '点击“发送验证码”', expect: '收到邮件' } }],
+    evidence: { outcome: 'success', env: { region: '中国大陆' } },
+  });
+  // 作者直接合并（若 propose 对作者/高风险需要人工）
+  const open = svc.db.prepare("SELECT id FROM proposals WHERE guide_id = ? AND status = 'open'").get(guide_id);
+  if (open) {
+    svc.mergeProposal(open.id, { by: author.owner_id });
+  } else if (prop.status === 'merged') {
+    // already merged
+  } else {
+    // author edit path — force merge if needed
+    assert.fail(`unexpected proposal status ${prop.status}`);
+  }
+  const msgs2 = svc.messages(follower.owner_id);
+  assert.ok(msgs2.some((m) => m.kind === 'followed_updated' && m.tag === 'Cloudflare'));
+});
+

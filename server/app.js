@@ -310,6 +310,18 @@ export function createApp(svc, { publicUrl, feedPage = 40, trustProxy = false } 
       svc.updateSettings(me.owner_id, { require_publish_approval: f.require_publish_approval === 'on', share_presence: f.share_presence === 'on' });
       redirect(res, '/me/settings');
     }],
+    ['POST', /^\/me\/delete$/, async (req, res) => {
+      const f = await form(req);
+      const me = requireMe(req, f);
+      try {
+        svc.deleteAccount(me.owner_id, { confirm: f.confirm });
+      } catch (e) {
+        if (e.status && e.status < 500) return html(res, V.renderSettings(svc.consoleData(me.owner_id), { me: meInfo(req), error: e.message }), e.status);
+        throw e;
+      }
+      res.writeHead(303, { location: '/', 'set-cookie': 'cg_s=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0' });
+      res.end();
+    }],
     ['POST', /^\/me\/agents\/([\w-]+)\/revoke$/, async (req, res, m) => {
       const me = requireMe(req, await form(req));
       svc.revokeAgent(me.owner_id, m[1]);

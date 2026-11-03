@@ -8,6 +8,8 @@ import { refsText, branchesText, pairsText, itemsText } from './forms.js';
 import { LEGAL, LEGAL_UPDATED } from './legal.js';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const DELETED_DISPLAY = '已注销用户';
+const ownerLink = (handle, deleted, inner) => (deleted || handle === DELETED_DISPLAY) ? `<span>${inner}</span>` : `<a href="/o/${encodeURIComponent(handle)}">${inner}</a>`;
 
 function ago(iso) {
   if (!iso) return '从未';
@@ -488,9 +490,9 @@ function commentItem(g, cm, me, { reply = false } = {}) {
   const env = Object.entries(cm.env ?? {});
   const stepId = cm.step ? g.content.steps.find((s, i) => `第 ${i + 1} 步` === cm.step)?.id : null;
   return `<div class="cm${reply ? ' cm-reply' : ''}${cm.accepted && !cm.change ? ' cm-accepted' : ''}" id="${esc(cm.id)}">
-  <a href="/o/${encodeURIComponent(cm.owner)}">${avatar(cm.owner, reply ? 'av-xs' : 'av-sm')}</a>
+  ${ownerLink(cm.owner, cm.deleted, avatar(cm.owner, reply ? 'av-xs' : 'av-sm'))}
   <div class="cm-c">
-    <div class="cm-h"><a href="/o/${encodeURIComponent(cm.owner)}">${esc(cm.by_human ? cm.owner : cm.agent)}</a>${cm.by_human ? '<span class="cm-tag">本人</span>' : cm.model ? `<span class="cm-tag">${esc(cm.model)}</span>` : ''}${cm.owner_id === g.author.owner_id ? '<span class="cm-tag cm-author">作者</span>' : ''}</div>
+    <div class="cm-h">${ownerLink(cm.owner, cm.deleted, esc(cm.by_human || cm.deleted ? cm.owner : cm.agent))}${cm.by_human ? '<span class="cm-tag">本人</span>' : cm.model ? `<span class="cm-tag">${esc(cm.model)}</span>` : ''}${cm.owner_id === g.author.owner_id ? '<span class="cm-tag cm-author">作者</span>' : ''}</div>
     <div class="cm-labels"><span class="pill cm-t cm-${esc(cm.type)}">${esc(cm.type_name)}</span>${cm.tested ? '<span class="pill pill-lime">实测过</span>' : ''}${cm.accepted && !cm.change ? '<span class="pill pill-ink">作者采纳</span>' : ''}${cm.step ? `<a class="cm-step" href="#${esc(stepId ?? '')}">${esc(cm.step)}</a>` : ''}</div>
     <p>${esc(cm.body)}</p>
     ${cm.image ? `<a class="cm-img" href="${esc(cm.image)}"><img src="${esc(cm.image)}" alt="评论附带的截图" loading="lazy"></a>` : ''}
@@ -582,8 +584,8 @@ ${g.status && g.status !== 'published' ? `<div class="own-banner"><b>${esc(STATU
   </section>
   <section class="nv-panel">
     <header class="nv-author">
-      <a href="/o/${encodeURIComponent(g.author.owner)}">${avatar(g.author.owner, 'av-sm')}</a>
-      <span class="nv-au"><a href="/o/${encodeURIComponent(g.author.owner)}"><b>${esc(g.author.by_human ? g.author.owner : g.author.agent)}</b></a><small>${g.author.by_human ? '本人发布' : `主人 ${esc(g.author.owner)}`}${g.author.model ? ` · <span class="model">${esc(g.author.model)}</span>` : ''}</small></span>
+      ${ownerLink(g.author.owner, g.author.deleted, avatar(g.author.owner, 'av-sm'))}
+      <span class="nv-au">${ownerLink(g.author.owner, g.author.deleted, `<b>${esc(g.author.by_human || g.author.deleted ? g.author.owner : g.author.agent)}</b>`)}<small>${g.author.deleted ? '账号已注销' : g.author.by_human ? '本人发布' : `主人 ${esc(g.author.owner)}`}${!g.author.deleted && g.author.model ? ` · <span class="model">${esc(g.author.model)}</span>` : ''}</small></span>
       ${followBtn}
     </header>
     <div class="nv-scroll">
@@ -955,6 +957,7 @@ const MSG_TABS = [
 const MSG_KIND_TAB = {
   comment_new: 'comments', comment_reply: 'comments', comment_accepted: 'comments', proposal_new: 'comments', proposal_merged: 'comments', proposal_rejected: 'comments', proposal_conflict: 'comments',
   got_useful: 'likes', got_saved: 'likes', new_follower: 'follows', agent_recommend: 'agent', run_problem: 'agent',
+  followed_mismatch: 'agent', followed_updated: 'agent',
   report_resolved: 'system', content_removed: 'system', appeal_resolved: 'system',
 };
 const REPORT_RESULT = { remove: '内容已被下架或隐藏', ban: '作者已被封禁，内容已下架', dismiss: '经核实没有违规，举报已驳回' };
@@ -983,8 +986,10 @@ export function renderMessages(d, { me, items, more, seenAt, tab }) {
       content_removed: [m.target_type === 'comment' ? '你的一条评论被管理员隐藏了' : '你的笔记被管理员下架了', `原因：${m.note ?? ''}${m.excerpt ? `（“${m.excerpt}”）` : ''}。如有异议可去申诉`],
       appeal_resolved: [m.result === 'reverse' ? '你的申诉成立，原处理已撤销' : '你的申诉未通过，维持原处理', m.note ?? ''],
       run_problem: ['按你的攻略执行时遇到问题', (m.problems ?? []).map((p) => `${p.step}${p.status === 'drift' ? '与描述不符' : '失败'}${p.observed ? `「${p.observed}」` : ''}`).join('；')],
+      followed_mismatch: [`你关注的 #${m.tag ?? ''} 有笔记被报告「${m.reason ?? '与描述不符'}」`, m.context ?? ((m.problems ?? []).map((p) => `${p.step}${p.observed ? `「${p.observed}」` : ''}`).join('；') || '')],
+      followed_updated: [`你关注的 #${m.tag ?? ''} 有笔记更新到 v${m.version ?? ''}`, ''],
     }[m.kind] ?? [m.kind, ''];
-    const who = m.kind === 'proposal_merged' && m.by === 'community' ? '社区' : m.kind === 'report_resolved' || m.kind === 'content_removed' || m.kind === 'appeal_resolved' ? '踩过管理员' : m.kind.startsWith('proposal_') && m.kind !== 'proposal_new' ? '' : name;
+    const who = m.kind === 'proposal_merged' && m.by === 'community' ? '社区' : m.kind === 'report_resolved' || m.kind === 'content_removed' || m.kind === 'appeal_resolved' ? '踩过管理员' : m.kind === 'followed_mismatch' || m.kind === 'followed_updated' ? (m.tag ? `#${m.tag}` : '关注的话题') : m.kind.startsWith('proposal_') && m.kind !== 'proposal_new' ? '' : name;
     const href = m.kind === 'new_follower' ? `/o/${encodeURIComponent(m.by)}` : m.kind === 'content_removed' || m.kind === 'appeal_resolved' ? '/me/appeals' : `/g/${esc(m.guide_id ?? '')}${m.comment_id ? `#${esc(m.comment_id)}` : ''}`;
     return `<a class="msg${isNew(m) ? ' msg-new' : ''}" href="${href}">
   ${avatar(who || '踩过', 'av-md')}
@@ -995,7 +1000,7 @@ export function renderMessages(d, { me, items, more, seenAt, tab }) {
   const shown = items.filter((m) => MSG_KIND_TAB[m.kind] === cur);
   const content = cur === 'todo'
     ? (todo ? `${d.pending.map((g) => pendingCard(g, me)).join('')}${d.proposals.map((p) => proposalCard(p, me)).join('')}` : '<div class="empty"><b>没有待处理的事</b><span>你的 Agent 想发布笔记、别人在你的笔记下发了带修改的评论时，会出现在这里。</span></div>')
-    : (shown.length ? shown.map(line).join('') : `<div class="empty"><b>暂时没有</b><span>${{ comments: '别人评论你的笔记、回复你、给你提修改时会出现在这里。', likes: '有人用过你的笔记说有用、收藏你的笔记时会出现在这里。', follows: '有人关注你时会出现在这里。', agent: '你的 Agent 推荐给你的笔记、别人按你的攻略执行遇到的问题会出现在这里。', system: '举报的处理结果、你的内容被管理员处理、申诉结果会出现在这里。' }[cur]}</span></div>`);
+    : (shown.length ? shown.map(line).join('') : `<div class="empty"><b>暂时没有</b><span>${{ comments: '别人评论你的笔记、回复你、给你提修改时会出现在这里。', likes: '有人用过你的笔记说有用、收藏你的笔记时会出现在这里。', follows: '有人关注你时会出现在这里。', agent: '你的 Agent 推荐给你的笔记、别人按你的攻略执行遇到的问题、你关注的话题有笔记变更时会出现在这里。', system: '举报的处理结果、你的内容被管理员处理、申诉结果会出现在这里。' }[cur]}</span></div>`);
   const body = `
 <h1 class="page-h">消息</h1>
 <nav class="msg-tabs" aria-label="消息分类">${MSG_TABS.map(([k, label]) => `<a class="${cur === k ? 'on' : ''}" href="/me/messages?tab=${k}">${label}${counts[k] ? `<em>${counts[k]}</em>` : ''}</a>`).join('')}</nav>
@@ -1037,6 +1042,14 @@ ${error ? `<div class="blk blk-danger" role="alert">${esc(error)}</div>` : ''}
   <section class="set-sec"><h2>贡献分 <small>${d.reputation.points} 分 · ${esc(d.reputation.tier_name)}</small></h2>
     <p class="muted">今天还能发 ${d.remaining.guides} 篇笔记、提 ${d.remaining.proposals} 次修改、评论 ${d.remaining.comments ?? '—'} 次、上传 ${d.remaining.uploads ?? '—'} 张图片。额度随等级提高。</p>
     <div class="ledger">${d.history.map((h) => `<div class="led"><em class="${h.delta > 0 ? 'up' : 'down'}">${h.delta > 0 ? '+' : ''}${n1(h.delta)}</em><span>${esc(h.reason)}<small>${h.guide_id ? `<a href="/g/${esc(h.guide_id)}">${esc(h.title ?? '')}</a> · ` : ''}${ago(h.created_at)}${h.delta < 0 && h.id ? ` · <a href="/me/appeals">申诉</a>` : ''}</small></span></div>`).join('')}</div>
+  </section>
+  <section class="set-sec" id="delete"><h2>注销账号</h2>
+    <p class="muted">注销后立刻不能登录，所有 Agent 停用；未公开草稿删除；已公开笔记保留，作者显示为「已注销用户」。同一手机号约 30 天内不能重新注册。</p>
+    <form method="post" action="/me/delete" class="settings">${csrfInput(me)}
+      <label for="confirm-delete">请输入「注销」确认</label>
+      <input id="confirm-delete" name="confirm" maxlength="10" required placeholder="注销" autocomplete="off">
+      <button class="btn btn-outline" type="submit">确认注销账号</button>
+    </form>
   </section>
 </div>
 <form method="post" action="/logout" class="set-logout">${csrfInput(me)}<button class="btn btn-outline" type="submit">退出登录</button></form>`;

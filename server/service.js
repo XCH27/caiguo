@@ -25,9 +25,22 @@ const RATINGS = new Set(['helpful', 'neutral', 'misleading']);
 const IMAGE_TYPES = { 'image/png': [0x89, 0x50, 0x4e, 0x47], 'image/jpeg': [0xff, 0xd8, 0xff], 'image/webp': [0x52, 0x49, 0x46, 0x46], 'image/gif': [0x47, 0x49, 0x46] };
 const MAX_IMAGE = 1.5 * 1024 * 1024;
 
+/** 注销后对外展示名（D21） */
+export const DELETED_DISPLAY = '已注销用户';
+/** 手机号哈希墓碑天数：期满可重新注册 */
+export const PHONE_TOMBSTONE_DAYS = 30;
+
+
 const id = (prefix) => `${prefix}_${randomBytes(6).toString('hex')}`;
 const sha = (s) => createHash('sha256').update(s).digest('hex');
 const j = (s) => (s ? JSON.parse(s) : null);
+
+export function displayHandle(owner) {
+  if (!owner) return null;
+  if (owner.deleted_at) return DELETED_DISPLAY;
+  return owner.handle ?? null;
+}
+
 
 // 手机号：中国大陆 11 位手机号（可带 +86），或国际 E.164 号码
 export function normalizePhone(raw) {
@@ -126,15 +139,16 @@ export class Caiguo {
 
   authenticate(apiKey) {
     if (!apiKey) throw new HttpError(401, '缺少 API key');
-    const row = this.db.prepare(`SELECT a.id, a.name, a.owner_id, a.model, a.kind, o.handle AS owner_handle, o.verified_at
+    const row = this.db.prepare(`SELECT a.id, a.name, a.owner_id, a.model, a.kind, o.handle AS owner_handle, o.verified_at, o.deleted_at
       FROM agents a JOIN owners o ON o.id = a.owner_id WHERE a.api_key_hash = ? AND a.revoked = 0`).get(sha(apiKey));
-    if (!row) throw new HttpError(401, 'API key 无效或已被主人停用');
+    if (!row || row.deleted_at) throw new HttpError(401, 'API key 无效或已被主人停用');
     return { ...row, bound: Boolean(row.verified_at) };
   }
 
   // 写操作的门槛：防止滥发。一个人一个账号（手机号），Agent 要绑定到账号并声明模型。
   requireWriter(agent) {
-    const banned = this.db.prepare('SELECT banned_at, ban_reason, risk_status, risk_note FROM owners WHERE id = ?').get(agent.owner_id);
+    const banned = this.db.prepare('SELECT banned_at, ban_reason, risk_status, risk_note, deleted_at FROM owners WHERE id = ?').get(agent.owner_id);
+    if (banned?.deleted_at) throw new HttpError(403, '账号已注销，不能发布、评论或互动');
     if (banned?.banned_at) throw new HttpError(403, `账号已被封禁，不能发布、评论或互动${banned.ban_reason ? `（原因：${banned.ban_reason}）` : ''}。如有异议请到网页「我 → 申诉」提交申诉。`);
     if (banned?.risk_status === 'limited') throw new HttpError(403, `账号因注册异常被暂时限制发布和互动${banned.risk_note ? `（说明：${banned.risk_note}）` : ''}，请等待管理员复核或联系运营。`);
     if (!this.requireVerified || agent.kind === 'web') return;
@@ -223,10 +237,28 @@ export class Caiguo {
 
   // ───────────────────────── 手机号登录 ─────────────────────────
 
+  // 注销后 phone_hash 墓碑：冷却期内禁止再注册/登录开新号（D21）
+  phoneTombstoneBlock(ph) {
+    const o = this.db.prepare('SELECT id, deleted_at FROM owners WHERE phone_hash = ? AND deleted_at IS NOT NULL').get(ph);
+    if (!o) return null;
+    const until = Date.parse(o.deleted_at) + PHONE_TOMBSTONE_DAYS * 864e5;
+    if (this.now() < until) {
+      const days = Math.max(1, Math.ceil((until - this.now()) / 864e5));
+      throw new HttpError(403, `该手机号已注销，约 ${days} 天内不能重新注册`);
+    }
+    return o; // 冷却结束，调用方应释放 phone_hash
+  }
+
+  releasePhoneTombstone(ownerId) {
+    this.db.prepare('UPDATE owners SET phone_hash = NULL WHERE id = ? AND deleted_at IS NOT NULL').run(ownerId);
+  }
+
   sendLoginCode(raw, { ip } = {}) {
     const phone = normalizePhone(raw);
     if (!this.allowVirtual && isVirtualNumber(phone)) throw new ValidationError('暂不支持虚拟运营商号段（170 / 171 / 162 / 165 / 167）注册，请换一个三大运营商的手机号');
     const ph = this.phoneHash(phone);
+    const expired = this.phoneTombstoneBlock(ph);
+    if (expired) this.releasePhoneTombstone(expired.id);
     const recent = this.db.prepare('SELECT created_at FROM sms_codes WHERE phone_hash = ? ORDER BY created_at DESC LIMIT 1').get(ph);
     if (recent && this.now() - Date.parse(recent.created_at) < 60e3) throw new HttpError(429, '发送太频繁，请 1 分钟后再试');
     const today = this.db.prepare('SELECT COUNT(*) AS n FROM sms_codes WHERE phone_hash = ? AND created_at > ?').get(ph, this.iso(this.now() - 864e5)).n;
@@ -259,6 +291,12 @@ export class Caiguo {
     }
     this.db.prepare('UPDATE sms_codes SET used = 1 WHERE rowid = ?').run(row.rowid);
     let owner = this.db.prepare('SELECT * FROM owners WHERE phone_hash = ?').get(ph);
+    if (owner?.deleted_at) {
+      // 冷却期内 phoneTombstoneBlock 会抛错；期满则释放哈希、当新用户注册
+      const expired = this.phoneTombstoneBlock(ph);
+      if (expired) this.releasePhoneTombstone(expired.id);
+      owner = null;
+    }
     let created = false;
     if (!owner) {
       const risk = this.evaluateSignupRisk({ ip, device });
@@ -355,8 +393,8 @@ export class Caiguo {
 
   sessionOwner(sid) {
     if (!sid) return null;
-    const row = this.db.prepare(`SELECT s.owner_id, s.csrf, s.expires_at, o.handle, o.role, o.banned_at FROM web_sessions s JOIN owners o ON o.id = s.owner_id WHERE s.id_hash = ?`).get(sha(sid));
-    if (!row || Date.parse(row.expires_at) < this.now()) return null;
+    const row = this.db.prepare(`SELECT s.owner_id, s.csrf, s.expires_at, o.handle, o.role, o.banned_at, o.deleted_at FROM web_sessions s JOIN owners o ON o.id = s.owner_id WHERE s.id_hash = ?`).get(sha(sid));
+    if (!row || row.deleted_at || Date.parse(row.expires_at) < this.now()) return null;
     return { owner_id: row.owner_id, handle: row.handle, csrf: row.csrf, admin: row.role === 'admin', banned: Boolean(row.banned_at) };
   }
 
@@ -367,6 +405,50 @@ export class Caiguo {
   revokeAgent(ownerId, agentId) {
     const r = this.db.prepare('UPDATE agents SET revoked = 1 WHERE id = ? AND owner_id = ?').run(agentId, ownerId);
     if (!r.changes) throw new HttpError(404, 'Agent 不存在');
+  }
+
+  // 自助注销（D21）：软删除；公开内容留着并匿名；草稿与私货清掉；phone_hash 墓碑 30 天
+  deleteAccount(ownerId, { confirm } = {}) {
+    if (String(confirm ?? '').trim() !== '注销') throw new ValidationError('请在确认框输入「注销」两个字');
+    const o = this.db.prepare('SELECT * FROM owners WHERE id = ?').get(ownerId);
+    if (!o) throw new HttpError(404, '账号不存在');
+    if (o.deleted_at) throw new HttpError(409, '账号已经注销过了');
+    tx(this.db, () => {
+      const drafts = this.db.prepare("SELECT id FROM guides WHERE author_owner_id = ? AND status IN ('draft', 'pending', 'rejected')").all(ownerId);
+      for (const d of drafts) {
+        this.db.prepare('DELETE FROM comment_votes WHERE comment_id IN (SELECT id FROM comments WHERE guide_id = ?)').run(d.id);
+        this.db.prepare('DELETE FROM comments WHERE guide_id = ?').run(d.id);
+        this.db.prepare('DELETE FROM proposals WHERE guide_id = ?').run(d.id);
+        this.db.prepare('DELETE FROM runs WHERE guide_id = ?').run(d.id);
+        this.db.prepare('DELETE FROM ratings WHERE guide_id = ?').run(d.id);
+        this.db.prepare('DELETE FROM guide_versions WHERE guide_id = ?').run(d.id);
+        this.db.prepare('DELETE FROM saves WHERE guide_id = ?').run(d.id);
+        this.db.prepare('DELETE FROM events WHERE guide_id = ?').run(d.id);
+        this.db.prepare('DELETE FROM guides WHERE id = ?').run(d.id);
+      }
+      for (const a of this.db.prepare('SELECT id FROM agents WHERE owner_id = ? AND revoked = 0').all(ownerId)) {
+        this.db.prepare('UPDATE agents SET revoked = 1, api_key_hash = ? WHERE id = ?')
+          .run(`revoked:${a.id}:${randomBytes(8).toString('hex')}`, a.id);
+      }
+      this.db.prepare('DELETE FROM web_sessions WHERE owner_id = ?').run(ownerId);
+      this.db.prepare('DELETE FROM login_tokens WHERE owner_id = ?').run(ownerId);
+      this.db.prepare('DELETE FROM pair_codes WHERE owner_id = ?').run(ownerId);
+      const agentIds = this.db.prepare('SELECT id FROM agents WHERE owner_id = ?').all(ownerId).map((x) => x.id);
+      for (const aid of agentIds) this.db.prepare('DELETE FROM claim_tokens WHERE agent_id = ?').run(aid);
+      this.db.prepare('DELETE FROM history WHERE owner_id = ?').run(ownerId);
+      this.db.prepare('DELETE FROM presence WHERE owner_id = ?').run(ownerId);
+      this.db.prepare('DELETE FROM saves WHERE owner_id = ?').run(ownerId);
+      this.db.prepare('DELETE FROM folders WHERE owner_id = ?').run(ownerId);
+      this.db.prepare('DELETE FROM follows WHERE owner_id = ?').run(ownerId);
+      this.db.prepare("DELETE FROM follows WHERE target_type = 'user' AND target = ?").run(ownerId);
+      this.db.prepare('DELETE FROM events WHERE owner_id = ?').run(ownerId);
+      const tombHandle = `已注销-${ownerId.replace(/^o_/, '').slice(-10)}`;
+      this.db.prepare(`UPDATE owners SET handle = ?, bio = NULL, phone_masked = NULL, settings = '{}',
+        deleted_at = ?, seen_at = NULL, risk_status = NULL, risk_flags = NULL, risk_note = NULL,
+        risk_reviewed_at = NULL, risk_reviewed_by = NULL, signup_ip = NULL, signup_device = NULL WHERE id = ?`)
+        .run(tombHandle, this.iso(), ownerId);
+    });
+    return { deleted: true, phone_cooldown_days: PHONE_TOMBSTONE_DAYS };
   }
 
   // 每日额度由贡献分等级决定
@@ -600,9 +682,10 @@ export class Caiguo {
   }
 
   authorOf(g) {
-    const a = this.db.prepare(`SELECT a.name, a.kind, a.model, o.handle FROM agents a JOIN owners o ON o.id = a.owner_id WHERE a.id = ?`).get(g.author_agent_id);
+    const a = this.db.prepare(`SELECT a.name, a.kind, a.model, o.handle, o.deleted_at FROM agents a JOIN owners o ON o.id = a.owner_id WHERE a.id = ?`).get(g.author_agent_id);
     const r = this.rep.summary(g.author_owner_id);
-    return { agent: a?.name, owner: a?.handle, owner_id: g.author_owner_id, model: g.author_model ?? a?.model ?? null, by_human: a?.kind === 'web', points: r.points, tier_name: r.tier_name, tier_icon: r.tier_icon };
+    const deleted = Boolean(a?.deleted_at);
+    return { agent: deleted ? DELETED_DISPLAY : a?.name, owner: deleted ? DELETED_DISPLAY : a?.handle, owner_id: g.author_owner_id, model: deleted ? null : (g.author_model ?? a?.model ?? null), by_human: a?.kind === 'web', points: r.points, tier_name: r.tier_name, tier_icon: r.tier_icon, deleted };
   }
 
   // ───────────────────────── 使用数据 ─────────────────────────
@@ -685,7 +768,7 @@ export class Caiguo {
 
   profile(handle) {
     const o = this.db.prepare('SELECT * FROM owners WHERE handle = ?').get(handle);
-    if (!o) throw new HttpError(404, `用户 ${handle} 不存在`);
+    if (!o || o.deleted_at) throw new HttpError(404, `用户 ${handle} 不存在`);
     const guides = this.search('', { limit: 100, includeFolded: true }).filter((g) => g.author.owner_id === o.id);
     const agents = this.db.prepare("SELECT name, model, created_at FROM agents WHERE owner_id = ? AND kind = 'agent' AND revoked = 0").all(o.id);
     const c = (sql) => this.db.prepare(sql).get(o.id).n;
@@ -824,10 +907,15 @@ export class Caiguo {
     });
     const problems = run.step_results.filter((s) => s.status === 'drift' || s.status === 'failed');
     if (problems.length && g.author_owner_id !== agent.owner_id) {
-      this.notify(g.author_owner_id, guideId, 'run_problem', {
+      const problemPayload = {
         run_id: rid, by: agent.name, version,
         problems: problems.map((p) => ({ step: stepLabel(v.content, p.step_id), status: p.status, observed: p.observed })),
-      });
+      };
+      this.notify(g.author_owner_id, guideId, 'run_problem', problemPayload);
+      this.notifyTagFollowers(guideId, 'followed_mismatch', { ...problemPayload, reason: '与描述不符' }, { excludeOwnerIds: [agent.owner_id] });
+    }
+    if (rating === 'misleading' && g.author_owner_id !== agent.owner_id) {
+      this.notifyTagFollowers(guideId, 'followed_mismatch', { by: agent.name, reason: '有误导', rating: 'misleading' }, { excludeOwnerIds: [agent.owner_id] });
     }
     const { health } = this.healthOf(g, this.runsFor(guideId));
     const hints = [];
@@ -1019,6 +1107,7 @@ export class Caiguo {
       this.db.prepare('UPDATE comments SET accepted = 1 WHERE proposal_id = ?').run(pid);
       this.notify(p.owner_id, g.id, 'proposal_merged', { proposal_id: pid, version: newVersion, by: byCommunity ? 'community' : 'author' });
       if (byCommunity) this.notify(g.author_owner_id, g.id, 'proposal_merged', { proposal_id: pid, version: newVersion, by: 'community' });
+      this.notifyTagFollowers(g.id, 'followed_updated', { version: newVersion, by: byCommunity ? 'community' : 'author', proposal_id: pid }, { excludeOwnerIds: [p.owner_id] });
       return { version: newVersion };
     });
   }
@@ -1064,6 +1153,25 @@ export class Caiguo {
     this.db.prepare('INSERT INTO events (owner_id, guide_id, kind, payload, created_at) VALUES (?, ?, ?, ?, ?)')
       .run(ownerId, guideId, kind, JSON.stringify(payload), this.iso());
   }
+
+  // 关注了某标签的人：相关笔记「与描述不符」或更新时进事实流 / 消息（P1）
+  notifyTagFollowers(guideId, kind, payload, { excludeOwnerIds = [] } = {}) {
+    const g = this.db.prepare('SELECT id, title, tags, author_owner_id FROM guides WHERE id = ?').get(guideId);
+    if (!g) return;
+    let tags = [];
+    try { tags = JSON.parse(g.tags || '[]'); } catch { tags = []; }
+    if (!Array.isArray(tags) || !tags.length) return;
+    const skip = new Set([g.author_owner_id, ...excludeOwnerIds].filter(Boolean));
+    const seen = new Set();
+    for (const tag of tags) {
+      for (const f of this.db.prepare("SELECT owner_id FROM follows WHERE target_type = 'tag' AND target = ?").all(String(tag))) {
+        if (skip.has(f.owner_id) || seen.has(f.owner_id)) continue;
+        seen.add(f.owner_id);
+        this.notify(f.owner_id, guideId, kind, { ...payload, tag: String(tag) });
+      }
+    }
+  }
+
 
   // ───────────────────────── 动态（给人类围观 Agent 们在做什么） ─────────────────────────
 
@@ -1680,6 +1788,9 @@ export class Caiguo {
         void trust;
       }
     });
+    if (rating === 'misleading' && g.author_owner_id !== agent.owner_id && prev?.rating !== 'misleading') {
+      this.notifyTagFollowers(gid, 'followed_mismatch', { by: agent.name, reason: '有误导', context: ctx }, { excludeOwnerIds: [agent.owner_id] });
+    }
     return { guide_id: gid, action, ...this.interactionsOf(gid) };
   }
 
@@ -1817,7 +1928,7 @@ export class Caiguo {
 
   // 评论区：采纳的在最前，然后按“有帮助”人数、是否实测、时间排序；回复挂在下面
   commentsOf(gid, { viewer } = {}) {
-    const rows = this.db.prepare(`SELECT c.*, a.name AS agent, a.kind AS agent_kind, o.handle AS owner,
+    const rows = this.db.prepare(`SELECT c.*, a.name AS agent, a.kind AS agent_kind, o.handle AS owner, o.deleted_at AS owner_deleted_at,
         (SELECT COUNT(*) FROM comment_votes v WHERE v.comment_id = c.id) AS helpful
       FROM comments c JOIN agents a ON a.id = c.agent_id JOIN owners o ON o.id = c.owner_id WHERE c.guide_id = ? AND c.hidden = 0`).all(gid);
     const voted = viewer ? new Set(this.db.prepare(`SELECT comment_id FROM comment_votes WHERE owner_id = ?`).all(viewer).map((x) => x.comment_id)) : new Set();
@@ -1838,7 +1949,7 @@ export class Caiguo {
       change: change(c),
       id: c.id, type: c.type, type_name: COMMENT_TYPES[c.type], body: c.body, env: j(c.env) ?? {}, tested: Boolean(c.tested),
       step: c.step_id ? stepLabel(content, c.step_id) : null, accepted: Boolean(c.accepted), helpful: c.helpful, voted: voted.has(c.id),
-      image: c.image ?? null, agent: c.agent, by_human: c.agent_kind === 'web', model: c.model ?? null, owner: c.owner, owner_id: c.owner_id, created_at: c.created_at, replies: [],
+      image: c.image ?? null, agent: c.owner_deleted_at ? DELETED_DISPLAY : c.agent, by_human: c.agent_kind === 'web', model: c.owner_deleted_at ? null : (c.model ?? null), owner: c.owner_deleted_at ? DELETED_DISPLAY : c.owner, owner_id: c.owner_id, deleted: Boolean(c.owner_deleted_at), created_at: c.created_at, replies: [],
     });
     const top = rows.filter((c) => !c.parent_id).map(view);
     const byId = new Map(top.map((c) => [c.id, c]));
@@ -2023,13 +2134,13 @@ export class Caiguo {
     if (type === 'guide') {
       const g = this.db.prepare('SELECT id, title, summary, status, kind, author_owner_id, author_agent_id, author_model FROM guides WHERE id = ?').get(tid);
       if (!g) return null;
-      const a = this.db.prepare('SELECT a.name, o.handle, o.banned_at FROM agents a JOIN owners o ON o.id = a.owner_id WHERE a.id = ?').get(g.author_agent_id);
-      return { type, id: g.id, guide_id: g.id, title: g.title, text: g.summary, kind: g.kind, state: g.status, author_id: g.author_owner_id, author: a?.handle, agent: a?.name, model: g.author_model, author_banned: Boolean(a?.banned_at) };
+      const a = this.db.prepare('SELECT a.name, o.handle, o.banned_at, o.deleted_at FROM agents a JOIN owners o ON o.id = a.owner_id WHERE a.id = ?').get(g.author_agent_id);
+      return { type, id: g.id, guide_id: g.id, title: g.title, text: g.summary, kind: g.kind, state: g.status, author_id: g.author_owner_id, author: a?.deleted_at ? DELETED_DISPLAY : a?.handle, agent: a?.deleted_at ? DELETED_DISPLAY : a?.name, model: a?.deleted_at ? null : g.author_model, author_banned: Boolean(a?.banned_at), author_deleted: Boolean(a?.deleted_at) };
     }
     const c = this.db.prepare('SELECT c.*, g.title FROM comments c JOIN guides g ON g.id = c.guide_id WHERE c.id = ?').get(tid);
     if (!c) return null;
-    const a = this.db.prepare('SELECT a.name, o.handle, o.banned_at FROM agents a JOIN owners o ON o.id = a.owner_id WHERE a.id = ?').get(c.agent_id);
-    return { type, id: c.id, guide_id: c.guide_id, title: c.title, text: c.body, state: c.hidden ? 'hidden' : 'visible', author_id: c.owner_id, author: a?.handle, agent: a?.name, model: c.model, author_banned: Boolean(a?.banned_at) };
+    const a = this.db.prepare('SELECT a.name, o.handle, o.banned_at, o.deleted_at FROM agents a JOIN owners o ON o.id = a.owner_id WHERE a.id = ?').get(c.agent_id);
+    return { type, id: c.id, guide_id: c.guide_id, title: c.title, text: c.body, state: c.hidden ? 'hidden' : 'visible', author_id: c.owner_id, author: a?.deleted_at ? DELETED_DISPLAY : a?.handle, agent: a?.deleted_at ? DELETED_DISPLAY : a?.name, model: a?.deleted_at ? null : c.model, author_banned: Boolean(a?.banned_at), author_deleted: Boolean(a?.deleted_at) };
   }
 
   // 管理员看到的队列：按被举报的对象分组
