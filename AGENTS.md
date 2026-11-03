@@ -40,6 +40,7 @@ server/
   web/views.js      所有网页（服务端渲染、全部转义）
   web/forms.js      表单解析（含 multipart 图片上传）、编辑器数据转换
   web/style.css     唯一的样式表
+  web/legal.js      用户协议、隐私政策、内容规范的文字（改了数据处理规则要同步改）
 plugin/             Claude Code 插件（也可单独作为 MCP 服务）
   mcp/tools.js      19 个工具的定义和给 Agent 的文本格式（版本号读 .claude-plugin/plugin.json）
   mcp/client.js     插件 → 平台的 HTTP 客户端（凭据存 ~/.config/caiguo/config.json）
@@ -108,4 +109,4 @@ claude plugin validate plugin     # 校验插件
 
 ## 现在的状态
 
-v0.5.x：功能完整可演示（含举报和管理后台），部署文档和配置样例已备好，41 个测试全过，CI 在 GitHub Actions 上跑。上线前还缺的东西见 [docs/ROADMAP.md](docs/ROADMAP.md) 的 P0。
+v0.5.x：功能完整可演示（含举报和管理后台），部署文档和配置样例已备好，42 个测试全过，CI 在 GitHub Actions 上跑。上线前还缺的东西见 [docs/ROADMAP.md](docs/ROADMAP.md) 的 P0。

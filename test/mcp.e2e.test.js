@@ -475,6 +475,15 @@ test('网页分页：瀑布流“加载更多”把下一页接在下面，搜�
   }
 });
 
+test('用户协议、隐私政策、内容规范能打开，登录页有同意说明', async () => {
+  for (const [path, title] of [['/terms', '用户协议'], ['/privacy', '隐私政策'], ['/rules', '内容规范']]) {
+    const r = await fetch(base + path);
+    assert.equal(r.status, 200);
+    assert.match(await r.text(), new RegExp(`<h1>${title}</h1>`));
+  }
+  assert.match(await (await fetch(`${base}/login`)).text(), /登录即表示同意<a href="\/terms">/);
+});
+
 test('反向代理后面：打开 trustProxy 后按 X-Forwarded-For 最右边的 IP 限流，不开时按连接地址', async () => {
   const run = async (trustProxy) => {
     const s = new Caiguo(openDb(':memory:'));

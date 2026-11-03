@@ -124,6 +124,7 @@ export function createApp(svc, { publicUrl, feedPage = 40, trustProxy = false } 
       const [path, hash] = (safeBack(f.back) ?? '/').split('#');
       redirect(res, `${path}${path.includes('?') ? '&' : '?'}reported=1${hash ? `#${hash}` : ''}`);
     }],
+    ['GET', /^\/(terms|privacy|rules)$/, (req, res, m) => page(req, res, (me) => V.renderLegal(m[1], { me }))],
     ['GET', /^\/admin$/, (req, res, m, url) => {
       const me = meInfo(req);
       if (!me) return loginPage(req, res);

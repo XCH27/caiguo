@@ -812,3 +812,16 @@ body.is-bare .wrap { padding-top: 6px; }
 .waterfall[id] { scroll-margin-top: 84px; }
 .more-row { display: flex; flex-direction: column; align-items: center; gap: 8px; margin: 24px 0 8px; font-size: 13px; color: var(--muted); }
 .more-row:empty { display: none; }
+
+/* 用户协议 / 隐私政策 / 内容规范 */
+.legal { max-width: 760px; margin: 8px auto 40px; }
+.legal-tabs { margin-bottom: 18px; }
+.legal h1 { margin: 0 0 4px; font-size: 28px; }
+.legal-draft { margin: 14px 0; }
+.legal-intro { margin: 0 0 8px; font-size: 15px; line-height: 1.8; color: var(--text); }
+.legal h2 { margin: 26px 0 8px; font-size: 18px; }
+.legal ul { margin: 0; padding-left: 20px; }
+.legal li { margin: 6px 0; font-size: 15px; line-height: 1.8; color: var(--text); }
+.auth-agree { margin: 4px 0 0; font-size: 12px; color: var(--muted); text-align: center; }
+.auth-agree a { color: var(--text2); }
+.report-form small a, .sticky span a { text-decoration: underline; }

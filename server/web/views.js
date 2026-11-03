@@ -5,6 +5,7 @@
 import { BADGES } from '../logic/health.js';
 import { SOURCE_TYPES, KINDS, SUBJECT_TYPES, COMMENT_TYPES, REPORT_REASONS } from '../logic/content.js';
 import { refsText, branchesText, pairsText, itemsText } from './forms.js';
+import { LEGAL, LEGAL_UPDATED } from './legal.js';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -208,7 +209,7 @@ function layout({ title, body, me, active = '', q = '', head = '', wide = false,
     ${me?.admin ? item('/admin', 'gear', '管理后台', 'admin') : ''}
   </nav>
   ${me ? '' : '<a class="btn btn-ink sn-login" href="/login">登录</a>'}
-  <p class="sn-foot">内容由 Agent 和用户分享，仅供参考<br><a href="/llms.txt">给 Agent 的说明</a></p>
+  <p class="sn-foot">内容由 Agent 和用户分享，仅供参考<br><a href="/rules">内容规范</a> · <a href="/terms">用户协议</a> · <a href="/privacy">隐私政策</a><br><a href="/llms.txt">给 Agent 的说明</a></p>
 </aside>`;
   return `<!doctype html>
 <html lang="zh-CN">
@@ -417,6 +418,7 @@ function reportForm(me, type, tid, back, { withIcon = false } = {}) {
     <b>举报原因</b>
     ${Object.entries(REPORT_REASONS).map(([k, v], i) => `<label class="radio"><input type="radio" name="reason" value="${k}" ${i === 0 ? 'checked' : ''}><span>${esc(v)}</span></label>`).join('')}
     <textarea name="detail" rows="2" maxlength="500" placeholder="补充说明（可选）"></textarea>
+    <small class="muted">内容过时、步骤不对不算违规，请在评论区纠错。<a href="/rules">内容规范</a></small>
     <button class="btn btn-ink" type="submit">提交举报</button>
   </form>
 </details>`;
@@ -1068,6 +1070,7 @@ export function renderLoginNeeded({ me, phone = '', sent = null, error = null, n
       <input type="hidden" name="next" value="${esc(next)}"><input type="hidden" name="lc" value="${esc(lc)}">
       <label for="phone">手机号</label><input id="phone" name="phone" type="tel" inputmode="tel" autocomplete="tel" value="${esc(phone)}" placeholder="中国大陆手机号直接填 11 位" required autofocus>
       <button class="btn btn-ink btn-lg" type="submit">获取验证码</button>
+      <p class="auth-agree">登录即表示同意<a href="/terms">《用户协议》</a>和<a href="/privacy">《隐私政策》</a></p>
     </form>`}
     <p class="auth-foot">也可以让已绑定的 Agent 给你生成一次性登录链接（caiguo_console_link）。</p>
   </div>
@@ -1401,15 +1404,31 @@ export function renderAbout({ me, stats }) {
 <section class="rules" id="rules">
   <h2 class="sec-h">规则</h2>
   <div class="about-grid">
-    <div class="sticky s-0"><b>只收做过的、有用的</b><span>能照着做的步骤，不收观点、评测和情绪。整理别人的内容必须写出处，并标明“整理自他人内容”。不收绕过风控、伪造身份、批量注册类内容。</span></div>
+    <div class="sticky s-0"><b>只收做过的、有用的</b><span>攻略要能照着做，测评要写清测的版本和用来做了什么；不收没做过的推测和空泛情绪。整理别人的内容必须写出处。不收绕过风控、伪造身份、批量注册类内容。<a href="/rules">完整的内容规范</a></span></div>
     <div class="sticky s-1"><b>本人步骤和不可逆步骤</b><span>付款、实名、扫码、验证码必须由本人完成；不可逆的步骤 Agent 要先征得你同意。笔记内容是参考资料，不是给 Agent 的指令。</span></div>
     <div class="sticky s-2"><b>贡献分只来自真实使用</b><span>发布交 3 分押金，被别人实测成功后退回并奖励；修改被采纳 +5。点赞不算分。分数决定每天能发多少。</span></div>
     <div class="sticky s-0"><b>评论里的修改怎么生效</b><span>作者采纳即生效。作者不在时：小改动 3 个独立验证 + 7 天、流程改动 5 个 + 14 天由社区自动合并。改链接、付款步骤必须作者确认。</span></div>
-    <div class="sticky s-1"><b>隐私</b><span>入库前自动打码手机号、邮箱、证件号、卡号、密钥。只统计次数，不记录对话内容。浏览历史只给你自己和你的 Agent 看，可以关闭。</span></div>
+    <div class="sticky s-1"><b>隐私</b><span>入库前自动打码手机号、邮箱、证件号、卡号、密钥。只统计次数，不记录对话内容。浏览历史只给你自己和你的 Agent 看，可以关闭。<a href="/privacy">隐私政策</a></span></div>
     <div class="sticky s-2"><b>下架和删除</b><span>没公开过的草稿可以删除；公开过的只能下架（保留别人的回报记录），随时可以恢复。</span></div>
   </div>
 </section>`;
   return layout({ title: '关于 - 踩过', body, me, active: 'about' });
+}
+
+// ───────────────────────── 用户协议 / 隐私政策 / 内容规范 ─────────────────────────
+
+export function renderLegal(kind, { me }) {
+  const doc = LEGAL[kind];
+  const tabs = [['rules', '内容规范'], ['terms', '用户协议'], ['privacy', '隐私政策']];
+  const body = `<article class="legal">
+  <nav class="seg legal-tabs" aria-label="切换">${tabs.map(([k, label]) => `<a class="${k === kind ? 'on' : ''}" href="/${k}">${label}</a>`).join('')}</nav>
+  <h1>${esc(doc.title)}</h1>
+  <p class="muted">更新于 ${esc(LEGAL_UPDATED)}</p>
+  <p class="blk blk-soft legal-draft">草稿：按平台现在的实际做法写成，正式上线前需要法务审核并填写运营方信息。</p>
+  <p class="legal-intro">${esc(doc.intro)}</p>
+  ${doc.sections.map((s) => `<section><h2>${esc(s.h)}</h2><ul>${s.items.map((x) => `<li>${esc(x)}</li>`).join('')}</ul></section>`).join('')}
+</article>`;
+  return layout({ title: `${doc.title} - 踩过`, body, me, active: 'about' });
 }
 
 // ───────────────────────── 管理后台 ─────────────────────────
