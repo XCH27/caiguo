@@ -197,7 +197,7 @@ test('远程 HTTP MCP 端点（/mcp）可被标准客户端连接', async () => 
   assert.equal(login.status, 303);
   const cookie = login.headers.get('set-cookie').split(';')[0];
   const me = await (await fetch(`${base}/me`, { headers: { cookie } })).text();
-  assert.match(me, /等你处理/);
+  assert.match(me, /Agent 与设置/);
   assert.equal((await fetch(loginUrl, { redirect: 'manual' })).status, 403); // 只能用一次
   await client.close();
 });
@@ -232,7 +232,7 @@ test('网页：主人登录后写攻略（带截图）→ 存草稿 → 发布 �
   const shot = moreHtml.match(/name="s0_shot" value="(\/u\/[a-f0-9]+\.png)"/)[1];
   // 存草稿
   const draft = await fetch(`${base}/new`, { method: 'POST', headers: { cookie }, body: fd({ ...fields, s0_shot: shot, op: 'draft' }), redirect: 'manual' });
-  assert.equal(draft.headers.get('location'), '/me/guides?status=draft');
+  assert.equal(draft.headers.get('location'), '/me?status=draft');
   const gid = svc.myGuides(agent.owner_id)[0].id;
   assert.equal(svc.myGuides(agent.owner_id)[0].status, 'draft');
   assert.equal(svc.versionRow(gid, 1).content.steps[0].screenshot, shot);
@@ -257,7 +257,7 @@ test('网页：主人登录后写攻略（带截图）→ 存草稿 → 发布 �
   assert.equal(g.content.steps[0].rev, 1);
   assert.equal(g.content.steps[1].rev, 2);
   // “我的”各页
-  for (const p of ['/me', '/me/saved', '/me/history', '/me/history?who=agent', '/me/runs', '/me/guides', '/me/messages', '/me/settings', `/g/${gid}/edit`, '/about', '/login']) {
+  for (const p of ['/me', '/me/saved', '/me/history', '/me/history?who=agent', '/me/runs', '/me/useful', '/me/following', '/me/messages', '/me/messages?tab=likes', '/me/settings', `/g/${gid}/edit`, '/about', '/login']) {
     assert.equal((await get(p)).status, 200, p);
   }
   assert.match(await (await get('/me/history')).text(), /网页上写的测试攻略/);
@@ -363,4 +363,35 @@ test('给 Agent 的纯文本入口：/llms.txt、/search.md、/feed.md，网页�
   assert.match(html, new RegExp(`<meta name="caiguo:guide" content="${guide_id}">`));
   const neg = await fetch(`${base}/g/${guide_id}`, { headers: { accept: 'text/markdown' } });
   assert.match(await neg.text(), /<<踩过攻略 开始>>/);
+});
+
+test('网页账号：手机号验证码登录 → Agent 公开注册（未绑定，只能读）→ 认领链接 → 主人确认后能写', async () => {
+  const sent = await (await fetch(`${base}/login/code`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: 'phone=13900001111' })).text();
+  const code = sent.match(/验证码是 <b>(\d{6})<\/b>/)[1];
+  const login = await fetch(`${base}/login/verify`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: `phone=13900001111&code=${code}`, redirect: 'manual' });
+  assert.equal(login.status, 303);
+  const cookie = login.headers.get('set-cookie').split(';')[0];
+  const settings = await (await fetch(`${base}/me/settings`, { headers: { cookie } })).text();
+  assert.match(settings, /139\*\*\*\*1111/);
+  // Agent 公开注册：没绑定
+  const reg = await (await fetch(`${base}/api/agents/register`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: '新来的 Agent', owner_handle: '想冒充', model: 'Claude Opus 5.5' }) })).json();
+  assert.equal(reg.bound, false);
+  const auth = { authorization: `Bearer ${reg.api_key}`, 'content-type': 'application/json' };
+  const denied = await fetch(`${base}/api/guides`, { method: 'POST', headers: auth, body: JSON.stringify({ title: 't', summary: 's', steps: [{ action: 'a' }] }) });
+  assert.equal(denied.status, 403);
+  const c = await (await fetch(`${base}/api/connect`, { method: 'POST', headers: auth, body: JSON.stringify({ model: 'Claude Opus 5.5' }) })).json();
+  assert.equal(c.status, 'need_claim');
+  const claimPath = new URL(c.claim_url).pathname;
+  const page = await (await fetch(base + claimPath, { headers: { cookie } })).text();
+  assert.match(page, /Claude Opus 5\.5/);
+  const csrf = page.match(/name="csrf" value="([a-f0-9]+)"/)[1];
+  const done = await (await fetch(base + claimPath, { method: 'POST', headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' }, body: `csrf=${csrf}` })).text();
+  assert.match(done, /已绑定/);
+  const ok = await fetch(`${base}/api/guides`, { method: 'POST', headers: auth, body: JSON.stringify({ title: '绑定后发的草稿', summary: 's', steps: [{ action: 'a' }], draft: true }) });
+  assert.equal(ok.status, 201);
+  // 接入码：主人生成，新 Agent 注册时直接绑定
+  const pairPage = await (await fetch(`${base}/me/pair`, { method: 'POST', headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' }, body: `csrf=${csrf}` })).text();
+  const pair = pairPage.match(/class="pair-code">([A-Z0-9-]+)</)[1];
+  const reg2 = await (await fetch(`${base}/api/agents/register`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: '第二个', model: 'GPT-5', pair_code: pair }) })).json();
+  assert.equal(reg2.bound, true);
 });

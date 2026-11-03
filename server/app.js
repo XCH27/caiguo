@@ -24,6 +24,7 @@ export function createApp(svc, { publicUrl } = {}) {
   const secure = Boolean(publicUrl && publicUrl.startsWith('https://'));
 
   const page = (req, res, render, status = 200) => html(res, render(meInfo(req)), status);
+  const sessionCookie = (session) => `${COOKIE}=${session}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000${secure ? '; Secure' : ''}`;
 
   const routes = [
     // ───────────── 给人看的网页 ─────────────
@@ -49,8 +50,9 @@ export function createApp(svc, { publicUrl } = {}) {
       const notice = url.searchParams.has('updated') ? '已保存为新版本。' : url.searchParams.has('proposed') ? '已作为带修改的评论发在评论区，等作者采纳或其他人验证。'
         : url.searchParams.has('published') ? '已发布。' : url.searchParams.has('reacted') ? '已记录，谢谢你的真实反馈。' : url.searchParams.has('commented') ? '评论已发表。' : null;
       g.mine = me ? svc.myReactions(me.owner_id, g.id) : {};
+      const followingAuthor = me ? svc.isFollowing(me.owner_id, 'user', g.author.owner_id) : false;
       return html(res, V.renderGuide(g, {
-        me, sent: url.searchParams.has('sent'), related, notice,
+        me, sent: url.searchParams.has('sent'), related, notice, followingAuthor,
         saved: me ? svc.saveOf(me.owner_id, g.id) : null, folders: me ? svc.foldersOf(me.owner_id) : null,
       }));
     }],
@@ -107,13 +109,41 @@ export function createApp(svc, { publicUrl } = {}) {
       const own = me && (g.author_owner_id === me.owner_id || svc.isMaintainer(g.id, me.owner_id));
       return editorPost(req, res, { mode: own ? 'edit' : 'suggest', gid: m[1], action: `/g/${m[1]}/edit` });
     }],
-    ['GET', /^\/new$/, (req, res) => {
+    ['GET', /^\/new$/, (req, res, m, url) => {
       const me = meInfo(req);
       if (!me) return html(res, V.renderLoginNeeded({ me: null }));
-      return html(res, V.renderEditor({ model: guideFromForm({}), mode: 'new', action: '/new', me }));
+      return html(res, V.renderEditor({ model: guideFromForm({ kind: url.searchParams.get('kind') || 'guide' }), mode: 'new', action: '/new', me }));
     }],
     ['POST', /^\/new$/, (req, res) => editorPost(req, res, { mode: 'new', action: '/new' })],
-    ['GET', /^\/login$/, (req, res) => page(req, res, (me) => V.renderLoginNeeded({ me }))],
+    ['GET', /^\/login$/, (req, res, m, url) => page(req, res, (me) => V.renderLoginNeeded({ me, next: safeBack(url.searchParams.get('next')) ?? '' }))],
+    ['POST', /^\/login\/code$/, async (req, res) => {
+      const f = await form(req);
+      try {
+        const sent = svc.sendLoginCode(f.phone, { ip: req.socket.remoteAddress });
+        return html(res, V.renderLoginNeeded({ me: null, phone: f.phone, sent, next: safeBack(f.next) ?? '' }));
+      } catch (e) {
+        if (e.status && e.status < 500) return html(res, V.renderLoginNeeded({ me: null, phone: f.phone, error: e.message, next: safeBack(f.next) ?? '' }), e.status);
+        throw e;
+      }
+    }],
+    ['POST', /^\/login\/verify$/, async (req, res) => {
+      const f = await form(req);
+      try {
+        const r = svc.loginWithCode(f.phone, f.code);
+        res.writeHead(303, { location: safeBack(f.next) ?? (r.created ? '/me/settings' : '/me'), 'set-cookie': sessionCookie(r.session) });
+        return res.end();
+      } catch (e) {
+        if (e.status && e.status < 500) return html(res, V.renderLoginNeeded({ me: null, phone: f.phone, sent: { masked: f.phone }, error: e.message, next: safeBack(f.next) ?? '' }), e.status);
+        throw e;
+      }
+    }],
+    ['GET', /^\/claim\/([a-f0-9]{40})$/, (req, res, m) => page(req, res, (me) => V.renderClaim({ me, info: svc.claimInfo(m[1]), token: m[1] }))],
+    ['POST', /^\/claim\/([a-f0-9]{40})$/, async (req, res, m) => {
+      const me = requireMe(req, await form(req));
+      const info = svc.claimInfo(m[1]);
+      svc.claimAgent(m[1], me.owner_id);
+      return html(res, V.renderClaim({ me: meInfo(req), info, token: m[1], done: true }));
+    }],
     ['GET', /^\/about$/, (req, res) => page(req, res, (me) => V.renderAbout({ me, stats: svc.stats() }))],
     ['POST', /^\/g\/([\w-]+)\/send$/, async (req, res, m) => {
       const me = requireMe(req, await form(req));
@@ -129,14 +159,15 @@ export function createApp(svc, { publicUrl } = {}) {
     })],
     ['GET', /^\/o\/([^/]+)$/, (req, res, m, url) => page(req, res, (me) => {
       const p = svc.profile(decodeURIComponent(m[1]));
-      return V.renderProfile(p, { tab: url.searchParams.get('tab'), me, following: svc.isFollowing(me?.owner_id, 'user', p.id) });
+      const tab = url.searchParams.get('tab');
+      return V.renderProfile(p, { tab, me, following: svc.isFollowing(me?.owner_id, 'user', p.id), useful: tab === 'useful' ? svc.usefulBy(p.id) : [] });
     })],
     ['GET', /^\/connect$/, (req, res) => page(req, res, (me) => V.renderConnect({ base: baseUrl(req), me }))],
 
     // 主人：登录、控制台
     ['GET', /^\/login\/([a-f0-9]{40})$/, (req, res, m) => {
       const { session } = svc.consumeLogin(m[1]);
-      res.writeHead(303, { location: '/me', 'set-cookie': `${COOKIE}=${session}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000${secure ? '; Secure' : ''}` });
+      res.writeHead(303, { location: '/me', 'set-cookie': sessionCookie(session) });
       res.end();
     }],
     ['POST', /^\/logout$/, async (req, res) => {
@@ -145,7 +176,7 @@ export function createApp(svc, { publicUrl } = {}) {
       res.writeHead(303, { location: '/', 'set-cookie': `${COOKIE}=; Path=/; Max-Age=0` });
       res.end();
     }],
-    ['GET', /^\/me(?:\/(saved|history|runs|guides|messages|settings|following))?$/, (req, res, m, url) => {
+    ['GET', /^\/me(?:\/(saved|history|runs|guides|messages|settings|following|useful))?$/, (req, res, m, url) => {
       const me = meInfo(req);
       if (!me) return html(res, V.renderLoginNeeded({ me: null }));
       const d = svc.consoleData(me.owner_id);
@@ -160,17 +191,34 @@ export function createApp(svc, { publicUrl } = {}) {
           return html(res, V.renderHistory(d, { me, who, sharing: d.settings.share_presence, items: who === 'agent' ? svc.agentTrail(o) : svc.historyOf(o) }));
         }
         case 'runs': return html(res, V.renderRuns(d, { me, items: svc.runsOfOwner(o) }));
-        case 'guides': return html(res, V.renderMyGuides(d, { me, items: svc.myGuides(o), status: url.searchParams.get('status') || '' }));
+        case 'guides': return redirect(res, `/me${url.search}`);
+        case 'useful': return html(res, V.renderUseful(d, { me, items: svc.usefulBy(o) }));
         case 'messages': {
           const seenAt = svc.db.prepare('SELECT seen_at FROM owners WHERE id = ?').get(o).seen_at;
-          const pageHtml = V.renderMessages(d, { me, items: svc.messages(o), seenAt });
+          const pageHtml = V.renderMessages(d, { me, items: svc.messages(o), seenAt, tab: url.searchParams.get('tab') || '' });
           svc.markMessagesSeen(o);
           return html(res, pageHtml);
         }
         case 'settings': return html(res, V.renderSettings(d, { me }));
         case 'following': return html(res, V.renderFollowing(d, { me, following: svc.followingOf(o), stats: svc.creatorStats(o) }));
-        default: return html(res, V.renderMeOverview(d, { me, saved: svc.savedList(o), history: svc.historyOf(o, { limit: 6 }), runs: svc.runsOfOwner(o, { limit: 4 }), recommends: svc.recommendsFor(o) }));
+        default: return html(res, V.renderMyGuides(d, { me, items: svc.myGuides(o), status: url.searchParams.get('status') || '' }));
       }
+    }],
+    ['POST', /^\/me\/pair$/, async (req, res) => {
+      const me = requireMe(req, await form(req));
+      const pair = svc.createPairCode(me.owner_id);
+      return html(res, V.renderSettings(svc.consoleData(me.owner_id), { me: meInfo(req), pair }));
+    }],
+    ['POST', /^\/me\/profile$/, async (req, res) => {
+      const f = await form(req);
+      const me = requireMe(req, f);
+      try {
+        svc.updateProfile(me.owner_id, { handle: f.handle });
+      } catch (e) {
+        if (e.status && e.status < 500) return html(res, V.renderSettings(svc.consoleData(me.owner_id), { me: meInfo(req), error: e.message }), e.status);
+        throw e;
+      }
+      return redirect(res, '/me/settings');
     }],
     ['POST', /^\/me\/settings$/, async (req, res) => {
       const f = await form(req);
@@ -187,7 +235,7 @@ export function createApp(svc, { publicUrl } = {}) {
       const f = await form(req);
       const me = requireMe(req, f);
       svc.reviewPublish(m[1], { ownerId: me.owner_id, action: f.action });
-      redirect(res, f.action === 'approve' ? `/g/${m[1]}` : '/me/guides');
+      redirect(res, f.action === 'approve' ? `/g/${m[1]}` : '/me');
     }],
     ['POST', /^\/me\/guides\/([\w-]+)$/, async (req, res, m) => {
       const f = await form(req);
@@ -196,10 +244,10 @@ export function createApp(svc, { publicUrl } = {}) {
       const gid = m[1];
       const done = {
         publish: () => { svc.publishDraft(o, gid); return `/g/${gid}?published=1`; },
-        reject: () => { svc.reviewPublish(gid, { ownerId: o, action: 'reject' }); return '/me/guides'; },
-        archive: () => { svc.archiveGuide(o, gid); return '/me/guides?status=archived'; },
+        reject: () => { svc.reviewPublish(gid, { ownerId: o, action: 'reject' }); return '/me'; },
+        archive: () => { svc.archiveGuide(o, gid); return '/me?status=archived'; },
         restore: () => { svc.restoreGuide(o, gid); return `/g/${gid}`; },
-        delete: () => { svc.deleteGuide(o, gid); return '/me/guides'; },
+        delete: () => { svc.deleteGuide(o, gid); return '/me'; },
       }[f.action];
       if (!done) throw new HttpError(400, '未知操作');
       redirect(res, done());
@@ -218,7 +266,7 @@ export function createApp(svc, { publicUrl } = {}) {
       const f = await form(req);
       const me = requireMe(req, f);
       svc.reviewProposal({ owner_id: me.owner_id, name: `${me.handle}（网页）` }, m[1], { action: f.action, note: f.note });
-      redirect(res, '/me/messages');
+      redirect(res, '/me/messages?tab=todo');
     }],
     ['POST', /^\/me\/folders$/, async (req, res) => {
       const f = await form(req);
@@ -403,12 +451,12 @@ export function createApp(svc, { publicUrl } = {}) {
     try {
       if (mode === 'new') {
         const r = svc.publishGuide(web, { ...publishInput(model), draft: f.op === 'draft' }, { direct: true });
-        return redirect(res, r.status === 'draft' ? '/me/guides?status=draft' : `/g/${r.guide_id}?published=1`);
+        return redirect(res, r.status === 'draft' ? '/me?status=draft' : `/g/${r.guide_id}?published=1`);
       }
       if (mode === 'draft') {
         svc.updateDraft(me.owner_id, gid, publishInput(model));
         if (f.op === 'publish') { svc.publishDraft(me.owner_id, gid); return redirect(res, `/g/${gid}?published=1`); }
-        return redirect(res, '/me/guides');
+        return redirect(res, '/me');
       }
       const r = svc.editGuide(web, gid, editInput(model), { rationale: f.rationale, tested: Boolean(f.tested) });
       return redirect(res, r.status === 'merged' ? `/g/${gid}?updated=1` : `/g/${gid}?proposed=1#${r.comment_id ?? 'comments'}`);
