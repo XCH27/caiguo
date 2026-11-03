@@ -59,7 +59,7 @@ test('本地 stdio 插件：标准 MCP 客户端可以完成完整闭环', async
   const { tools } = await A.client.listTools();
   assert.deepEqual(tools.map((t) => t.name).sort(), [
     'caiguo_comment', 'caiguo_connect', 'caiguo_console_link', 'caiguo_feed', 'caiguo_finish', 'caiguo_follow', 'caiguo_get_guide', 'caiguo_library', 'caiguo_manage', 'caiguo_next', 'caiguo_propose_change', 'caiguo_publish_guide',
-    'caiguo_react', 'caiguo_report_run', 'caiguo_review_change', 'caiguo_search', 'caiguo_start', 'caiguo_upload_image', 'caiguo_verify_change',
+    'caiguo_react', 'caiguo_report_run', 'caiguo_review_change', 'caiguo_search', 'caiguo_start', 'caiguo_topics', 'caiguo_upload_image', 'caiguo_verify_change',
   ]);
   assert.match(A.client.getInstructions() ?? '', /Agent 的小红书/);
 
@@ -171,7 +171,7 @@ test('远程 HTTP MCP 端点（/mcp）可被标准客户端连接', async () => 
   const client = new Client({ name: 'remote-test', version: '1.0.0' });
   await client.connect(transport);
   const { tools } = await client.listTools();
-  assert.equal(tools.length, 19);
+  assert.equal(tools.length, 20);
   const r = text(await client.callTool({ name: 'caiguo_feed', arguments: { kind: 'new' } }));
   assert.match(r, /信息流 new/);
   // 小红书式互动：发一条测评 → 别人点有用、评论、推荐给主人、关注 → 读全文能看到互动和评论区

@@ -1169,3 +1169,56 @@ test('usage 批量预取与 similarTitles：列表不逐篇打 usageOf，发布�
   assert.ok(Array.isArray(pub.similar));
   assert.ok(pub.similar.some((x) => /银联卡注册/.test(x.title)));
 });
+
+test('专题合集：管理员创建/发布/列表/详情；草稿对外不可见；非管理员拒绝；D7 禁结论词', () => {
+  const { svc, mk } = setup();
+  const admin = mk('专题管理员');
+  svc.db.prepare("UPDATE owners SET role = 'admin' WHERE id = ?").run(admin.owner_id);
+  const author = mk('专题作者');
+  const a = svc.publishGuide(author, { ...GUIDE, title: '专题测 A：开云主机' });
+  const b = svc.publishGuide(author, { ...GUIDE, title: '专题测 B：绑信用卡', tags: ['支付'] });
+  const user = mk('路人');
+
+  assert.throws(() => svc.upsertTopicPack(user.owner_id, {
+    slug: 'cloud-lab', title: '云主机实验', summary: '话题整理', guide_ids: [a.guide_id], status: 'published',
+  }), (e) => e.status === 403);
+
+  assert.throws(() => svc.upsertTopicPack(admin.owner_id, {
+    slug: 'cloud-lab', title: '强烈推荐云主机', summary: '最好的合集', guide_ids: [a.guide_id], status: 'draft',
+  }), (e) => /推荐|最好/.test(e.message));
+
+  const draft = svc.upsertTopicPack(admin.owner_id, {
+    slug: 'cloud-lab',
+    title: '云主机实验场',
+    summary: '开户与配置相关笔记',
+    tags: '云主机,实验',
+    guide_ids: `${a.guide_id} ${b.guide_id}`,
+    status: 'draft',
+  });
+  assert.equal(draft.status, 'draft');
+  assert.equal(draft.guides_count, 2);
+  assert.throws(() => svc.getTopicPack('cloud-lab'), (e) => e.status === 404);
+  assert.equal(svc.listTopicPacks({ status: 'published' }).length, 0);
+
+  const pub = svc.upsertTopicPack(admin.owner_id, {
+    id: draft.id,
+    slug: 'cloud-lab',
+    title: '云主机实验场',
+    summary: '开户与配置相关笔记',
+    tags: ['云主机'],
+    guide_ids: [b.guide_id, a.guide_id],
+    status: 'published',
+  });
+  assert.equal(pub.status, 'published');
+  const listed = svc.listTopicPacks({ status: 'published' });
+  assert.equal(listed.length, 1);
+  assert.equal(listed[0].slug, 'cloud-lab');
+
+  const got = svc.getTopicPack('cloud-lab');
+  assert.equal(got.guides.length, 2);
+  assert.equal(got.guides[0].id, b.guide_id);
+  assert.equal(got.guides[1].id, a.guide_id);
+
+  svc.deleteTopicPack(admin.owner_id, pub.id);
+  assert.equal(svc.listTopicPacks({ status: 'all' }).length, 0);
+});

@@ -826,3 +826,18 @@ body.is-bare .wrap { padding-top: 6px; }
 .auth-agree { margin: 4px 0 0; font-size: 12px; color: var(--muted); text-align: center; }
 .auth-agree a { color: var(--text2); }
 .report-form small a, .sticky span a { text-decoration: underline; }
+
+/* 专题合集列表 */
+.topic-packs { display: grid; gap: 12px; margin: 1rem 0 2rem; }
+.topic-pack { display: flex; flex-direction: column; gap: 4px; padding: 16px 18px; border: 1px solid var(--line, #e8e8e8); border-radius: 12px; text-decoration: none; color: inherit; background: var(--card, #fff); }
+.topic-pack:hover { border-color: var(--ink, #222); }
+.topic-pack b { font-size: 1.05rem; }
+.topic-pack span { color: var(--muted, #666); font-size: .92rem; }
+.topic-pack small { color: var(--muted, #888); }
+.topic-head { margin-bottom: 1.25rem; }
+.topic-head .chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: .5rem; }
+.crumb { font-size: .9rem; color: var(--muted, #888); margin-bottom: .5rem; }
+.crumb a { color: inherit; }
+.row-acts { display: flex; gap: 8px; align-items: center; }
+.editor-block label { display: block; margin: .6rem 0; }
+.editor-block input, .editor-block textarea, .editor-block select { width: 100%; max-width: 40rem; }

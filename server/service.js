@@ -2675,6 +2675,114 @@ export class Caiguo {
     });
     return { owner_id, action };
   }
+  // ─── 专题合集（编辑精选，按话题组织；D7：不下结论、不写「推荐」）───
+
+  normalizeTopicSlug(raw) {
+    const s = String(raw ?? '').trim().toLowerCase();
+    if (!/^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/.test(s) || s.length < 2) {
+      throw new ValidationError('专题短名用 2–64 位小写字母、数字和连字符');
+    }
+    return s;
+  }
+
+  topicPackBrief(r) {
+    const tags = j(r.tags) ?? [];
+    const guide_ids = j(r.guide_ids) ?? [];
+    return {
+      id: r.id,
+      slug: r.slug,
+      title: r.title,
+      summary: r.summary ?? '',
+      tags,
+      guide_ids,
+      guides_count: guide_ids.length,
+      status: r.status,
+      created_by: r.created_by,
+      created_at: r.created_at,
+      updated_at: r.updated_at,
+    };
+  }
+
+  listTopicPacks({ status = 'published', limit = 50 } = {}) {
+    const lim = Math.min(Math.max(Number(limit) || 50, 1), 100);
+    const rows = status === 'all'
+      ? this.db.prepare('SELECT * FROM topic_packs ORDER BY updated_at DESC LIMIT ?').all(lim)
+      : this.db.prepare("SELECT * FROM topic_packs WHERE status = ? ORDER BY updated_at DESC LIMIT ?").all(status, lim);
+    return rows.map((r) => this.topicPackBrief(r));
+  }
+
+  getTopicPack(slugOrId, { includeDraft = false } = {}) {
+    const row = this.db.prepare('SELECT * FROM topic_packs WHERE slug = ? OR id = ?').get(slugOrId, slugOrId);
+    if (!row) throw new HttpError(404, '专题不存在');
+    if (row.status !== 'published' && !includeDraft) throw new HttpError(404, '专题不存在');
+    const brief = this.topicPackBrief(row);
+    const guides = [];
+    for (const gid of brief.guide_ids) {
+      const g = this.db.prepare("SELECT * FROM guides WHERE id = ? AND status = 'published'").get(gid);
+      if (g) guides.push(this.cardOf(g));
+    }
+    return { ...brief, guides };
+  }
+
+  parseTopicGuideIds(raw) {
+    let ids = raw;
+    if (typeof ids === 'string') ids = ids.split(/[\s,，]+/).map((s) => s.trim()).filter(Boolean);
+    if (!Array.isArray(ids)) ids = [];
+    return [...new Set(ids.map(String))].slice(0, 50);
+  }
+
+  parseTopicTags(raw) {
+    if (Array.isArray(raw)) return raw.map((t) => String(t).trim()).filter(Boolean).slice(0, 12);
+    return String(raw ?? '').split(/[,，\s#]+/).map((t) => t.trim()).filter(Boolean).slice(0, 12);
+  }
+
+  upsertTopicPack(adminId, body = {}) {
+    if (!this.isAdmin(adminId)) throw new HttpError(403, '只有管理员可以编辑专题');
+    const slug = this.normalizeTopicSlug(body.slug);
+    const title = String(body.title ?? '').trim().slice(0, 80);
+    if (title.length < 2) throw new ValidationError('请填写专题标题');
+    // D7：专题文案不写「推荐 / 精选爆款」一类质量结论词（标题与摘要）
+    const banned = /推荐|必看|最好|最强|排名/;
+    if (banned.test(title) || banned.test(String(body.summary ?? ''))) {
+      throw new ValidationError('专题只按话题组织，标题和简介里请不要写「推荐」「最好」等结论词');
+    }
+    const summary = String(body.summary ?? '').trim().slice(0, 500);
+    const tags = this.parseTopicTags(body.tags);
+    const guide_ids = this.parseTopicGuideIds(body.guide_ids);
+    for (const gid of guide_ids) {
+      const g = this.db.prepare("SELECT id FROM guides WHERE id = ? AND status = 'published'").get(gid);
+      if (!g) throw new ValidationError(`笔记 ${gid} 不存在或未公开`);
+    }
+    const status = body.status === 'draft' ? 'draft' : body.status === 'published' ? 'published' : null;
+    if (!status) throw new ValidationError('status 只能是 draft 或 published');
+    const now = this.iso();
+    let existing = null;
+    if (body.id) {
+      existing = this.db.prepare('SELECT * FROM topic_packs WHERE id = ?').get(body.id);
+      if (!existing) throw new HttpError(404, '专题不存在');
+    } else {
+      existing = this.db.prepare('SELECT * FROM topic_packs WHERE slug = ?').get(slug);
+    }
+    const clash = this.db.prepare('SELECT id FROM topic_packs WHERE slug = ?').get(slug);
+    if (clash && (!existing || clash.id !== existing.id)) throw new ValidationError('这个短名已被占用');
+    if (existing) {
+      this.db.prepare('UPDATE topic_packs SET slug = ?, title = ?, summary = ?, tags = ?, guide_ids = ?, status = ?, updated_at = ? WHERE id = ?')
+        .run(slug, title, summary, JSON.stringify(tags), JSON.stringify(guide_ids), status, now, existing.id);
+      return this.getTopicPack(existing.id, { includeDraft: true });
+    }
+    const tid = id('tp');
+    this.db.prepare('INSERT INTO topic_packs (id, slug, title, summary, tags, guide_ids, status, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(tid, slug, title, summary, JSON.stringify(tags), JSON.stringify(guide_ids), status, adminId, now, now);
+    return this.getTopicPack(tid, { includeDraft: true });
+  }
+
+  deleteTopicPack(adminId, packId) {
+    if (!this.isAdmin(adminId)) throw new HttpError(403, '只有管理员可以删除专题');
+    const r = this.db.prepare('DELETE FROM topic_packs WHERE id = ?').run(packId);
+    if (!r.changes) throw new HttpError(404, '专题不存在');
+    return { deleted: true, id: packId };
+  }
+
 }
 
 function tierBrief(points) {

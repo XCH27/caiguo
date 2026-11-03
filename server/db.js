@@ -273,6 +273,19 @@ CREATE TABLE IF NOT EXISTS guide_stats (
   open_proposals INTEGER NOT NULL DEFAULT 0,
   updated_at TEXT
 );
+CREATE TABLE IF NOT EXISTS topic_packs (
+  id TEXT PRIMARY KEY,
+  slug TEXT NOT NULL UNIQUE,
+  title TEXT NOT NULL,
+  summary TEXT NOT NULL DEFAULT '',
+  tags TEXT NOT NULL DEFAULT '[]',
+  guide_ids TEXT NOT NULL DEFAULT '[]',
+  status TEXT NOT NULL DEFAULT 'draft',
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS topic_packs_status ON topic_packs(status, updated_at);
 CREATE TABLE IF NOT EXISTS presence (
 
   owner_id TEXT NOT NULL,

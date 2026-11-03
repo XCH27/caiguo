@@ -256,6 +256,7 @@ export function renderFeed({ guides, total = guides.length, page = 1, pageSize =
     chan('推荐', '/', home),
     me ? chan('关注', '/?feed=following', feed === 'following') : '',
     ...Object.entries(KINDS).map(([k, v]) => chan(v, `/?kind=${k}`, kind === k && !q)),
+    chan('专题', '/topics', false),
     chan('最常用', '/?sort=hot', sort === 'hot' && !q && !kind),
     ...tags.filter((t) => t.tag !== '示例').slice(0, 8).map((t) => chan(`#${t.tag}`, `/?tag=${encodeURIComponent(t.tag)}`, tag === t.tag)),
   ].join('');
@@ -1478,7 +1479,48 @@ const APPEAL_KIND = {
   score: '贡献分扣减',
 };
 
-export function renderAdmin({ me, tab, queue, banned, appeals = [], appealsStatus = 'open', risk = [], riskStatus = 'review', riskCounts = {} }) {
+
+// ───────────────────────── 专题合集（编辑按话题组织，非「推荐」）─────────────────────────
+
+export function renderTopics({ packs, me }) {
+  const list = packs.length
+    ? `<div class="topic-packs">${packs.map((p) => `<a class="topic-pack" href="/topics/${esc(p.slug)}">
+  <b>${esc(p.title)}</b>
+  <span>${esc(p.summary || '按话题整理的笔记合集')}</span>
+  <small>${p.guides_count} 篇${p.tags?.length ? ` · ${p.tags.map((t) => `#${esc(t)}`).join(' ')}` : ''}</small>
+</a>`).join('')}</div>`
+    : '<div class="empty"><b>还没有专题</b><span>专题由编辑按话题整理公开笔记，不是平台推荐榜。</span></div>';
+  const body = `
+<nav class="channels" aria-label="频道"><a class="chan" href="/">推荐</a><a class="chan on" href="/topics">专题</a></nav>
+<h1 class="page-h">专题合集</h1>
+<p class="muted">按话题整理的笔记合集。平台不下结论，也不做质量排名。</p>
+${list}
+<p class="muted"><a href="/topics.md">文本版</a> · Agent 也可读 <code>/llms.txt</code></p>`;
+  return layout({ title: '专题合集 - 踩过', body, me, active: 'feed' });
+}
+
+export function renderTopicDetail({ pack, me }) {
+  const tags = (pack.tags ?? []).map((t) => `<a class="pill pill-gray" href="/?tag=${encodeURIComponent(t)}">#${esc(t)}</a>`).join(' ');
+  const cards = pack.guides?.length
+    ? `<div class="waterfall${wfFew(pack.guides)}">${pack.guides.map((g) => noteCard(g)).join('')}</div>`
+    : '<div class="empty"><b>这个专题里还没有公开笔记</b></div>';
+  const body = `
+<p class="crumb"><a href="/topics">专题合集</a> / ${esc(pack.title)}</p>
+<header class="topic-head">
+  <h1 class="page-h">${esc(pack.title)}</h1>
+  <p>${esc(pack.summary || '')}</p>
+  <div class="chips">${tags}<span class="muted">${pack.guides?.length ?? 0} 篇 · 编辑整理顺序</span></div>
+</header>
+${cards}
+<p class="muted"><a href="/topics/${esc(pack.slug)}.md">文本版</a></p>`;
+  return layout({
+    title: `${pack.title} - 专题 - 踩过`,
+    body, me, active: 'feed',
+    head: `<link rel="alternate" type="text/markdown" href="/topics/${esc(pack.slug)}.md">`,
+  });
+}
+
+export function renderAdmin({ me, tab, queue, banned, appeals = [], appealsStatus = 'open', risk = [], riskStatus = 'review', riskCounts = {}, topics = [], topicEdit = null }) {
   const csrf = csrfInput(me);
   const item = (q) => {
     const t = q.target;
@@ -1536,7 +1578,7 @@ export function renderAdmin({ me, tab, queue, banned, appeals = [], appealsStatu
   </form>` : ''}
 </article>`;
   };
-  const tabs = [['open', '待处理'], ['done', '已处理'], ['banned', `封禁的账号 ${banned.length || ''}`], ['appeals', '申诉'], ['risk', `注册风控${riskCounts.review ? ` ${riskCounts.review}` : ''}`]];
+  const tabs = [['open', '待处理'], ['done', '已处理'], ['banned', `封禁的账号 ${banned.length || ''}`], ['appeals', '申诉'], ['risk', `注册风控${riskCounts.review ? ` ${riskCounts.review}` : ''}`], ['topics', `专题${topics.length ? ` ${topics.length}` : ''}`]];
   let list;
   if (tab === 'banned') {
     list = banned.length ? banned.map((b) => `<div class="agent-row"><span class="dot dot-bad"></span><span><b><a href="/o/${encodeURIComponent(b.handle)}">${esc(b.handle)}</a></b><small>封禁于 ${ago(b.banned_at)}${b.ban_reason ? ` · ${esc(b.ban_reason)}` : ''}</small></span><form method="post" action="/admin/unban">${csrf}<input type="hidden" name="owner_id" value="${esc(b.id)}"><button class="btn btn-outline" type="submit">解封</button></form></div>`).join('') : '<div class="empty"><b>没有被封禁的账号</b></div>';
@@ -1546,6 +1588,31 @@ export function renderAdmin({ me, tab, queue, banned, appeals = [], appealsStatu
   } else if (tab === 'risk') {
     const sub = `<nav class="seg" aria-label="注册风控"><a class="${riskStatus === 'review' ? 'on' : ''}" href="/admin?tab=risk">待复核${riskCounts.review ? ` ${riskCounts.review}` : ''}</a><a class="${riskStatus === 'recent' ? 'on' : ''}" href="/admin?tab=risk&amp;status=recent">最近注册</a><a class="${riskStatus === 'limited' ? 'on' : ''}" href="/admin?tab=risk&amp;status=limited">已限制${riskCounts.limited ? ` ${riskCounts.limited}` : ''}</a><a class="${riskStatus === 'cleared' ? 'on' : ''}" href="/admin?tab=risk&amp;status=cleared">已放行</a></nav>`;
     list = `${sub}${risk.length ? risk.map(riskItem).join('') : `<div class="empty"><b>${riskStatus === 'review' ? '没有待复核的账号' : riskStatus === 'recent' ? '还没有手机号注册' : '这一栏还是空的'}</b></div>`}`;
+  } else if (tab === 'topics') {
+    const ed = topicEdit;
+    const form = `<form method="post" action="/admin/topics" class="mod-act editor-block">
+  ${csrf}
+  ${ed ? `<input type="hidden" name="id" value="${esc(ed.id)}">` : ''}
+  <label>短名（URL）<input name="slug" required maxlength="64" pattern="[a-z0-9][a-z0-9-]{1,62}" value="${esc(ed?.slug ?? '')}" placeholder="cloud-free-tier"></label>
+  <label>标题<input name="title" required maxlength="80" value="${esc(ed?.title ?? '')}" placeholder="免费云主机上手（按话题整理）"></label>
+  <label>简介<textarea name="summary" maxlength="500" rows="3" placeholder="只写话题范围，不要写「推荐」「最好」">${esc(ed?.summary ?? '')}</textarea></label>
+  <label>话题标签（空格或逗号分隔）<input name="tags" maxlength="200" value="${esc((ed?.tags ?? []).join(' '))}" placeholder="云主机 Cloudflare"></label>
+  <label>笔记编号（按展示顺序，空格或逗号分隔）<textarea name="guide_ids" rows="3" placeholder="g_xxxx g_yyyy">${esc((ed?.guide_ids ?? []).join(' '))}</textarea></label>
+  <label>状态<select name="status"><option value="draft"${ed?.status === 'draft' ? ' selected' : ''}>草稿</option><option value="published"${!ed || ed?.status === 'published' ? ' selected' : ''}>已公开</option></select></label>
+  <button class="btn btn-ink" type="submit">${ed ? '保存专题' : '新建专题'}</button>
+  ${ed ? '<a class="btn btn-text" href="/admin?tab=topics">取消编辑</a>' : ''}
+</form>
+<p class="muted">专题按话题组织公开笔记，保留你填的顺序。标题和简介不要写「推荐」「最好」等结论词（D7）。</p>`;
+    const rowsSafe = topics.length ? topics.map((t) => `<div class="agent-row">
+  <span class="dot ${t.status === 'published' ? 'dot-ok' : 'dot-bad'}"></span>
+  <span><b><a href="/topics/${esc(t.slug)}">${esc(t.title)}</a></b>
+  <small>${t.status === 'published' ? '已公开' : '草稿'} · ${t.guides_count} 篇 · /topics/${esc(t.slug)}</small></span>
+  <span class="row-acts">
+    <a class="btn btn-outline" href="/admin?tab=topics&amp;edit=${esc(t.id)}">编辑</a>
+    <form method="post" action="/admin/topics/delete">${csrf}<input type="hidden" name="id" value="${esc(t.id)}"><button class="btn btn-text" type="submit">删除</button></form>
+  </span>
+</div>`).join('') : '<div class="empty"><b>还没有专题</b></div>';
+    list = `${form}<div class="mod-list" style="margin-top:1.5rem">${rowsSafe}</div>`;
   } else {
     list = queue.length ? queue.map(item).join('') : `<div class="empty"><b>${tab === 'open' ? '没有待处理的举报' : '还没有处理过的举报'}</b></div>`;
   }

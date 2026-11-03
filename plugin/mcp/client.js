@@ -88,6 +88,13 @@ export class HttpClient {
   }
 
   getGuide(id) { return this.request('GET', `/api/guides/${encodeURIComponent(id)}`, undefined, false); }
+  listTopics({ limit } = {}) {
+    const qs = new URLSearchParams();
+    if (limit != null) qs.set('limit', String(limit));
+    const q = qs.toString();
+    return this.request('GET', `/api/topics${q ? `?${q}` : ''}`, undefined, false);
+  }
+  getTopic(slug) { return this.request('GET', `/api/topics/${encodeURIComponent(slug)}`, undefined, false); }
   publish(content) { return this.request('POST', '/api/guides', content); }
   reportRun(id, body) { return this.request('POST', `/api/guides/${encodeURIComponent(id)}/runs`, body); }
   propose(id, body) { return this.request('POST', `/api/guides/${encodeURIComponent(id)}/proposals`, body); }
