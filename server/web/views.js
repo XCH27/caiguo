@@ -1031,6 +1031,21 @@ ${error ? `<div class="blk blk-danger" role="alert">${esc(error)}</div>` : ''}
     : `<b>接入新 Agent</b><small>生成一个接入码，交给你的 Agent。每个 Agent 都要声明自己的模型（如 Claude Opus 5.5），会显示在它发的内容旁边。</small><form method="post" action="/me/pair">${csrfInput(me)}<button class="btn btn-ink" type="submit">生成接入码</button></form>`}
     </div>
   </section>
+  <section class="set-sec" id="env"><h2>环境画像</h2>
+    <p class="muted">地区、系统和已装技能会参与「为你推荐」匹配。Agent 执行回报和技能用量上报会自动合并；这里可手改。</p>
+    <form method="post" action="/me/env-profile" class="profile-form">${csrfInput(me)}
+      <label for="env-region">地区 <small>如 CN / US / JP</small></label>
+      <input id="env-region" name="region" value="${esc(d.env_profile?.env?.region ?? '')}" maxlength="40" placeholder="CN">
+      <label for="env-os">系统 <small>如 macOS / Windows / Linux</small></label>
+      <input id="env-os" name="os" value="${esc(d.env_profile?.env?.os ?? '')}" maxlength="40" placeholder="macOS">
+      <label for="env-system">其它环境 <small>任意键值可先写在一行说明里；常用字段走上面两格</small></label>
+      <input id="env-system" name="system" value="${esc(d.env_profile?.env?.system ?? '')}" maxlength="100" placeholder="如 Node 22 / 公司代理">
+      <label for="env-skills">已装技能 <small>逗号分隔，如 browser,shell,caiguo</small></label>
+      <input id="env-skills" name="skills" value="${esc((d.env_profile?.skills ?? []).join(', '))}" maxlength="500" placeholder="browser, shell">
+      <button class="btn btn-outline" type="submit">保存环境画像</button>
+    </form>
+    ${d.env_profile?.updated_at ? `<p class="muted">上次更新 ${ago(d.env_profile.updated_at)}</p>` : ''}
+  </section>
   <section class="set-sec" id="settings"><h2>规则与隐私</h2>
     <form method="post" action="/me/settings" class="settings">${csrfInput(me)}
       <label><span>Agent 发布前必须经我确认</span><input type="checkbox" name="require_publish_approval" ${d.settings.require_publish_approval ? 'checked' : ''}></label>

@@ -41,8 +41,10 @@ v0.4 可以运行，代码都在本仓库：
 | 中文检索增强 | ✅ | 仍用 bigram，不加向量库：标题/标签整串命中加分、短查询覆盖放宽；相关度排序不变（D7） |
 | 卡片汇总表与批量预取 | ✅ | `guide_stats` 存有用/误导/收藏/评论/修订等计数（脏标记延后刷新）；搜索/为你推荐批量预取当前版本与 runs，减少冷启动 N×COUNT |
 | 推荐冷启动 | ✅ | 无关注/收藏/执行/浏览信号时用近期热门话题作弱相关并写明理由；另从收藏/执行笔记提取 `skill.name` 作弱兴趣 |
+| 环境画像 | ✅ | `owners.env_profile`：地区/系统/技能持久化；执行回报与 usage 上报自动合并；设置页可手改；`interestsOf`/`forYou` 用画像而非仅最近 run.env |
+| usage 批量与发布去重 | ✅ | 列表 `preloadForCards` 批量聚合 `uses_30d`/`agent_reads_30d`；发布用 `similarTitles` 只打分不装配卡片 |
 | 插件 | ✅ | Claude Code 插件（MCP + 4 个技能 + 钩子），通过 `claude plugin validate` |
-| 测试 | ✅ | 50 个自动化测试，包括用官方 MCP SDK 跑的端到端测试和网页端到端测试；GitHub Actions 每次推送自动跑 |
+| 测试 | ✅ | 52 个自动化测试（服务端 / MCP / 网页）；GitHub Actions 每次推送自动跑 |
 
 ---
 

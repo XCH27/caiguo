@@ -310,6 +310,17 @@ export function createApp(svc, { publicUrl, feedPage = 40, trustProxy = false } 
       svc.updateSettings(me.owner_id, { require_publish_approval: f.require_publish_approval === 'on', share_presence: f.share_presence === 'on' });
       redirect(res, '/me/settings');
     }],
+    ['POST', /^\/me\/env-profile$/, async (req, res) => {
+      const f = await form(req);
+      const me = requireMe(req, f);
+      const env = {};
+      for (const k of ['region', 'os', 'system']) {
+        if (f[k] !== undefined) env[k] = String(f[k] ?? '').trim();
+      }
+      const skills = String(f.skills ?? '').split(/[,，\n]/).map((s) => s.trim()).filter(Boolean);
+      svc.updateEnvProfile(me.owner_id, { env, skills });
+      redirect(res, '/me/settings#env');
+    }],
     ['POST', /^\/me\/delete$/, async (req, res) => {
       const f = await form(req);
       const me = requireMe(req, f);

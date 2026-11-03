@@ -1100,3 +1100,72 @@ test('为你推荐冷启动：无行为信号时用近期热门话题，并给�
   assert.ok(fy.some((g) => g.tags.includes('Cloudflare')));
   assert.ok(fy.some((g) => /热门话题/.test(g.reason)));
 });
+
+test('环境画像：执行回报持久化；推荐用画像而非仅最近 run.env', () => {
+  const { svc, mk } = setup();
+  const author = mk('画像作者');
+  const user = mk('画像用户');
+  const { guide_id } = svc.publishGuide(author, {
+    ...GUIDE,
+    title: '美国区 Cloudflare 隧道',
+    tags: ['Cloudflare', '网络'],
+    applies_to: { region: 'US', os: 'macOS' },
+  });
+  svc.publishGuide(author, { ...GUIDE, title: '国内生活帖', tags: ['生活'], applies_to: { region: 'CN' } });
+
+  // 无行为时冷启动；写入环境画像后应偏好 applies_to 匹配
+  svc.updateEnvProfile(user.owner_id, { env: { region: 'US', os: 'macOS' }, skills: ['tunnel-kit'] });
+  const profile = svc.envProfileOf(user.owner_id);
+  assert.equal(profile.env.region, 'US');
+  assert.deepEqual(profile.skills, ['tunnel-kit']);
+
+  const interests = svc.interestsOf(user.owner_id);
+  assert.equal(interests.env.region, 'US');
+  assert.ok(interests.weights['tunnel-kit'] >= 1.5);
+
+  // 清空 runs 也不丢画像：直接读 owners.env_profile
+  svc.db.prepare('DELETE FROM runs WHERE owner_id = ?').run(user.owner_id);
+  assert.equal(svc.envProfileOf(user.owner_id).env.os, 'macOS');
+
+  // reportRun 合并进画像
+  svc.reportRun(user, guide_id, {
+    outcome: 'success',
+    env: { region: 'US', os: 'Linux' },
+    step_results: [],
+  });
+  assert.equal(svc.envProfileOf(user.owner_id).env.os, 'Linux');
+
+  // reportUsage 未匹配笔记的技能名也进画像
+  svc.reportUsage(user, [{ skill_name: 'browser', count: 3 }]);
+  assert.ok(svc.envProfileOf(user.owner_id).skills.includes('browser'));
+
+  const fy = svc.forYou(user.owner_id, { limit: 10 });
+  assert.ok(fy.some((g) => g.id === guide_id));
+  assert.ok(fy.some((g) => /环境|技能|Cloudflare|热门/.test(g.reason) || g.tags.includes('Cloudflare')));
+});
+
+test('usage 批量预取与 similarTitles：列表不逐篇打 usageOf，发布不去装配卡片', () => {
+  const { svc, mk } = setup();
+  const a = mk('用量作者甲');
+  const b = mk('用量作者乙');
+  const c = mk('用量作者丙');
+  const u = mk('用量读者');
+  const { guide_id: g1 } = svc.publishGuide(a, { ...GUIDE, title: '银联卡注册海外云 A' });
+  const { guide_id: g2 } = svc.publishGuide(b, { ...GUIDE, title: '银联卡注册海外云 B' });
+  svc.recordUse(g1, u.owner_id, 'agent', { views: 1, uses: 4 });
+  svc.recordUse(g2, u.owner_id, 'agent', { views: 1, uses: 2 });
+
+  const preload = svc.preloadForCards([svc.guideRow(g1), svc.guideRow(g2)]);
+  assert.equal(preload.usage.get(g1).uses_30d, 4);
+  assert.equal(preload.usage.get(g2).uses_30d, 2);
+  assert.equal(preload.usage.get(g1).agent_reads_30d, 1);
+  assert.equal(svc.cardOf(svc.guideRow(g1), preload).uses_30d, 4);
+
+  const sim = svc.similarTitles('银联卡注册海外云', { limit: 3, minScore: 6 });
+  assert.ok(sim.length >= 1);
+  assert.ok(sim.every((x) => x.id && x.title && x.score >= 6));
+  // 再发一篇应带回 similar，且不依赖 search 卡片装配
+  const pub = svc.publishGuide(c, { ...GUIDE, title: '银联卡注册海外云 C' });
+  assert.ok(Array.isArray(pub.similar));
+  assert.ok(pub.similar.some((x) => /银联卡注册/.test(x.title)));
+});

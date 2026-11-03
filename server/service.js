@@ -375,6 +375,57 @@ export class Caiguo {
     return next;
   }
 
+  // 主人级环境画像（持久）：地区 / 系统 / 其它标量 + 已装技能名列表。
+  // 从执行回报、技能用量上报自动合并；设置页可手改。推荐用它，而不只靠最近一次 run.env。
+  normalizeEnvMap(env) {
+    const out = {};
+    for (const [k, v] of Object.entries(env ?? {})) {
+      if (k === 'skills' || k === 'updated_at') continue;
+      if (['string', 'number', 'boolean'].includes(typeof v)) out[String(k).slice(0, 40)] = String(v).slice(0, 100);
+    }
+    return out;
+  }
+
+  envProfileOf(ownerId) {
+    const raw = j(this.db.prepare('SELECT env_profile FROM owners WHERE id = ?').get(ownerId)?.env_profile) ?? {};
+    const skills = Array.isArray(raw.skills)
+      ? [...new Set(raw.skills.map((s) => String(s).slice(0, 64)).filter(Boolean))].slice(0, 40)
+      : [];
+    return { env: this.normalizeEnvMap(raw), skills, updated_at: raw.updated_at ?? null };
+  }
+
+  mergeEnvProfile(ownerId, env = {}, { skills = [] } = {}) {
+    if (!ownerId) return null;
+    const cur = j(this.db.prepare('SELECT env_profile FROM owners WHERE id = ?').get(ownerId)?.env_profile) ?? {};
+    const next = { ...cur, ...this.normalizeEnvMap(env) };
+    const set = new Set([
+      ...(Array.isArray(next.skills) ? next.skills : []),
+      ...skills,
+    ].map((s) => String(s).slice(0, 64)).filter(Boolean));
+    next.skills = [...set].slice(0, 40);
+    next.updated_at = this.iso();
+    this.db.prepare('UPDATE owners SET env_profile = ? WHERE id = ?').run(JSON.stringify(next), ownerId);
+    return this.envProfileOf(ownerId);
+  }
+
+  // 设置页手改：env 标量合并（空串清除该键）；skills 若传入数组则整体替换
+  updateEnvProfile(ownerId, { env, skills } = {}) {
+    const cur = j(this.db.prepare('SELECT env_profile FROM owners WHERE id = ?').get(ownerId)?.env_profile) ?? {};
+    const next = { ...cur };
+    if (env && typeof env === 'object') {
+      for (const [k, v] of Object.entries(this.normalizeEnvMap(env))) {
+        if (v === '') delete next[k];
+        else next[k] = v;
+      }
+    }
+    if (Array.isArray(skills)) {
+      next.skills = [...new Set(skills.map((s) => String(s).trim().slice(0, 64)).filter(Boolean))].slice(0, 40);
+    }
+    next.updated_at = this.iso();
+    this.db.prepare('UPDATE owners SET env_profile = ? WHERE id = ?').run(JSON.stringify(next), ownerId);
+    return this.envProfileOf(ownerId);
+  }
+
   // Agent 给主人生成一次性登录链接（15 分钟有效）。主人不需要密码。
   createLoginLink(agent) {
     const o = this.db.prepare('SELECT verified_at FROM owners WHERE id = ?').get(agent.owner_id);
@@ -492,7 +543,7 @@ export class Caiguo {
     const { value: redacted, findings } = redactDeep(input);
     const content = normalizeNewGuide(redacted);
     const flags = scanForRisks(content);
-    const similar = this.search(content.title, { limit: 3 }).filter((g) => g.score >= 6);
+    const similar = this.similarTitles(content.title, { limit: 3, minScore: 6 });
     const gid = id('g');
     const now = this.iso();
     const needApproval = !draft && !direct && this.settingsOf(agent.owner_id).require_publish_approval;
@@ -520,6 +571,20 @@ export class Caiguo {
       flags,
       similar: similar.map((g) => ({ id: g.id, title: g.title })),
     };
+  }
+
+  // 发布去重：只对标题/标签/search_text 打分，不走 cardOf 全量装配
+  similarTitles(title, { limit = 3, minScore = 6 } = {}) {
+    const q = String(title ?? '').trim();
+    if (!q) return [];
+    const rows = this.db.prepare("SELECT id, title, tags, search_text FROM guides WHERE status = 'published'").all();
+    const scored = [];
+    for (const r of rows) {
+      const s = score(q, { title: r.title, tags: j(r.tags) ?? [], search_text: r.search_text });
+      if (s >= minScore) scored.push({ id: r.id, title: r.title, score: s });
+    }
+    scored.sort((a, b) => b.score - a.score);
+    return scored.slice(0, limit);
   }
 
   // 正式发布：扣押金；亲自实操的攻略，发布本身计为作者的一次成功执行
@@ -674,7 +739,7 @@ export class Caiguo {
 
   preloadForCards(guides) {
     const ids = [...new Set(guides.map((g) => g.id).filter(Boolean))];
-    const empty = { versions: new Map(), runs: new Map(), stats: new Map() };
+    const empty = { versions: new Map(), runs: new Map(), stats: new Map(), usage: new Map() };
     if (!ids.length) return empty;
     for (const id of ids) {
       if (this.statsDirty.has(id) || !this.db.prepare('SELECT 1 FROM guide_stats WHERE guide_id = ?').get(id)) {
@@ -686,6 +751,7 @@ export class Caiguo {
     const versions = new Map();
     const runs = new Map();
     const stats = new Map();
+    const usage = this.usageLiteBatch(ids);
     for (let i = 0; i < ids.length; i += 400) {
       const chunk = ids.slice(i, i + 400);
       const ph = chunk.map(() => '?').join(',');
@@ -700,7 +766,7 @@ export class Caiguo {
         stats.set(s.guide_id, s);
       }
     }
-    return { versions, runs, stats };
+    return { versions, runs, stats, usage };
   }
 
   buildCard(g, preload) {
@@ -710,7 +776,7 @@ export class Caiguo {
     const health = computeHealth({ guide: g, content: version.content, version: g.current_version, runs, now: this.now() });
     const stats = preload?.stats?.get(g.id) ?? this.statsOf(g.id);
     const ratings = { helpful: stats.helpful, neutral: stats.neutral, misleading: stats.misleading };
-    const usage = this.usageOf(g.id);
+    const usage = preload?.usage?.get(g.id) ?? this.usageLiteOf(g.id);
     const c = version.content;
     return {
       id: g.id, kind: g.kind, status: g.status, title: g.title, summary: g.summary, tags: g.tags, source: g.source,
@@ -796,6 +862,34 @@ export class Caiguo {
     return { agent_reads_30d: row.agent_reads, human_views_30d: row.human_views, uses_30d: row.uses, users_30d: users, repeat_users: repeat };
   }
 
+  // 卡片只要 uses / agent_reads；详情页才走 usageOf 的 users/repeat
+  usageLiteOf(guideId) {
+    const since = this.iso(this.now() - 30 * 864e5).slice(0, 10);
+    const row = this.db.prepare(`SELECT
+        COALESCE(SUM(CASE WHEN source = 'agent' THEN views END), 0) AS agent_reads,
+        COALESCE(SUM(uses), 0) AS uses
+      FROM usage WHERE guide_id = ? AND day >= ?`).get(guideId, since);
+    return { uses_30d: row.uses, agent_reads_30d: row.agent_reads };
+  }
+
+  usageLiteBatch(ids) {
+    const since = this.iso(this.now() - 30 * 864e5).slice(0, 10);
+    const map = new Map();
+    for (const gid of ids) map.set(gid, { uses_30d: 0, agent_reads_30d: 0 });
+    if (!ids.length) return map;
+    for (let i = 0; i < ids.length; i += 400) {
+      const chunk = ids.slice(i, i + 400);
+      const ph = chunk.map(() => '?').join(',');
+      for (const row of this.db.prepare(`SELECT guide_id,
+          COALESCE(SUM(CASE WHEN source = 'agent' THEN views END), 0) AS agent_reads,
+          COALESCE(SUM(uses), 0) AS uses
+        FROM usage WHERE guide_id IN (${ph}) AND day >= ? GROUP BY guide_id`).all(...chunk, since)) {
+        map.set(row.guide_id, { uses_30d: row.uses, agent_reads_30d: row.agent_reads });
+      }
+    }
+    return map;
+  }
+
   ratingsOf(guideId) {
     const s = this.statsOf(guideId);
     return { helpful: s.helpful, neutral: s.neutral, misleading: s.misleading };
@@ -805,10 +899,12 @@ export class Caiguo {
   reportUsage(agent, items) {
     if (!Array.isArray(items) || items.length > 50) throw new ValidationError('items 必须是数组（最多 50 项）');
     const matched = {};
+    const skillNames = [];
     for (const it of items) {
       const name = String(it?.skill_name ?? '').slice(0, 64);
       const count = Math.max(0, Math.min(500, Math.floor(Number(it?.count) || 0)));
       if (!name || !count) continue;
+      skillNames.push(name);
       // 插件里的技能名形如 "plugin:skill"，两种写法都尝试匹配
       const find = (n) => this.db.prepare(`SELECT id FROM guides WHERE kind = 'skill' AND skill_name = ? ORDER BY created_at LIMIT 1`).get(n);
       const g = find(name) ?? (name.includes(':') ? find(name.split(':').pop()) : undefined);
@@ -816,6 +912,7 @@ export class Caiguo {
       this.recordUse(g.id, agent.owner_id, 'agent', { uses: count });
       matched[name] = g.id;
     }
+    if (skillNames.length) this.mergeEnvProfile(agent.owner_id, {}, { skills: skillNames });
     return { matched };
   }
 
@@ -934,9 +1031,11 @@ export class Caiguo {
 
   insertRun({ guide_id, version, proposal_id = null, agent, outcome, env, step_results, note, rating = null, created_at }) {
     const rid = id('r');
+    const cleanEnv = env ?? {};
     this.db.prepare(`INSERT INTO runs (id, guide_id, version, proposal_id, agent_id, owner_id, outcome, env, step_results, note, rating, created_at, model)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(rid, guide_id, version, proposal_id, agent.id, agent.owner_id, outcome,
-      JSON.stringify(env ?? {}), JSON.stringify(step_results ?? []), note ?? null, rating ?? null, created_at ?? this.iso(), this.modelOf(agent.id));
+      JSON.stringify(cleanEnv), JSON.stringify(step_results ?? []), note ?? null, rating ?? null, created_at ?? this.iso(), this.modelOf(agent.id));
+    if (Object.keys(cleanEnv).length) this.mergeEnvProfile(agent.owner_id, cleanEnv);
     return rid;
   }
 
@@ -956,10 +1055,7 @@ export class Caiguo {
         note: s.note ? String(s.note).slice(0, 500) : undefined,
       };
     });
-    const env = {};
-    for (const [k, v] of Object.entries(value.env ?? {})) {
-      if (['string', 'number', 'boolean'].includes(typeof v)) env[String(k).slice(0, 40)] = String(v).slice(0, 100);
-    }
+    const env = this.normalizeEnvMap(value.env);
     return { outcome: input.outcome, env, note: value.note ? String(value.note).slice(0, 1000) : null, step_results: steps };
   }
 
@@ -1302,6 +1398,7 @@ export class Caiguo {
     this.db.prepare(`INSERT INTO runs (id, guide_id, version, agent_id, owner_id, outcome, env, step_results, session_key, created_at, model)
       VALUES (?, ?, ?, ?, ?, 'in_progress', ?, '[]', ?, ?, ?)`).run(rid, guideId, g.current_version, agent.id, agent.owner_id, JSON.stringify(clean), key, this.iso(), this.modelOf(agent.id));
     this.recordUse(guideId, agent.owner_id, 'agent', { uses: 1 });
+    if (Object.keys(clean).length) this.mergeEnvProfile(agent.owner_id, clean);
     return { run_id: rid, guide_id: guideId, version: g.current_version, follow_path: `/f/${rid}?k=${key}`, ...this.runState(rid) };
   }
 
@@ -1486,7 +1583,7 @@ export class Caiguo {
     const remaining = {};
     for (const k of Object.keys(reputation.quota)) remaining[k] = Math.max(0, reputation.quota[k] - this.usedToday(k, ownerId));
     return {
-      handle: o.handle, bio: o.bio, phone_masked: o.phone_masked, verified: Boolean(o.verified_at), banned: Boolean(o.banned_at), ban_reason: o.ban_reason ?? null, banned_at: o.banned_at ?? null, risk_status: o.risk_status ?? null, risk_note: o.risk_note ?? null, settings: this.settingsOf(ownerId), reputation, remaining, history: this.rep.history(ownerId, 12),
+      handle: o.handle, bio: o.bio, phone_masked: o.phone_masked, verified: Boolean(o.verified_at), banned: Boolean(o.banned_at), ban_reason: o.ban_reason ?? null, banned_at: o.banned_at ?? null, risk_status: o.risk_status ?? null, risk_note: o.risk_note ?? null, settings: this.settingsOf(ownerId), env_profile: this.envProfileOf(ownerId), reputation, remaining, history: this.rep.history(ownerId, 12),
       pending, proposals, attention, agents, runs: this.activeRuns(ownerId), presence: this.presenceOf(ownerId),
       guides: this.search('', { limit: 100, includeFolded: true }).filter((x) => x.author.owner_id === ownerId),
       counts: this.libraryCounts(ownerId),
@@ -1858,6 +1955,7 @@ export class Caiguo {
         ON CONFLICT (guide_id, owner_id) DO UPDATE SET rating = excluded.rating, created_at = excluded.created_at, context = excluded.context, env = excluded.env, agent_id = excluded.agent_id`)
         .run(gid, agent.owner_id, rating, this.iso(), ctx, JSON.stringify(cleanEnv), agent.id);
       this.recordUse(gid, agent.owner_id, 'agent', { uses: 1 });
+      if (cleanEnv && Object.keys(cleanEnv).length) this.mergeEnvProfile(agent.owner_id, cleanEnv);
       if (prev?.rating !== rating) {
         const trust = trustOf(this.rep.points(agent.owner_id));
         // 不是攻略的笔记（测评、避坑、新鲜事…）没有“执行”，第一次被别人用过说有用时退押金
@@ -2127,7 +2225,7 @@ export class Caiguo {
     for (const t of tagsOf('SELECT g.tags FROM runs r JOIN guides g ON g.id = r.guide_id WHERE r.owner_id = ? AND r.proposal_id IS NULL')) add(t, 2, '你的 Agent 执行过同话题的攻略');
     for (const t of tagsOf('SELECT g.tags FROM history h JOIN guides g ON g.id = h.guide_id WHERE h.owner_id = ?')) add(t, 1, '你看过同话题的笔记');
     for (const t of tagsOf("SELECT g.tags FROM usage u JOIN guides g ON g.id = u.guide_id WHERE u.viewer = ? AND u.source = 'agent'")) add(t, 1, '你的 Agent 读过同话题的笔记');
-    const envRow = this.db.prepare("SELECT env FROM runs WHERE owner_id = ? AND env != '{}' ORDER BY created_at DESC LIMIT 1").get(ownerId);
+    const profile = this.envProfileOf(ownerId);
     const followUsers = new Set(this.db.prepare("SELECT target FROM follows WHERE owner_id = ? AND target_type = 'user'").all(ownerId).map((r) => r.target));
     // 从收藏/执行过的笔记里提取 skill.name，当作弱兴趣（与热门话题同一权重通道）
     for (const row of this.db.prepare(`SELECT gv.content FROM saves s JOIN guides g ON g.id = s.guide_id
@@ -2141,7 +2239,8 @@ export class Caiguo {
       const skill = j(row.content)?.skill?.name;
       if (skill) add([skill], 2, `你的 Agent 执行过相关技能「${skill}」`);
     }
-    return { weights: w, why, env: j(envRow?.env) ?? {}, followUsers };
+    for (const skill of profile.skills) add([skill], 1.5, `你的环境画像里有技能「${skill}」`);
+    return { weights: w, why, env: profile.env, skills: profile.skills, followUsers };
   }
 
   // 给 Agent 翻页用：返回这一页和总数（只按相关度排序，见 DECISIONS D7）

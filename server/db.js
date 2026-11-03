@@ -319,6 +319,7 @@ const COLUMNS = [
   ['owners', 'risk_reviewed_at', 'TEXT'],
   ['owners', 'risk_reviewed_by', 'TEXT'],
   ['owners', 'deleted_at', 'TEXT'],
+  ['owners', 'env_profile', "TEXT NOT NULL DEFAULT '{}'"],
 ];
 
 export function openDb(path = ':memory:') {
