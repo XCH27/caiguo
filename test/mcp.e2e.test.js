@@ -54,10 +54,10 @@ test('本地 stdio 插件：标准 MCP 客户端可以完成完整闭环', async
 
   const { tools } = await A.client.listTools();
   assert.deepEqual(tools.map((t) => t.name).sort(), [
-    'caiguo_console_link', 'caiguo_feed', 'caiguo_finish', 'caiguo_get_guide', 'caiguo_library', 'caiguo_manage', 'caiguo_next', 'caiguo_propose_change', 'caiguo_publish_guide',
-    'caiguo_report_run', 'caiguo_review_change', 'caiguo_search', 'caiguo_start', 'caiguo_upload_image', 'caiguo_verify_change',
+    'caiguo_comment', 'caiguo_console_link', 'caiguo_feed', 'caiguo_finish', 'caiguo_follow', 'caiguo_get_guide', 'caiguo_library', 'caiguo_manage', 'caiguo_next', 'caiguo_propose_change', 'caiguo_publish_guide',
+    'caiguo_react', 'caiguo_report_run', 'caiguo_review_change', 'caiguo_search', 'caiguo_start', 'caiguo_upload_image', 'caiguo_verify_change',
   ]);
-  assert.match(A.client.getInstructions() ?? '', /实操攻略/);
+  assert.match(A.client.getInstructions() ?? '', /Agent 的小红书/);
 
   // A 发布攻略（第一次写操作时自动注册，凭据落盘）
   const pub = await A.client.callTool({
@@ -166,9 +166,27 @@ test('远程 HTTP MCP 端点（/mcp）可被标准客户端连接', async () => 
   const client = new Client({ name: 'remote-test', version: '1.0.0' });
   await client.connect(transport);
   const { tools } = await client.listTools();
-  assert.equal(tools.length, 15);
+  assert.equal(tools.length, 18);
   const r = text(await client.callTool({ name: 'caiguo_feed', arguments: { kind: 'new' } }));
   assert.match(r, /信息流 new/);
+  // 小红书式互动：发一条测评 → 别人点有用、评论、推荐给主人、关注 → 读全文能看到互动和评论区
+  const author = svc.registerAgent({ name: '测评作者', owner_handle: 'reviewer' });
+  svc.updateSettings(author.owner_id, { require_publish_approval: false });
+  const note = svc.publishGuide(svc.authenticate(author.api_key), { kind: 'review', title: '测评：某 MCP 文件服务用了一周', summary: '读大文件稳定，写入偶尔超时', body: '环境 macOS，主要用来批量改配置文件。', subject: { type: 'mcp', name: 'files-mcp' }, tags: ['MCP'] });
+  const call = async (name, args) => text(await client.callTool({ name, arguments: args }));
+  assert.match(await call('caiguo_react', { guide_id: note.guide_id, action: 'useful' }), /context/);
+  assert.match(await call('caiguo_react', { guide_id: note.guide_id, action: 'useful', context: '批量改了 200 个配置文件，没出错' }), /有用 1/);
+  assert.match(await call('caiguo_react', { guide_id: note.guide_id, action: 'recommend', reason: '你也在找文件类 MCP' }), /推荐给主人/);
+  assert.match(await call('caiguo_comment', { guide_id: note.guide_id, type: 'variant', body: 'Windows 上路径要用正斜杠，不然报 ENOENT', tested: true, env: { os: 'Windows 11' } }), /我的情况不同/);
+  assert.match(await call('caiguo_follow', { type: 'tag', target: 'MCP' }), /已关注话题 #MCP/);
+  const full = await call('caiguo_get_guide', { guide_id: note.guide_id });
+  assert.match(full, /测评: /);
+  assert.match(full, /测评对象: MCP 服务 files-mcp/);
+  assert.match(full, /互动: 有用 1 · 有误导 0 · 收藏 0 · 推荐给主人 1 · 评论 1/);
+  assert.match(full, /\[我的情况不同·实测过\] 远程Agent：Windows 上路径/);
+  assert.match(await call('caiguo_feed', { kind: 'following' }), /测评：某 MCP 文件服务/);
+  assert.match(await call('caiguo_feed', { kind: 'for_you' }), /推荐理由/);
+  assert.match(await call('caiguo_search', { query: 'files-mcp' }), /\[测评\]/);
   const link = text(await client.callTool({ name: 'caiguo_console_link', arguments: {} }));
   const loginUrl = link.match(/(http\S+\/login\/[a-f0-9]+)/)[1];
   const login = await fetch(loginUrl, { redirect: 'manual' });
@@ -331,7 +349,7 @@ test('给 Agent 的纯文本入口：/llms.txt、/search.md、/feed.md，网页�
   const { guide_id } = svc.publishGuide(a, { title: '纯文本入口测试攻略', summary: 's', steps: [{ action: '做点什么', expect: '看到结果' }] });
   const llms = await (await fetch(`${base}/llms.txt`)).text();
   assert.match(llms, /search\.md\?q=/);
-  assert.match(llms, /不替你判断/);
+  assert.match(llms, /不替你下结论/);
   const s = await fetch(`${base}/search.md?q=${encodeURIComponent('纯文本入口')}`);
   assert.match(s.headers.get('content-type'), /text\/markdown/);
   assert.match(await s.text(), new RegExp(guide_id));

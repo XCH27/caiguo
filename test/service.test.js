@@ -485,3 +485,75 @@ test('我的：执行记录、消息未读数、待处理数', () => {
   assert.equal(svc.todoCount(a.owner_id), 1);
   assert.equal(svc.library(a, { view: 'mine' }).items.length, 2);
 });
+
+test('笔记类型：避坑、测评、合集、新鲜事、求助各有必填项，都能被搜到', () => {
+  const { svc, mk } = setup();
+  const a = mk('博主');
+  svc.rep.add(a.owner_id, 200, '测试用：资深额度');
+  const g = svc.publishGuide(a, GUIDE);
+  assert.throws(() => svc.publishGuide(a, { kind: 'review', title: 't', summary: 's', body: 'b' }), /subject/);
+  assert.throws(() => svc.publishGuide(a, { kind: 'pitfall', title: 't', summary: 's' }), /至少写一个坑/);
+  assert.throws(() => svc.publishGuide(a, { kind: 'news', title: 't', summary: 's', body: '某服务涨价了' }), /出处/);
+  assert.throws(() => svc.publishGuide(a, { kind: 'list', title: 't', summary: 's', items: [{ guide_id: g.guide_id }] }), /至少要有 2 条/);
+  const r = svc.publishGuide(a, { kind: 'review', title: '用了一周 sheet-helper 技能', summary: '表格处理很稳，大文件会慢', body: '在 macOS 上处理 3 万行 CSV，第一次要 40 秒。', subject: { type: 'skill', name: 'sheet-helper' }, tags: ['技能'] });
+  svc.publishGuide(a, { kind: 'pitfall', title: 'npm 装包报 EACCES', summary: '权限问题', pitfalls: [{ symptom: 'EACCES: permission denied', fix: '改用 nvm 安装 Node' }] });
+  svc.publishGuide(a, { kind: 'ask', title: '有没有人成功用 +86 手机号注册过 X？', summary: '一直收不到验证码', body: '试了三次都收不到短信。' });
+  svc.publishGuide(a, { kind: 'list', title: '出海开发者开户合集', summary: '按顺序做', items: [{ guide_id: g.guide_id, note: '先办这个' }, { url: 'https://example.com/a', title: '外部教程' }] });
+  assert.equal(svc.search('sheet-helper')[0].id, r.guide_id, '测评对象名能搜到');
+  assert.equal(svc.search('EACCES')[0].kind, 'pitfall');
+  assert.equal(svc.search('', { kind: 'ask' })[0].solved, false);
+  const list = svc.getGuide(svc.search('', { kind: 'list' })[0].id);
+  assert.equal(list.items[0].title, GUIDE.title);
+});
+
+test('互动：有用必须写用它做了什么；推荐给主人进消息；分类型评论、有帮助、采纳；关注和为你推荐', () => {
+  const { svc, mk } = setup();
+  const a = mk('博主');
+  const u = mk('读者');
+  const v = mk('路人');
+  const { guide_id } = svc.publishGuide(a, { ...GUIDE, tags: ['云服务', 'Oracle'] });
+  const ask = svc.publishGuide(a, { kind: 'ask', title: '求助：收不到验证码', summary: 's', body: '一直收不到', tags: ['云服务'] });
+  assert.throws(() => svc.react(u, guide_id, { action: 'useful' }), /context/);
+  assert.throws(() => svc.react(a, guide_id, { action: 'useful', context: '自己点自己' }), /自己/);
+  const before = svc.rep.summary(a.owner_id).points;
+  const r = svc.react(u, guide_id, { action: 'useful', context: '按它注册成功了', env: { region: '中国大陆' } });
+  assert.equal(r.useful, 1);
+  assert.ok(svc.rep.summary(a.owner_id).points > before, '有用会退押金并奖励作者');
+  svc.react(u, guide_id, { action: 'useful', context: '再点一次' });
+  assert.equal(svc.interactionsOf(guide_id).useful, 1, '同一个人只算一次');
+  assert.equal(svc.getGuide(guide_id).voices[0].context, '再点一次');
+  // 推荐给主人
+  assert.throws(() => svc.react(u, guide_id, { action: 'recommend' }), /理由/);
+  svc.react(u, guide_id, { action: 'recommend', reason: '你下周要开海外云服务器' });
+  assert.equal(svc.messages(u.owner_id)[0].kind, 'agent_recommend');
+  assert.equal(svc.cardOf(svc.guideRow(guide_id)).recommends, 1);
+  // 评论
+  assert.throws(() => svc.comment(u, guide_id, { type: 'chat', body: '哈哈哈哈' }), /type/);
+  assert.throws(() => svc.comment(u, guide_id, { type: 'add', body: '赞' }), /太短/);
+  const c1 = svc.comment(u, guide_id, { type: 'fix', body: '第 2 步按钮现在叫“发送验证码”', step: 2, tested: true, env: { region: '中国大陆' } });
+  svc.comment(v, guide_id, { type: 'add', body: '用 Gmail 收验证邮件更快' });
+  svc.comment(a, guide_id, { type: 'add', body: '谢谢，我去确认一下', reply_to: c1.comment_id });
+  svc.voteComment(v.owner_id, c1.comment_id);
+  const cs = svc.commentsOf(guide_id);
+  assert.equal(cs[0].id, c1.comment_id, '有帮助多的排前面');
+  assert.equal(cs[0].step, '第 2 步');
+  assert.equal(cs[0].replies.length, 1);
+  assert.equal(svc.messages(a.owner_id).filter((m) => m.kind === 'comment_new').length, 2);
+  const ans = svc.comment(v, ask.guide_id, { type: 'answer', body: '换成 Google Voice 号码就能收到', tested: true });
+  assert.throws(() => svc.acceptComment(u.owner_id, ans.comment_id), /作者/);
+  svc.acceptComment(a.owner_id, ans.comment_id);
+  assert.equal(svc.search('', { kind: 'ask' })[0].solved, true);
+  // 关注
+  svc.follow(v.owner_id, { type: 'user', target: '博主' });
+  assert.equal(svc.creatorStats(a.owner_id).followers, 1);
+  assert.equal(svc.messages(a.owner_id)[0].kind, 'new_follower');
+  svc.follow(u.owner_id, { type: 'tag', target: '#Oracle' });
+  assert.equal(svc.followingFeed(u.owner_id)[0].id, guide_id);
+  assert.equal(svc.followingFeed(v.owner_id).length, 2, '关注了博主就能看到他的所有笔记');
+  const fy = svc.forYou(u.owner_id);
+  assert.equal(fy[0].id, guide_id);
+  assert.match(fy[0].reason, /Oracle|收藏|执行|看过/);
+  assert.equal(svc.feed(u, { kind: 'for_you' }).items[0].guide_id, guide_id);
+  svc.follow(u.owner_id, { type: 'tag', target: 'Oracle', unfollow: true });
+  assert.equal(svc.followingOf(u.owner_id).tags.length, 0);
+});

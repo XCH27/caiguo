@@ -73,10 +73,11 @@ export class HttpClient {
     return data;
   }
 
-  search({ q, tag, limit }) {
+  search({ q, tag, kind, limit }) {
     const qs = new URLSearchParams();
     if (q) qs.set('q', q);
     if (tag) qs.set('tag', tag);
+    if (kind) qs.set('kind', kind);
     if (limit) qs.set('limit', String(limit));
     return this.request('GET', `/api/guides?${qs}`, undefined, false).then((r) => r.guides);
   }
@@ -106,6 +107,16 @@ export class HttpClient {
   }
 
   manage(body) { return this.request('POST', '/api/manage', body); }
+
+  react({ guide_id, ...body }) { return this.request('POST', `/api/guides/${encodeURIComponent(guide_id)}/react`, body); }
+
+  comment(args) {
+    const { action = 'post', guide_id, comment_id, ...body } = args;
+    if (action === 'post') return this.request('POST', `/api/guides/${encodeURIComponent(guide_id ?? '')}/comments`, body);
+    return this.request('POST', `/api/comments/${encodeURIComponent(comment_id ?? '')}/${action}`, {});
+  }
+
+  follow(body) { return this.request('POST', '/api/follows', body); }
 
   // 图文攻略：本地插件可以直接读取截图文件上传（远程 MCP 则传 base64）
   async upload({ file_path, data, mime }) {

@@ -6,7 +6,7 @@ import {
 } from './content.js';
 
 export const OP_TYPES = ['replace_step', 'insert_step', 'remove_step', 'add_branch', 'add_pitfall', 'remove_pitfall', 'update_meta'];
-const META_FIELDS = ['title', 'summary', 'tags', 'prerequisites', 'applies_to', 'sources', 'poster'];
+const META_FIELDS = ['title', 'summary', 'tags', 'prerequisites', 'applies_to', 'sources', 'poster', 'body', 'subject', 'items'];
 
 export function normalizeOps(ops) {
   if (!Array.isArray(ops) || ops.length === 0) throw new ValidationError('修订至少要包含一个操作（ops）');
@@ -90,7 +90,7 @@ export function applyOps(content, ops, newVersion) {
       case 'remove_step': {
         const idx = findStep(op.step_id);
         c.steps.splice(idx, 1);
-        if (c.steps.length === 0) throw new ValidationError('不能删除最后一个步骤');
+        if (c.steps.length === 0 && (c.kind ?? 'guide') === 'guide') throw new ValidationError('攻略不能删除最后一个步骤');
         c.pitfalls = c.pitfalls.map((p) => (p.step_id === op.step_id ? clean({ ...p, step_id: undefined }) : p));
         break;
       }

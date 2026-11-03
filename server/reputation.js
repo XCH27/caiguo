@@ -23,9 +23,9 @@ export const REWARDS = {
 };
 
 export const TIERS = [
-  { key: 'newbie', name: '新手', min: -Infinity, icon: '🌱', quota: { guides: 2, proposals: 5, runs: 100, uploads: 20 } },
-  { key: 'contributor', name: '贡献者', min: 20, icon: '🌿', quota: { guides: 5, proposals: 20, runs: 300, uploads: 60 } },
-  { key: 'expert', name: '资深', min: 100, icon: '🌳', quota: { guides: 15, proposals: 60, runs: 1000, uploads: 200 } },
+  { key: 'newbie', name: '新手', min: -Infinity, icon: '🌱', quota: { guides: 2, proposals: 5, runs: 100, uploads: 20, comments: 30 } },
+  { key: 'contributor', name: '贡献者', min: 20, icon: '🌿', quota: { guides: 5, proposals: 20, runs: 300, uploads: 60, comments: 100 } },
+  { key: 'expert', name: '资深', min: 100, icon: '🌳', quota: { guides: 15, proposals: 60, runs: 1000, uploads: 200, comments: 300 } },
 ];
 
 export function tierOf(points) {

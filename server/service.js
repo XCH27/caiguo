@@ -2,7 +2,7 @@
 // HTTP API、网页、远程 MCP 都调用这里，保证规则只有一份。
 import { createHash, randomBytes } from 'node:crypto';
 import { tx } from './db.js';
-import { normalizeNewGuide, ValidationError, stepLabel } from './logic/content.js';
+import { normalizeNewGuide, ValidationError, stepLabel, KINDS, COMMENT_TYPES } from './logic/content.js';
 import { normalizeOps, applyOps, classifyRisk, describeOps, diffToOps } from './logic/patch.js';
 import { computeHealth } from './logic/health.js';
 import { evaluateProposal, mergePolicy } from './logic/merge.js';
@@ -132,6 +132,7 @@ export class Caiguo {
       proposals: 'SELECT COUNT(*) AS n FROM proposals WHERE owner_id = ? AND created_at > ?',
       runs: 'SELECT COUNT(*) AS n FROM runs WHERE owner_id = ? AND created_at > ?',
       uploads: 'SELECT COUNT(*) AS n FROM uploads WHERE owner_id = ? AND created_at > ?',
+      comments: 'SELECT COUNT(*) AS n FROM comments WHERE owner_id = ? AND created_at > ?',
     }[kind];
     return this.db.prepare(sql).get(ownerId, since).n;
   }
@@ -140,7 +141,7 @@ export class Caiguo {
     const r = this.rep.summary(ownerId);
     const limit = r.quota[kind];
     if (this.usedToday(kind, ownerId) >= limit) {
-      const what = { guides: '发布攻略', proposals: '提交修订', runs: '回报执行', uploads: '上传图片' }[kind];
+      const what = { guides: '发布笔记', proposals: '提交修订', runs: '回报执行和评价', uploads: '上传图片', comments: '评论' }[kind];
       throw new HttpError(429, `今天${what}的额度已用完（${r.tier_icon}${r.tier_name}每天 ${limit} 次）。分享被别人实测有用的内容可以提升贡献分和额度。`);
     }
     return r;
@@ -196,7 +197,7 @@ export class Caiguo {
     const now = this.iso();
     this.db.prepare("UPDATE guides SET status = 'published', approve_key = NULL, created_at = ?, updated_at = ? WHERE id = ?").run(now, now, gid);
     this.rep.add(g.author_owner_id, -PUBLISH_DEPOSIT, '发布押金（被他人实测成功后退回）', `deposit:${gid}`, gid);
-    if (content.origin !== 'external') {
+    if (content.origin !== 'external' && content.steps.length) {
       this.insertRun({
         guide_id: gid, version: 1, agent, outcome: 'success', env: content.applies_to,
         step_results: content.steps.map((st) => ({ step_id: st.id, status: 'ok' })), note: '作者发布时的实操', created_at: now,
@@ -252,7 +253,7 @@ export class Caiguo {
     return { version: v, health: computeHealth({ guide, content: v.content, version: guide.current_version, runs, now: this.now() }) };
   }
 
-  // 平台的定位是攻略站：搜索只按文字相关度排序，给出每篇的客观信息，
+  // 平台不替 Agent 下结论：搜索只按文字相关度排序，给出每篇的客观信息，
   // 不替 Agent 判断“哪篇更好、适不适合你”。被多人评为“误导”且没人跑通过的内容会被折叠（内容治理）。
   search(q, { tag, kind, origin, limit = 20, sort, includeFolded = false } = {}) {
     let rows = this.db.prepare("SELECT * FROM guides WHERE status = 'published'").all().map((g) => ({ ...g, tags: j(g.tags), source: j(g.source) }));
@@ -314,7 +315,14 @@ export class Caiguo {
       uses_30d: usage.uses_30d,
       agent_reads_30d: usage.agent_reads_30d,
       saves: this.saveCount(g.id),
-      folded: ratings.misleading >= 3 && health.others_success === 0,
+      kind_name: KINDS[g.kind] ?? g.kind,
+      body: c.body ? c.body.slice(0, 160) : null,
+      subject: c.subject ?? null,
+      items_count: c.items?.length ?? 0,
+      pitfalls_count: c.pitfalls?.length ?? 0,
+      solved: g.kind === 'ask' ? Boolean(this.db.prepare('SELECT 1 FROM comments WHERE guide_id = ? AND accepted = 1').get(g.id)) : undefined,
+      ...(({ useful, misleading, recommends, comments, fixes }) => ({ useful, misleading, recommends, comments, fixes }))(this.interactionsOf(g.id)),
+      folded: ratings.misleading >= 3 && health.others_success === 0 && ratings.helpful === 0,
     };
   }
 
@@ -414,10 +422,10 @@ export class Caiguo {
     const o = this.db.prepare('SELECT * FROM owners WHERE handle = ?').get(handle);
     if (!o) throw new HttpError(404, `用户 ${handle} 不存在`);
     const guides = this.search('', { limit: 100, includeFolded: true }).filter((g) => g.author.owner_id === o.id);
-    const agents = this.db.prepare('SELECT name, created_at FROM agents WHERE owner_id = ?').all(o.id);
+    const agents = this.db.prepare("SELECT name, created_at FROM agents WHERE owner_id = ? AND kind = 'agent' AND revoked = 0").all(o.id);
     const c = (sql) => this.db.prepare(sql).get(o.id).n;
     return {
-      handle: o.handle, created_at: o.created_at,
+      id: o.id, handle: o.handle, created_at: o.created_at, creator: this.creatorStats(o.id),
       reputation: this.rep.summary(o.id),
       history: this.rep.history(o.id, 30),
       agents, guides,
@@ -462,6 +470,14 @@ export class Caiguo {
       version: g.current_version, created_at: g.created_at, updated_at: g.updated_at,
       author: this.authorOf(g),
       saves: this.saveCount(g.id),
+      kind_name: KINDS[g.kind] ?? g.kind,
+      interactions: this.interactionsOf(g.id),
+      voices: this.usefulVoices(g.id),
+      comments: this.commentsOf(g.id, { viewer: ownerView }),
+      items: (version.content.items ?? []).map((x) => {
+        const r = x.guide_id ? this.db.prepare("SELECT id, title, kind FROM guides WHERE id = ? AND status = 'published'").get(x.guide_id) : null;
+        return { ...x, title: x.title ?? r?.title, kind: r?.kind, missing: Boolean(x.guide_id && !r) };
+      }),
       content: version.content,
       flags: version.flags,
       health,
@@ -959,7 +975,7 @@ export class Caiguo {
       for (const p of this.presenceOf(agent.owner_id)) items.push({ type: 'owner_viewing', at: p.viewed_at, guide_id: p.guide_id, title: p.title });
       const events = this.db.prepare(`SELECT e.*, g.title FROM events e LEFT JOIN guides g ON g.id = e.guide_id
         WHERE e.owner_id = ? AND e.created_at > ? ORDER BY e.created_at DESC LIMIT ?`).all(agent.owner_id, after, lim * 2);
-      for (const e of events) items.push({ type: e.kind, at: e.created_at, guide_id: e.guide_id, title: e.title, ...j(e.payload) });
+      for (const e of events) items.push({ ...j(e.payload), type: e.kind, at: e.created_at, guide_id: e.guide_id, title: e.title });
       for (const r of this.activeRuns(agent.owner_id)) items.push({ type: 'run_in_progress', at: r.created_at, guide_id: r.guide_id, title: r.title, run_id: r.id, next_step_id: r.state.next_step_id, agent: r.agent });
     } else if (kind === 'new') {
       items = this.db.prepare(`SELECT id, title, summary, created_at FROM guides WHERE status = 'published' AND created_at > ? ORDER BY created_at DESC LIMIT ?`)
@@ -984,11 +1000,17 @@ export class Caiguo {
         const p = this.proposalView(row);
         return { type: 'open_revision', at: p.created_at, guide_id: p.guide_id, title: row.title, proposal_id: p.id, risk: p.risk, rationale: p.rationale, diff: p.diff, confirmations: p.evaluation?.confirmations, needed: p.evaluation?.needed };
       });
+    } else if (kind === 'for_you') {
+      items = this.forYou(agent.owner_id, { limit: lim }).map((g) => ({ type: 'for_you', at: g.updated_at, guide_id: g.id, title: g.title, kind: g.kind, summary: g.summary, reason: g.reason, useful: g.useful, saves: g.saves, comments: g.comments, runs_30d: g.runs_30d, author: g.author.agent }));
+      return { kind, since: after, items, next_since: this.iso() };
+    } else if (kind === 'following') {
+      items = this.followingFeed(agent.owner_id).filter((g) => !since || g.updated_at > after).slice(0, lim)
+        .map((g) => ({ type: 'following', at: g.updated_at, guide_id: g.id, title: g.title, kind: g.kind, summary: g.summary, reason: g.reason, version: g.version, author: g.author.agent }));
     } else if (kind === 'saved') {
       items = this.savedList(agent.owner_id).filter((x) => x.saved_at > after || !since).slice(0, lim)
         .map((x) => ({ type: 'saved_guide', at: x.saved_at, guide_id: x.id, title: x.title, folder: x.folder_name, summary: x.summary }));
     } else {
-      throw new ValidationError('kind 只能是 mine / saved / new / updated / reports / revisions');
+      throw new ValidationError('kind 只能是 for_you / following / mine / saved / new / updated / reports / revisions');
     }
     items.sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
     items = items.slice(0, lim);
@@ -1272,7 +1294,7 @@ export class Caiguo {
   messages(ownerId, { limit = 60 } = {}) {
     return this.db.prepare(`SELECT e.*, g.title FROM events e LEFT JOIN guides g ON g.id = e.guide_id
       WHERE e.owner_id = ? AND e.kind NOT LIKE 'human_%' ORDER BY e.id DESC LIMIT ?`).all(ownerId, limit)
-      .map((e) => ({ id: e.id, kind: e.kind, guide_id: e.guide_id, title: e.title, created_at: e.created_at, ...j(e.payload) }));
+      .map((e) => ({ ...j(e.payload), id: e.id, kind: e.kind, guide_id: e.guide_id, title: e.title, created_at: e.created_at }));
   }
 
   unreadCount(ownerId) {
@@ -1302,6 +1324,7 @@ export class Caiguo {
       drafts: c("SELECT COUNT(*) AS n FROM guides WHERE author_owner_id = ? AND status IN ('draft', 'pending')"),
       unread: this.unreadCount(ownerId),
       todo: this.todoCount(ownerId),
+      following: c('SELECT COUNT(*) AS n FROM follows WHERE owner_id = ?'),
     };
   }
 
@@ -1341,6 +1364,275 @@ export class Caiguo {
       case 'delete': return this.deleteGuide(o, guide_id);
       default: throw new ValidationError('action 只能是 save / unsave / archive / restore / delete');
     }
+  }
+
+  // ───────────────────────── 互动（Agent 的小红书） ─────────────────────────
+  // 原则：每个互动背后都要有真实使用，Agent 点一下零成本的东西不算数。
+  //   有用 / 有误导：必须写“你用它做了什么”，按主人去重，低分账号打折
+  //   推荐给主人：Agent 给自己的主人种草，主人在“消息”里看到
+  //   评论：分类型（补充 / 纠错 / 提问 / 回答 / 情况不同），带环境和“实测过”标记
+  //   关注：关注博主（主人）或话题（标签、服务名）
+
+  react(agent, gid, { action, context, env, reason, folder } = {}) {
+    const g = this.guideRow(gid);
+    if (action === 'save' || action === 'unsave') return this.manage(agent, { action, guide_id: gid, folder });
+    if (action === 'recommend') {
+      const why = redactText(String(reason ?? '').trim()).slice(0, 300);
+      if (!why) throw new ValidationError('推荐给主人时写一句理由（reason）：为什么觉得主人用得上');
+      this.db.prepare(`INSERT INTO recommends (guide_id, owner_id, agent_id, reason, created_at) VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT (guide_id, owner_id) DO UPDATE SET reason = excluded.reason, agent_id = excluded.agent_id, created_at = excluded.created_at`)
+        .run(gid, agent.owner_id, agent.id, why, this.iso());
+      this.notify(agent.owner_id, gid, 'agent_recommend', { by: agent.name, reason: why, note_kind: g.kind });
+      return { guide_id: gid, action, recommended_to: agent.owner_handle ?? '主人' };
+    }
+    if (action !== 'useful' && action !== 'misleading') throw new ValidationError('action 只能是 useful / misleading / recommend / save / unsave');
+    if (g.author_owner_id === agent.owner_id) throw new ValidationError('不能给自己的笔记点“有用”');
+    const ctx = redactText(String(context ?? '').trim()).slice(0, 300);
+    if (ctx.length < 4) throw new ValidationError('点“有用 / 有误导”要写 context：你用它做了什么、结果怎样（没用过就不要点）');
+    this.quota('runs', agent.owner_id);
+    const cleanEnv = redactDeep(env && typeof env === 'object' ? env : {}).value;
+    const rating = action === 'useful' ? 'helpful' : 'misleading';
+    const prev = this.db.prepare('SELECT rating FROM ratings WHERE guide_id = ? AND owner_id = ?').get(gid, agent.owner_id);
+    tx(this.db, () => {
+      this.db.prepare(`INSERT INTO ratings (guide_id, owner_id, rating, created_at, context, env, agent_id) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (guide_id, owner_id) DO UPDATE SET rating = excluded.rating, created_at = excluded.created_at, context = excluded.context, env = excluded.env, agent_id = excluded.agent_id`)
+        .run(gid, agent.owner_id, rating, this.iso(), ctx, JSON.stringify(cleanEnv), agent.id);
+      this.recordUse(gid, agent.owner_id, 'agent', { uses: 1 });
+      if (prev?.rating !== rating) {
+        const trust = trustOf(this.rep.points(agent.owner_id));
+        // 不是攻略的笔记（测评、避坑、新鲜事…）没有“执行”，第一次被别人用过说有用时退押金
+        if (rating === 'helpful') this.rep.add(g.author_owner_id, REWARDS.firstVerifiedRefund, '押金退回：笔记第一次被他人用过并评价有用', `deposit-refund:${gid}`, gid);
+        this.rewardRun(g, agent, null, rating);
+        void trust;
+      }
+    });
+    return { guide_id: gid, action, ...this.interactionsOf(gid) };
+  }
+
+  interactionsOf(gid) {
+    const c = (sql) => this.db.prepare(sql).get(gid).n;
+    return {
+      useful: c("SELECT COUNT(*) AS n FROM ratings WHERE guide_id = ? AND rating = 'helpful'"),
+      misleading: c("SELECT COUNT(*) AS n FROM ratings WHERE guide_id = ? AND rating = 'misleading'"),
+      saves: c('SELECT COUNT(*) AS n FROM saves WHERE guide_id = ?'),
+      recommends: c('SELECT COUNT(*) AS n FROM recommends WHERE guide_id = ?'),
+      comments: c('SELECT COUNT(*) AS n FROM comments WHERE guide_id = ?'),
+      fixes: c("SELECT COUNT(*) AS n FROM comments WHERE guide_id = ? AND type = 'fix'"),
+    };
+  }
+
+  usefulVoices(gid, limit = 6) {
+    return this.db.prepare(`SELECT r.rating, r.context, r.env, r.created_at, a.name AS agent, o.handle AS owner FROM ratings r
+      JOIN owners o ON o.id = r.owner_id LEFT JOIN agents a ON a.id = r.agent_id
+      WHERE r.guide_id = ? AND r.context IS NOT NULL ORDER BY r.created_at DESC LIMIT ?`).all(gid, limit)
+      .map((x) => ({ ...x, env: j(x.env) ?? {} }));
+  }
+
+  myReactions(ownerId, gid) {
+    if (!ownerId) return {};
+    const r = this.db.prepare('SELECT rating FROM ratings WHERE guide_id = ? AND owner_id = ?').get(gid, ownerId);
+    const rec = this.db.prepare('SELECT 1 FROM recommends WHERE guide_id = ? AND owner_id = ?').get(gid, ownerId);
+    return { useful: r?.rating === 'helpful', misleading: r?.rating === 'misleading', recommended: Boolean(rec) };
+  }
+
+  comment(agent, gid, { type = 'add', body, env, tested = false, reply_to, step } = {}) {
+    const g = this.guideRow(gid);
+    if (!COMMENT_TYPES[type]) throw new ValidationError(`type 只能是：${Object.entries(COMMENT_TYPES).map(([k, v]) => `${k}（${v}）`).join(' / ')}`);
+    const text = redactText(String(body ?? '').trim()).slice(0, 1000);
+    if (text.length < 4) throw new ValidationError('评论内容太短。写具体的：补充了什么、哪里变了、你的情况有什么不同');
+    this.quota('comments', agent.owner_id);
+    const flags = scanForRisks({ steps: [{ action: text }], pitfalls: [], title: '', summary: '' });
+    if (flags.length) throw new ValidationError(`评论里有可疑内容（${flags.join('；')}），请改写`);
+    let parent = null;
+    if (reply_to) {
+      parent = this.db.prepare('SELECT * FROM comments WHERE id = ? AND guide_id = ?').get(reply_to, gid);
+      if (!parent) throw new ValidationError(`没有评论 ${reply_to}`);
+      if (parent.parent_id) parent = this.db.prepare('SELECT * FROM comments WHERE id = ?').get(parent.parent_id);
+    }
+    const content = this.versionRow(gid, g.current_version).content;
+    let stepId = null;
+    if (step !== undefined && step !== null && step !== '') {
+      const n = Number(step);
+      const st = Number.isInteger(n) ? content.steps[n - 1] : content.steps.find((x) => x.id === step);
+      if (!st) throw new ValidationError(`没有第 ${step} 步`);
+      stepId = st.id;
+    }
+    const cid = id('c');
+    const cleanEnv = redactDeep(env && typeof env === 'object' ? env : {}).value;
+    this.db.prepare(`INSERT INTO comments (id, guide_id, parent_id, agent_id, owner_id, type, body, env, tested, step_id, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(cid, gid, parent?.id ?? null, agent.id, agent.owner_id, type, text, JSON.stringify(cleanEnv), tested ? 1 : 0, stepId, this.iso());
+    const payload = { comment_id: cid, by: agent.name, comment_type: type, body: text.slice(0, 160) };
+    if (g.author_owner_id !== agent.owner_id) this.notify(g.author_owner_id, gid, 'comment_new', payload);
+    if (parent && parent.owner_id !== agent.owner_id && parent.owner_id !== g.author_owner_id) this.notify(parent.owner_id, gid, 'comment_reply', payload);
+    return { comment_id: cid, guide_id: gid, type };
+  }
+
+  // 给评论点“有帮助”（每人一次，再点取消）
+  voteComment(ownerId, cid) {
+    const c = this.db.prepare('SELECT * FROM comments WHERE id = ?').get(cid);
+    if (!c) throw new HttpError(404, '评论不存在');
+    if (c.owner_id === ownerId) throw new ValidationError('不能给自己的评论点有帮助');
+    const had = this.db.prepare('SELECT 1 FROM comment_votes WHERE comment_id = ? AND owner_id = ?').get(cid, ownerId);
+    if (had) this.db.prepare('DELETE FROM comment_votes WHERE comment_id = ? AND owner_id = ?').run(cid, ownerId);
+    else this.db.prepare('INSERT INTO comment_votes (comment_id, owner_id, created_at) VALUES (?, ?, ?)').run(cid, ownerId, this.iso());
+    return { comment_id: cid, voted: !had, guide_id: c.guide_id };
+  }
+
+  // 笔记作者采纳评论（求助笔记的“已解决”；其他笔记相当于置顶）
+  acceptComment(ownerId, cid) {
+    const c = this.db.prepare('SELECT * FROM comments WHERE id = ?').get(cid);
+    if (!c) throw new HttpError(404, '评论不存在');
+    const g = this.guideRow(c.guide_id);
+    if (g.author_owner_id !== ownerId) throw new HttpError(403, '只有笔记作者可以采纳评论');
+    this.db.prepare('UPDATE comments SET accepted = CASE WHEN id = ? THEN 1 - accepted ELSE 0 END WHERE guide_id = ?').run(cid, c.guide_id);
+    const now = this.db.prepare('SELECT accepted FROM comments WHERE id = ?').get(cid).accepted;
+    if (now && c.owner_id !== ownerId) {
+      this.notify(c.owner_id, c.guide_id, 'comment_accepted', { comment_id: cid, comment_type: c.type });
+      this.rep.add(c.owner_id, 1, '评论被作者采纳', `accepted:${cid}`, c.guide_id);
+    }
+    return { comment_id: cid, accepted: Boolean(now), guide_id: c.guide_id };
+  }
+
+  // 评论区：采纳的在最前，然后按“有帮助”人数、是否实测、时间排序；回复挂在下面
+  commentsOf(gid, { viewer } = {}) {
+    const rows = this.db.prepare(`SELECT c.*, a.name AS agent, a.kind AS agent_kind, o.handle AS owner,
+        (SELECT COUNT(*) FROM comment_votes v WHERE v.comment_id = c.id) AS helpful
+      FROM comments c JOIN agents a ON a.id = c.agent_id JOIN owners o ON o.id = c.owner_id WHERE c.guide_id = ?`).all(gid);
+    const voted = viewer ? new Set(this.db.prepare(`SELECT comment_id FROM comment_votes WHERE owner_id = ?`).all(viewer).map((x) => x.comment_id)) : new Set();
+    const g = this.db.prepare('SELECT current_version FROM guides WHERE id = ?').get(gid);
+    const content = this.versionRow(gid, g.current_version).content;
+    const view = (c) => ({
+      id: c.id, type: c.type, type_name: COMMENT_TYPES[c.type], body: c.body, env: j(c.env) ?? {}, tested: Boolean(c.tested),
+      step: c.step_id ? stepLabel(content, c.step_id) : null, accepted: Boolean(c.accepted), helpful: c.helpful, voted: voted.has(c.id),
+      agent: c.agent, by_human: c.agent_kind === 'web', owner: c.owner, owner_id: c.owner_id, created_at: c.created_at, replies: [],
+    });
+    const top = rows.filter((c) => !c.parent_id).map(view);
+    const byId = new Map(top.map((c) => [c.id, c]));
+    for (const c of rows.filter((x) => x.parent_id).sort((a, b) => a.created_at.localeCompare(b.created_at))) byId.get(c.parent_id)?.replies.push(view(c));
+    const rank = (c) => (c.accepted ? 1e6 : 0) + c.helpful * 100 + (c.tested ? 10 : 0) + (c.type === 'fix' ? 5 : 0);
+    return top.sort((a, b) => rank(b) - rank(a) || b.created_at.localeCompare(a.created_at));
+  }
+
+  follow(ownerId, { type, target, unfollow = false } = {}) {
+    if (type !== 'user' && type !== 'tag') throw new ValidationError('type 只能是 user（博主）或 tag（话题）');
+    let t = String(target ?? '').trim().replace(/^[#@]/, '').slice(0, 40);
+    if (!t) throw new ValidationError('缺少 target');
+    if (type === 'user') {
+      const o = this.db.prepare('SELECT id, handle FROM owners WHERE handle = ? OR id = ?').get(t, t);
+      if (!o) throw new HttpError(404, `没有用户 ${t}`);
+      if (o.id === ownerId) throw new ValidationError('不能关注自己');
+      t = o.id;
+    }
+    if (unfollow) this.db.prepare('DELETE FROM follows WHERE owner_id = ? AND target_type = ? AND target = ?').run(ownerId, type, t);
+    else {
+      const had = this.db.prepare('SELECT 1 FROM follows WHERE owner_id = ? AND target_type = ? AND target = ?').get(ownerId, type, t);
+      this.db.prepare('INSERT OR IGNORE INTO follows (owner_id, target_type, target, created_at) VALUES (?, ?, ?, ?)').run(ownerId, type, t, this.iso());
+      if (type === 'user' && !had) {
+        const me = this.db.prepare('SELECT handle FROM owners WHERE id = ?').get(ownerId);
+        this.notify(t, null, 'new_follower', { by: me.handle });
+      }
+    }
+    return { type, target: String(target).replace(/^[#@]/, ''), following: !unfollow };
+  }
+
+  isFollowing(ownerId, type, target) {
+    if (!ownerId) return false;
+    return Boolean(this.db.prepare('SELECT 1 FROM follows WHERE owner_id = ? AND target_type = ? AND target = ?').get(ownerId, type, target));
+  }
+
+  followingOf(ownerId) {
+    const rows = this.db.prepare('SELECT target_type, target, created_at FROM follows WHERE owner_id = ? ORDER BY created_at DESC').all(ownerId);
+    return {
+      users: rows.filter((r) => r.target_type === 'user').map((r) => {
+        const o = this.db.prepare('SELECT id, handle FROM owners WHERE id = ?').get(r.target);
+        return o ? { handle: o.handle, ...this.creatorStats(o.id) } : null;
+      }).filter(Boolean),
+      tags: rows.filter((r) => r.target_type === 'tag').map((r) => ({ tag: r.target, n: this.db.prepare("SELECT COUNT(*) AS n FROM guides WHERE status = 'published' AND tags LIKE ?").get(`%"${r.target}"%`).n })),
+    };
+  }
+
+  followersCount(type, target) {
+    return this.db.prepare('SELECT COUNT(*) AS n FROM follows WHERE target_type = ? AND target = ?').get(type, target).n;
+  }
+
+  // 博主数据：笔记数、粉丝、获得的“有用”和收藏
+  creatorStats(ownerId) {
+    const c = (sql) => this.db.prepare(sql).get(ownerId).n;
+    return {
+      notes: c("SELECT COUNT(*) AS n FROM guides WHERE author_owner_id = ? AND status = 'published'"),
+      followers: c("SELECT COUNT(*) AS n FROM follows WHERE target_type = 'user' AND target = ?"),
+      following: c('SELECT COUNT(*) AS n FROM follows WHERE owner_id = ?'),
+      useful: c("SELECT COUNT(*) AS n FROM ratings r JOIN guides g ON g.id = r.guide_id WHERE g.author_owner_id = ? AND r.rating = 'helpful'"),
+      saves: c('SELECT COUNT(*) AS n FROM saves s JOIN guides g ON g.id = s.guide_id WHERE g.author_owner_id = ?'),
+    };
+  }
+
+  // 自己的 Agent 推荐给主人的笔记
+  recommendsFor(ownerId, { limit = 12 } = {}) {
+    const rows = this.db.prepare(`SELECT r.guide_id, r.reason, r.created_at, a.name AS agent FROM recommends r JOIN agents a ON a.id = r.agent_id
+      JOIN guides g ON g.id = r.guide_id WHERE r.owner_id = ? AND g.status = 'published' ORDER BY r.created_at DESC LIMIT ?`).all(ownerId, limit);
+    const cards = new Map(this.cardsFor(rows.map((r) => r.guide_id)).map((c) => [c.id, c]));
+    return rows.map((r) => ({ ...cards.get(r.guide_id), reason: r.reason, recommended_by: r.agent, recommended_at: r.created_at }));
+  }
+
+  // ───────────────────────── 为你推荐 / 关注 ─────────────────────────
+  // 推荐只按“和你相关”排序（你关注的话题、你收藏和执行过的同类笔记、适用条件和你的环境一致），
+  // 不按平台对内容质量的判断排序；每条都给出推荐理由，理由本身是事实。
+
+  interestsOf(ownerId) {
+    const w = {};
+    const why = {};
+    const add = (tags, weight, reason) => {
+      for (const t of tags) {
+        if (t === '示例') continue;
+        w[t] = (w[t] ?? 0) + weight;
+        if (!why[t] || weight >= 3) why[t] = reason;
+      }
+    };
+    const tagsOf = (sql, ...a) => this.db.prepare(sql).all(ownerId, ...a).map((r) => j(r.tags) ?? []);
+    for (const r of this.db.prepare("SELECT target FROM follows WHERE owner_id = ? AND target_type = 'tag'").all(ownerId)) add([r.target], 4, `你关注了 #${r.target}`);
+    for (const t of tagsOf('SELECT g.tags FROM saves s JOIN guides g ON g.id = s.guide_id WHERE s.owner_id = ?')) add(t, 3, '你收藏过同话题的笔记');
+    for (const t of tagsOf('SELECT g.tags FROM runs r JOIN guides g ON g.id = r.guide_id WHERE r.owner_id = ? AND r.proposal_id IS NULL')) add(t, 2, '你的 Agent 执行过同话题的攻略');
+    for (const t of tagsOf('SELECT g.tags FROM history h JOIN guides g ON g.id = h.guide_id WHERE h.owner_id = ?')) add(t, 1, '你看过同话题的笔记');
+    for (const t of tagsOf("SELECT g.tags FROM usage u JOIN guides g ON g.id = u.guide_id WHERE u.viewer = ? AND u.source = 'agent'")) add(t, 1, '你的 Agent 读过同话题的笔记');
+    const envRow = this.db.prepare("SELECT env FROM runs WHERE owner_id = ? AND env != '{}' ORDER BY created_at DESC LIMIT 1").get(ownerId);
+    const followUsers = new Set(this.db.prepare("SELECT target FROM follows WHERE owner_id = ? AND target_type = 'user'").all(ownerId).map((r) => r.target));
+    return { weights: w, why, env: j(envRow?.env) ?? {}, followUsers };
+  }
+
+  forYou(ownerId, { limit = 20 } = {}) {
+    const all = this.search('', { limit: 100 });
+    if (!ownerId) return all.slice(0, limit).map((g) => ({ ...g, reason: '最新' }));
+    const me = this.interestsOf(ownerId);
+    const seen = new Set(this.db.prepare(`SELECT guide_id FROM history WHERE owner_id = ? UNION SELECT guide_id FROM saves WHERE owner_id = ?
+      UNION SELECT guide_id FROM runs WHERE owner_id = ?`).all(ownerId, ownerId, ownerId).map((r) => r.guide_id));
+    const scored = all.filter((g) => g.author.owner_id !== ownerId).map((g) => {
+      let s = 0;
+      let reason = null;
+      let best = 0;
+      for (const t of g.tags) {
+        const x = me.weights[t] ?? 0;
+        s += x;
+        if (x > best) { best = x; reason = me.why[t]; }
+      }
+      if (me.followUsers.has(g.author.owner_id)) { s += 5; reason = `你关注了 ${g.author.owner}`; }
+      const envHit = Object.entries(g.applies_to ?? {}).filter(([k, v]) => me.env[k] && String(me.env[k]) === String(v)).map(([k, v]) => `${k}=${v}`);
+      if (envHit.length) { s += 2 * envHit.length; reason = reason ?? `适用条件和你的环境一致（${envHit.join('，')}）`; }
+      if (seen.has(g.id)) s *= 0.3;
+      const ageDays = (this.now() - Date.parse(g.updated_at)) / 864e5;
+      s += Math.max(0, 1 - ageDays / 60);
+      return { ...g, reason: reason ?? (seen.has(g.id) ? '你看过' : '最近更新'), _s: s };
+    });
+    scored.sort((a, b) => b._s - a._s);
+    return scored.slice(0, limit).map(({ _s, ...g }) => g);
+  }
+
+  followingFeed(ownerId, { limit = 40 } = {}) {
+    const users = new Set(this.db.prepare("SELECT target FROM follows WHERE owner_id = ? AND target_type = 'user'").all(ownerId).map((r) => r.target));
+    const tags = new Set(this.db.prepare("SELECT target FROM follows WHERE owner_id = ? AND target_type = 'tag'").all(ownerId).map((r) => r.target));
+    return this.search('', { limit: 100 }).filter((g) => users.has(g.author.owner_id) || g.tags.some((t) => tags.has(t)))
+      .map((g) => ({ ...g, reason: users.has(g.author.owner_id) ? `关注的 ${g.author.owner}` : `关注的 #${g.tags.find((t) => tags.has(t))}` }))
+      .slice(0, limit);
   }
 
   topContributors(limit = 5) {

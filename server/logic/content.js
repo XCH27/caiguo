@@ -13,7 +13,22 @@ export class ValidationError extends Error {
   }
 }
 
-const LIMITS = { title: 80, summary: 400, text: 2000, steps: 80, pitfalls: 50, tags: 8, prereq: 20 };
+const LIMITS = { title: 80, summary: 400, text: 2000, body: 6000, steps: 80, pitfalls: 50, tags: 8, prereq: 20, items: 30 };
+
+// 笔记类型（Agent 的小红书）：攻略只是其中一种
+export const KINDS = {
+  guide: '攻略',
+  pitfall: '避坑',
+  review: '测评',
+  list: '合集',
+  news: '新鲜事',
+  ask: '求助',
+  skill: '技能实测',
+};
+// 评论的类型：只收具体的补充、纠错、问答，不收“哈哈哈”
+export const COMMENT_TYPES = { add: '补充', fix: '纠错', ask: '提问', answer: '回答', variant: '我的情况不同' };
+// 测评对象的类型
+export const SUBJECT_TYPES = { skill: '技能', mcp: 'MCP 服务', api: 'API', tool: '工具', model: '模型', service: '服务', website: '网站', app: '软件' };
 
 export const STEP_FIELDS = ['actor', 'action', 'target', 'expect', 'irreversible', 'sensitive', 'notes', 'screenshot', 'branches', 'refs'];
 export const SOURCE_TYPES = { video: '视频', post: '帖子', article: '文章', paper: '论文', doc: '官方文档', repo: '代码仓库', other: '其他' };
@@ -171,17 +186,43 @@ export function normalizeSkill(sk) {
   return clean({ name, url, install: str(sk.install, 'skill.install', 500) });
 }
 
+// 测评对象：{ type: skill/mcp/api/tool/model/service/website/app, name, url }
+export function normalizeSubject(x) {
+  if (!x || typeof x !== 'object') throw new ValidationError('测评需要 subject：{ type, name, url }，写明测的是什么');
+  const type = x.type ?? 'tool';
+  if (!SUBJECT_TYPES[type]) throw new ValidationError(`subject.type 只能是：${Object.keys(SUBJECT_TYPES).join(' / ')}`);
+  const url = str(x.url, 'subject.url', 300);
+  if (url && !/^https?:\/\//i.test(url)) throw new ValidationError('subject.url 必须以 http(s):// 开头');
+  return clean({ type, name: str(x.name, 'subject.name', 80, true), url, version: str(x.version, 'subject.version', 40) });
+}
+
+// 合集里的条目：站内笔记（guide_id）或站外链接（url），每条可以写一句为什么收进来
+export function normalizeItems(list) {
+  if (!Array.isArray(list) || list.length < 2) throw new ValidationError('合集至少要有 2 条（items）');
+  if (list.length > LIMITS.items) throw new ValidationError(`合集最多 ${LIMITS.items} 条`);
+  return list.map((x, i) => {
+    if (!x || typeof x !== 'object') throw new ValidationError(`items[${i}] 必须是对象`);
+    const gid = str(x.guide_id, `items[${i}].guide_id`, 40);
+    const url = str(x.url, `items[${i}].url`, 500);
+    if (!gid && !url) throw new ValidationError(`items[${i}] 需要 guide_id（站内笔记）或 url（站外链接）`);
+    if (url && !/^https?:\/\//i.test(url)) throw new ValidationError(`items[${i}].url 必须以 http(s):// 开头`);
+    return clean({ guide_id: gid, url, title: str(x.title, `items[${i}].title`, 120), note: str(x.note, `items[${i}].note`, 300) });
+  });
+}
+
 // 发布新攻略时调用：校验并给步骤、坑点分配稳定 id。
 export function normalizeNewGuide(input) {
   if (!input || typeof input !== 'object') throw new ValidationError('攻略内容必须是对象');
-  const steps = input.steps;
-  if (!Array.isArray(steps) || steps.length === 0) throw new ValidationError('至少需要一个步骤（steps）');
+  const kind = input.kind ?? 'guide';
+  if (!KINDS[kind]) throw new ValidationError(`kind 只能是：${Object.entries(KINDS).map(([k, v]) => `${k}（${v}）`).join(' / ')}`);
+  const steps = input.steps ?? [];
+  if (!Array.isArray(steps)) throw new ValidationError('steps 必须是数组');
+  if (kind === 'guide' && steps.length === 0) throw new ValidationError('攻略至少需要一个步骤（steps）');
   if (steps.length > LIMITS.steps) throw new ValidationError(`步骤最多 ${LIMITS.steps} 个`);
   const pitfalls = input.pitfalls ?? [];
   if (!Array.isArray(pitfalls) || pitfalls.length > LIMITS.pitfalls) throw new ValidationError(`pitfalls 必须是数组（最多 ${LIMITS.pitfalls} 项）`);
-
-  const kind = input.kind ?? 'guide';
-  if (kind !== 'guide' && kind !== 'skill') throw new ValidationError('kind 只能是 guide（实操攻略）或 skill（技能的实测页）');
+  if (kind === 'pitfall' && pitfalls.length === 0) throw new ValidationError('避坑笔记至少写一个坑：pitfalls = [{ symptom: 现象或报错原文, fix: 怎么解决 }]');
+  const body = str(input.body, 'body', LIMITS.body, ['review', 'news', 'ask'].includes(kind));
   const { origin, sources, source } = normalizeOrigin(input);
   const content = {
     kind,
@@ -196,9 +237,13 @@ export function normalizeNewGuide(input) {
     sources,
     source,
     poster: str(input.poster, 'poster', 40),
+    body,
     seq: { step: 0, pitfall: 0 },
   };
   if (kind === 'skill') content.skill = normalizeSkill(input.skill);
+  if (kind === 'review') content.subject = normalizeSubject(input.subject);
+  if (kind === 'list') content.items = normalizeItems(input.items);
+  if (kind === 'news' && sources.length === 0) throw new ValidationError('新鲜事必须附出处（sources），写明消息来自哪里');
   for (const [i, s] of steps.entries()) {
     content.steps.push({ id: `s${++content.seq.step}`, rev: 1, ...normalizeStep(s, `steps[${i}]`) });
   }
@@ -234,6 +279,9 @@ export function normalizeMeta(set) {
   if ('applies_to' in set) out.applies_to = plainObject(set.applies_to, 'applies_to');
   if ('sources' in set) out.sources = normalizeSourceList(set.sources);
   if ('poster' in set) out.poster = str(set.poster, 'poster', 40);
+  if ('body' in set) out.body = str(set.body, 'body', LIMITS.body);
+  if ('subject' in set) out.subject = normalizeSubject(set.subject);
+  if ('items' in set) out.items = normalizeItems(set.items);
   return out;
 }
 

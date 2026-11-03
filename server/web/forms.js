@@ -74,6 +74,25 @@ export function parsePairs(s) {
 
 export const pairsText = (o) => Object.entries(o ?? {}).map(([k, v]) => `${k}: ${v}`).join('\n');
 
+// 合集条目：一行一条。“g_xxx 为什么收进来” 或 “https://… 标题 | 为什么收进来”
+export function parseItems(text) {
+  return lines(text).map((x) => {
+    const [head, ...rest] = x.split(/\s+/);
+    const tail = rest.join(' ');
+    if (/^g_[\w-]+$/.test(head)) return tail ? { guide_id: head, note: tail } : { guide_id: head };
+    if (/^https?:\/\//i.test(head)) {
+      const [title, note] = tail.split('|').map((y) => y.trim());
+      const o = { url: head };
+      if (title) o.title = title;
+      if (note) o.note = note;
+      return o;
+    }
+    return null;
+  }).filter(Boolean);
+}
+
+export const itemsText = (items) => (items ?? []).map((x) => (x.guide_id ? `${x.guide_id}${x.note ? ` ${x.note}` : ''}` : `${x.url}${x.title || x.note ? ` ${x.title ?? ''}${x.note ? ` | ${x.note}` : ''}` : ''}`)).join('\n');
+
 // 表单 → 攻略数据。空行（没写动作的步骤、没写链接的出处、没写现象的坑点）会被忽略。
 // 返回的 model 同时用于提交和出错时重新显示表单。
 export function guideFromForm(f) {
@@ -123,8 +142,10 @@ export function guideFromForm(f) {
     pitfalls.push(x);
   }
   const tags = String(f.tags ?? '').split(/[\s,，、#]+/).map((x) => x.trim()).filter(Boolean).slice(0, 8);
+  const KIND_KEYS = ['guide', 'pitfall', 'review', 'list', 'news', 'ask', 'skill'];
   const model = {
-    kind: f.kind === 'skill' ? 'skill' : 'guide',
+    kind: KIND_KEYS.includes(f.kind) ? f.kind : 'guide',
+    body: val(f.body),
     title: val(f.title) ?? '',
     summary: val(f.summary) ?? '',
     poster: val(f.poster),
@@ -137,7 +158,10 @@ export function guideFromForm(f) {
     pitfalls,
   };
   if (model.kind === 'skill') model.skill = { name: val(f.skill_name), url: val(f.skill_url), install: val(f.skill_install) };
-  if (!model.poster) delete model.poster;
+  if (model.kind === 'review' || val(f.subject_name)) model.subject = { type: f.subject_type || 'tool', name: val(f.subject_name), url: val(f.subject_url), version: val(f.subject_version) };
+  if (model.kind === 'list' || val(f.items)) model.items = parseItems(f.items);
+  for (const k of ['poster', 'body', 'subject', 'items']) if (model[k] === undefined) delete model[k];
+  if (model.subject) for (const k of Object.keys(model.subject)) if (model.subject[k] === undefined) delete model.subject[k];
   return model;
 }
 
@@ -166,6 +190,9 @@ export function guideToModel(content) {
     title: content.title,
     summary: content.summary,
     poster: content.poster,
+    body: content.body,
+    subject: content.subject,
+    items: content.items,
     tags: content.tags ?? [],
     origin: content.origin ?? 'firsthand',
     sources: (content.sources ?? []).map(({ n: _n, ...x }) => x),

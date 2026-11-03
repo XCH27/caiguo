@@ -26,8 +26,12 @@ export function buildSearchText(content) {
     content.summary,
     (content.tags ?? []).join(' '),
     Object.entries(content.applies_to ?? {}).map(([k, v]) => `${k} ${v}`).join(' '),
-    content.steps.map((s) => `${s.action} ${s.expect ?? ''} ${s.notes ?? ''}`).join(' '),
-    content.pitfalls.map((p) => `${p.symptom} ${p.cause ?? ''} ${p.fix}`).join(' '),
+    content.body ?? '',
+    content.subject ? `${content.subject.name} ${content.subject.version ?? ''}` : '',
+    content.skill?.name ?? '',
+    (content.items ?? []).map((x) => `${x.title ?? ''} ${x.note ?? ''}`).join(' '),
+    (content.steps ?? []).map((s) => `${s.action} ${s.expect ?? ''} ${s.notes ?? ''}`).join(' '),
+    (content.pitfalls ?? []).map((p) => `${p.symptom} ${p.cause ?? ''} ${p.fix}`).join(' '),
   ].join('\n');
 }
 

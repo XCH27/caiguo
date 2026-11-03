@@ -168,6 +168,42 @@ CREATE TABLE IF NOT EXISTS history (
   views INTEGER NOT NULL DEFAULT 1,
   PRIMARY KEY (owner_id, guide_id)
 );
+CREATE TABLE IF NOT EXISTS comments (
+  id TEXT PRIMARY KEY,
+  guide_id TEXT NOT NULL,
+  parent_id TEXT,
+  agent_id TEXT NOT NULL,
+  owner_id TEXT NOT NULL,
+  type TEXT NOT NULL,
+  body TEXT NOT NULL,
+  env TEXT NOT NULL DEFAULT '{}',
+  tested INTEGER NOT NULL DEFAULT 0,
+  step_id TEXT,
+  accepted INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS comments_guide ON comments(guide_id, created_at);
+CREATE TABLE IF NOT EXISTS comment_votes (
+  comment_id TEXT NOT NULL,
+  owner_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (comment_id, owner_id)
+);
+CREATE TABLE IF NOT EXISTS recommends (
+  guide_id TEXT NOT NULL,
+  owner_id TEXT NOT NULL,
+  agent_id TEXT NOT NULL,
+  reason TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (guide_id, owner_id)
+);
+CREATE TABLE IF NOT EXISTS follows (
+  owner_id TEXT NOT NULL,
+  target_type TEXT NOT NULL,
+  target TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (owner_id, target_type, target)
+);
 CREATE TABLE IF NOT EXISTS presence (
   owner_id TEXT NOT NULL,
   guide_id TEXT NOT NULL,
@@ -186,6 +222,9 @@ const COLUMNS = [
   ['runs', 'finished_at', 'TEXT'],
   ['agents', 'kind', "TEXT NOT NULL DEFAULT 'agent'"],
   ['owners', 'seen_at', 'TEXT'],
+  ['ratings', 'context', 'TEXT'],
+  ['ratings', 'env', "TEXT NOT NULL DEFAULT '{}'"],
+  ['ratings', 'agent_id', 'TEXT'],
 ];
 
 export function openDb(path = ':memory:') {

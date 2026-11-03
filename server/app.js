@@ -29,9 +29,14 @@ export function createApp(svc, { publicUrl } = {}) {
     // ───────────── 给人看的网页 ─────────────
     ['GET', /^\/$/, (req, res, m, url) => page(req, res, (me) => {
       const p = (k) => url.searchParams.get(k) || '';
+      const home = !p('q') && !p('tag') && !p('kind') && !p('sort') && !p('feed');
+      let guides;
+      if (p('feed') === 'following' && me) guides = svc.followingFeed(me.owner_id);
+      else if (home) guides = svc.forYou(me?.owner_id, { limit: 60 }).map((g) => (me ? g : { ...g, reason: undefined }));
+      else guides = svc.search(p('q'), { tag: p('tag') || undefined, kind: p('kind') || undefined, origin: p('origin') || undefined, limit: 60, sort: p('sort') || undefined });
+      const topic = p('tag') ? { followers: svc.followersCount('tag', p('tag')), following: svc.isFollowing(me?.owner_id, 'tag', p('tag')) } : null;
       return V.renderFeed({
-        guides: svc.search(p('q'), { tag: p('tag') || undefined, kind: p('kind') || undefined, origin: p('origin') || undefined, limit: 60, sort: p('sort') || undefined }),
-        q: p('q'), tag: p('tag'), sort: p('sort'), kind: p('kind'), origin: p('origin'), tags: svc.tags(), stats: svc.stats(), me,
+        guides, q: p('q'), tag: p('tag'), sort: p('sort'), kind: p('kind'), origin: p('origin'), feed: p('feed'), topic, tags: svc.tags(), stats: svc.stats(), me,
       });
     })],
     ['GET', /^\/g\/([\w-]+)\.md$/, (req, res, m) => markdown(res, guideMarkdown(req, m[1]))],
@@ -41,7 +46,9 @@ export function createApp(svc, { publicUrl } = {}) {
       const g = svc.getGuide(m[1], { viewer: me ? me.owner_id : anonViewer(req, 'web'), source: 'web', presenceOwner: me?.owner_id, ownerView: me?.owner_id });
       const related = g.tags.filter((t) => t !== '示例').length
         ? svc.search('', { limit: 100 }).filter((x) => x.id !== g.id && x.tags.some((t) => t !== '示例' && g.tags.includes(t))).slice(0, 8) : [];
-      const notice = url.searchParams.has('updated') ? '已保存为新版本。' : url.searchParams.has('proposed') ? '修订已提交，等作者确认或其他人验证。' : url.searchParams.has('published') ? '已发布。' : null;
+      const notice = url.searchParams.has('updated') ? '已保存为新版本。' : url.searchParams.has('proposed') ? '修订已提交，等作者确认或其他人验证。'
+        : url.searchParams.has('published') ? '已发布。' : url.searchParams.has('reacted') ? '已记录，谢谢你的真实反馈。' : url.searchParams.has('commented') ? '评论已发表。' : null;
+      g.mine = me ? svc.myReactions(me.owner_id, g.id) : {};
       return html(res, V.renderGuide(g, {
         me, sent: url.searchParams.has('sent'), related, notice,
         saved: me ? svc.saveOf(me.owner_id, g.id) : null, folders: me ? svc.foldersOf(me.owner_id) : null,
@@ -56,6 +63,29 @@ export function createApp(svc, { publicUrl } = {}) {
         svc.saveGuide(me.owner_id, m[1], folder);
       }
       redirect(res, safeBack(f.back) ?? `/g/${m[1]}`);
+    }],
+    ['POST', /^\/g\/([\w-]+)\/react$/, async (req, res, m) => {
+      const f = await form(req);
+      const me = requireMe(req, f);
+      svc.react(svc.webAgent(me.owner_id), m[1], { action: f.action, context: f.context });
+      redirect(res, `/g/${m[1]}?reacted=1`);
+    }],
+    ['POST', /^\/g\/([\w-]+)\/comments$/, async (req, res, m) => {
+      const f = await form(req);
+      const me = requireMe(req, f);
+      const r = svc.comment(svc.webAgent(me.owner_id), m[1], { type: f.type, body: f.body, tested: Boolean(f.tested), step: f.step || undefined, reply_to: f.reply_to || undefined });
+      redirect(res, `/g/${m[1]}?commented=1#${r.comment_id}`);
+    }],
+    ['POST', /^\/comments\/([\w-]+)\/(helpful|accept)$/, async (req, res, m) => {
+      const me = requireMe(req, await form(req));
+      const r = m[2] === 'helpful' ? svc.voteComment(me.owner_id, m[1]) : svc.acceptComment(me.owner_id, m[1]);
+      redirect(res, `/g/${r.guide_id}#${m[1]}`);
+    }],
+    ['POST', /^\/follow$/, async (req, res) => {
+      const f = await form(req);
+      const me = requireMe(req, f);
+      svc.follow(me.owner_id, { type: f.type, target: f.target, unfollow: Boolean(f.unfollow) });
+      redirect(res, safeBack(f.back) ?? '/me/following');
     }],
     ['GET', /^\/g\/([\w-]+)\/edit$/, (req, res, m) => {
       const me = meInfo(req);
@@ -91,7 +121,10 @@ export function createApp(svc, { publicUrl } = {}) {
         trending: all.filter((g) => g.suspect_steps || g.open_proposals).slice(0, 3), contributors: svc.topContributors(5), me,
       });
     })],
-    ['GET', /^\/o\/([^/]+)$/, (req, res, m, url) => page(req, res, (me) => V.renderProfile(svc.profile(decodeURIComponent(m[1])), { tab: url.searchParams.get('tab'), me }))],
+    ['GET', /^\/o\/([^/]+)$/, (req, res, m, url) => page(req, res, (me) => {
+      const p = svc.profile(decodeURIComponent(m[1]));
+      return V.renderProfile(p, { tab: url.searchParams.get('tab'), me, following: svc.isFollowing(me?.owner_id, 'user', p.id) });
+    })],
     ['GET', /^\/connect$/, (req, res) => page(req, res, (me) => V.renderConnect({ base: baseUrl(req), me }))],
 
     // 主人：登录、控制台
@@ -106,7 +139,7 @@ export function createApp(svc, { publicUrl } = {}) {
       res.writeHead(303, { location: '/', 'set-cookie': `${COOKIE}=; Path=/; Max-Age=0` });
       res.end();
     }],
-    ['GET', /^\/me(?:\/(saved|history|runs|guides|messages|settings))?$/, (req, res, m, url) => {
+    ['GET', /^\/me(?:\/(saved|history|runs|guides|messages|settings|following))?$/, (req, res, m, url) => {
       const me = meInfo(req);
       if (!me) return html(res, V.renderLoginNeeded({ me: null }));
       const d = svc.consoleData(me.owner_id);
@@ -129,7 +162,8 @@ export function createApp(svc, { publicUrl } = {}) {
           return html(res, pageHtml);
         }
         case 'settings': return html(res, V.renderSettings(d, { me }));
-        default: return html(res, V.renderMeOverview(d, { me, saved: svc.savedList(o), history: svc.historyOf(o, { limit: 6 }), runs: svc.runsOfOwner(o, { limit: 4 }) }));
+        case 'following': return html(res, V.renderFollowing(d, { me, following: svc.followingOf(o), stats: svc.creatorStats(o) }));
+        default: return html(res, V.renderMeOverview(d, { me, saved: svc.savedList(o), history: svc.historyOf(o, { limit: 6 }), runs: svc.runsOfOwner(o, { limit: 4 }), recommends: svc.recommendsFor(o) }));
       }
     }],
     ['POST', /^\/me\/settings$/, async (req, res) => {
@@ -239,7 +273,7 @@ export function createApp(svc, { publicUrl } = {}) {
     // ───────────── 接口 ─────────────
     ['GET', /^\/api\/stats$/, (req, res) => json(res, svc.stats())],
     ['GET', /^\/api\/guides$/, (req, res, m, url) => json(res, {
-      guides: svc.search(url.searchParams.get('q') ?? '', { tag: url.searchParams.get('tag') || undefined, limit: Number(url.searchParams.get('limit') ?? 20) }),
+      guides: svc.search(url.searchParams.get('q') ?? '', { tag: url.searchParams.get('tag') || undefined, kind: url.searchParams.get('kind') || undefined, limit: Number(url.searchParams.get('limit') ?? 20) }),
     })],
     ['GET', /^\/api\/guides\/([\w-]+)$/, (req, res, m) => json(res, svc.getGuide(m[1], { viewer: optionalOwner(req) ?? anonViewer(req, 'api'), source: 'agent' }))],
     ['GET', /^\/api\/profiles\/([^/]+)$/, (req, res, m) => json(res, svc.profile(decodeURIComponent(m[1])))],
@@ -266,6 +300,12 @@ export function createApp(svc, { publicUrl } = {}) {
     }],
     ['POST', /^\/api\/runs\/([\w-]+)\/steps$/, async (req, res, m) => json(res, svc.stepResult(auth(req), m[1], await body(req)))],
     ['POST', /^\/api\/runs\/([\w-]+)\/finish$/, async (req, res, m) => json(res, svc.finishRun(auth(req), m[1], await body(req)))],
+    ['POST', /^\/api\/guides\/([\w-]+)\/react$/, async (req, res, m) => json(res, svc.react(auth(req), m[1], await body(req)))],
+    ['GET', /^\/api\/guides\/([\w-]+)\/comments$/, (req, res, m) => json(res, { comments: svc.commentsOf(m[1]) })],
+    ['POST', /^\/api\/guides\/([\w-]+)\/comments$/, async (req, res, m) => json(res, svc.comment(auth(req), m[1], await body(req)), 201)],
+    ['POST', /^\/api\/comments\/([\w-]+)\/helpful$/, (req, res, m) => json(res, svc.voteComment(auth(req).owner_id, m[1]))],
+    ['POST', /^\/api\/comments\/([\w-]+)\/accept$/, (req, res, m) => json(res, svc.acceptComment(auth(req).owner_id, m[1]))],
+    ['POST', /^\/api\/follows$/, async (req, res) => json(res, svc.follow(auth(req).owner_id, await body(req)))],
     ['GET', /^\/api\/library$/, (req, res, m, url) => json(res, svc.library(auth(req), { view: url.searchParams.get('view') ?? 'mine', folder: url.searchParams.get('folder') || undefined }))],
     ['POST', /^\/api\/manage$/, async (req, res) => json(res, svc.manage(auth(req), await body(req)))],
     ['POST', /^\/api\/login-links$/, (req, res) => json(res, svc.createLoginLink(auth(req)), 201)],
@@ -392,7 +432,7 @@ export function createApp(svc, { publicUrl } = {}) {
     const viewer = () => { try { return agent().owner_id; } catch { return anonViewer(req, 'api'); } };
     const client = {
       webUrl: (p) => base + p,
-      search: async ({ q, tag, limit }) => svc.search(q, { tag, limit }),
+      search: async ({ q, tag, kind, limit }) => svc.search(q, { tag, kind, limit }),
       getGuide: async (id) => svc.getGuide(id, { viewer: viewer(), source: 'agent' }),
       start: async (gid, env) => svc.startRun(agent(), gid, { env }),
       next: async (rid, b) => svc.stepResult(agent(), rid, b),
@@ -407,6 +447,10 @@ export function createApp(svc, { publicUrl } = {}) {
       feed: async (o) => svc.feed(agent(), o),
       consoleLink: async () => svc.createLoginLink(agent()),
       library: async (o) => svc.library(agent(), o),
+      react: async ({ guide_id, ...b }) => svc.react(agent(), guide_id, b),
+      comment: async ({ action = 'post', guide_id, comment_id, ...b }) => (action === 'post' ? svc.comment(agent(), guide_id, b)
+        : action === 'helpful' ? svc.voteComment(agent().owner_id, comment_id) : svc.acceptComment(agent().owner_id, comment_id)),
+      follow: async (b) => svc.follow(agent().owner_id, b),
       manage: async (b) => svc.manage(agent(), b),
     };
     return createMcpHandler({ name: 'caiguo', version: '0.4.0', instructions: INSTRUCTIONS, tools: TOOLS, call: (n, a) => callTool(client, n, a) });
