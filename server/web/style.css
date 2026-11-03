@@ -184,7 +184,7 @@ details > summary::-webkit-details-marker { display: none; }
 .feed-h span { margin-left: 8px; font-size: 14px; font-weight: 400; color: var(--muted); }
 .filters { display: flex; flex-wrap: wrap; gap: 10px 24px; margin: -4px 0 16px; }
 .f-group { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-.f-group b { margin-right: 4px; font-size: 13px; color: var(--muted); font-weight: 500; }
+.f-group b { flex: none; margin-right: 4px; font-size: 13px; color: var(--muted); font-weight: 500; white-space: nowrap; }
 .fchip { display: inline-flex; align-items: center; gap: 6px; min-height: 34px; padding: 0 14px; border-radius: 999px; background: var(--soft); font-size: 14px; color: var(--text2); cursor: pointer; }
 .fchip small { font-family: var(--num); font-size: 12px; color: var(--muted); }
 .fchip.on { background: var(--ink); color: #fff; font-weight: 600; }
@@ -619,6 +619,7 @@ body.is-bare .wrap { padding-top: 6px; }
 .note-box { padding: 12px 14px; border-radius: 12px; background: var(--soft2); font-size: 12px; color: var(--text2); }
 .hero { display: grid; grid-template-columns: minmax(280px, 400px) minmax(0, 1fr); gap: 40px; padding: 12px 0 28px; align-items: start; }
 .hero-info { display: flex; flex-direction: column; gap: 16px; }
+.hero-info > .tape { align-self: flex-start; }
 .hero h1 { font-size: 28px; font-weight: 800; line-height: 1.35; }
 .lead { font-size: 16px; line-height: 1.8; color: var(--text2); }
 .follow-top { display: flex; flex-wrap: wrap; align-items: center; gap: 14px 20px; margin-top: 8px; padding: 18px 22px; border-radius: 18px; background: var(--ink); color: #fff; }

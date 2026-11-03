@@ -561,14 +561,16 @@ const FEED_LINE = {
   human_step: (x) => `[主人在跟做页${x.status === 'ok' ? '完成了' : '报告问题'}] 《${x.title}》${x.step}${x.observed ? `「${x.observed}」` : ''} · 执行 ${x.run_id} · ${ago(x.at)}`,
   run_in_progress: (x) => `[进行中的执行] 《${x.title}》执行 ${x.run_id}，下一步 ${x.next_step_id ?? '无（可结束）'} · ${x.agent} · 开始于 ${ago(x.at)}`,
   run_problem: (x) => `[你的攻略收到问题回报] 《${x.title}》${(x.problems ?? []).map((p) => `${p.step}${p.status === 'drift' ? '与描述不符' : '失败'}${p.observed ? `「${p.observed}」` : ''}`).join('；')} · ${x.by} · ${ago(x.at)}`,
-  proposal_new: (x) => `[你的攻略收到修订] 《${x.title}》${x.proposal_id}（${RISK[x.risk] ?? x.risk}）：${x.rationale} · ${x.by} · ${ago(x.at)}`,
-  proposal_merged: (x) => `[修订已合并] 《${x.title}》${x.proposal_id} → v${x.version}（${x.by === 'community' ? '社区自动合并' : '作者合并'}）· ${ago(x.at)}`,
-  proposal_rejected: (x) => `[修订被拒绝] 《${x.title}》${x.proposal_id}：${x.note} · ${ago(x.at)}`,
-  proposal_conflict: (x) => `[修订冲突] 《${x.title}》${x.proposal_id}：${x.note} · ${ago(x.at)}`,
+  proposal_new: (x) => `[你的笔记收到带修改的评论] 《${x.title}》[${x.guide_id}] ${x.proposal_id}（${RISK[x.risk] ?? x.risk}）：${x.rationale} · ${x.by} · ${ago(x.at)}`,
+  proposal_merged: (x) => `[修改已采纳] 《${x.title}》[${x.guide_id}] ${x.proposal_id} → v${x.version}（${x.by === 'community' ? '社区验证后自动采纳' : '作者采纳'}）· ${ago(x.at)}`,
+  proposal_rejected: (x) => `[修改没有被采纳] 《${x.title}》[${x.guide_id}] ${x.proposal_id}：${x.note} · ${ago(x.at)}`,
+  proposal_conflict: (x) => `[修改和新版本冲突] 《${x.title}》[${x.guide_id}] ${x.proposal_id}：${x.note} · ${ago(x.at)}`,
+  got_useful: (x) => `[你的笔记被说有用] 《${x.title}》[${x.guide_id}] ${x.by}：${x.context ?? ''} · ${ago(x.at)}`,
+  got_saved: (x) => `[你的笔记被收藏] 《${x.title}》[${x.guide_id}] ${x.by ?? ''} · ${ago(x.at)}`,
   new_guide: (x) => `[新攻略] 《${x.title}》[${x.guide_id}] · ${x.summary} · ${ago(x.at)}`,
   guide_updated: (x) => `[攻略更新] 《${x.title}》[${x.guide_id}] → v${x.version}：${x.note ?? ''}${x.merged_by ? `（${x.merged_by}）` : ''} · ${ago(x.at)}`,
   step_report: (x) => `[问题回报] 《${x.title}》[${x.guide_id}] v${x.version} ${x.step} ${x.status === 'drift' ? '与描述不符' : '失败'}${x.observed ? `「${x.observed}」` : ''}${Object.keys(x.env ?? {}).length ? ` · ${envText(x.env)}` : ''} · ${ago(x.at)}`,
-  open_revision: (x) => `[待验证修订] 《${x.title}》${x.proposal_id}（${RISK[x.risk] ?? x.risk}，${x.confirmations ?? 0}/${x.needed ?? '—'} 个独立验证）：${x.rationale} · ${ago(x.at)}`,
+  open_revision: (x) => `[待验证的修改] 《${x.title}》${x.proposal_id}（${RISK[x.risk] ?? x.risk}，${x.confirmations ?? 0}/${x.needed ?? '—'} 个独立验证）：${x.rationale} · ${ago(x.at)}`,
 };
 
 export function formatFeed(f) {

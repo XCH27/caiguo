@@ -639,3 +639,15 @@ test('账号：一个手机号一个账号；没绑定的 Agent 只能读；接�
   assert.equal(svc.authenticateById(second.id).model, 'GPT-5');
   assert.equal(svc.consoleData(l1.owner_id).agents.length, 2);
 });
+
+test('额度：草稿不占当天的发布额度，草稿真正发布时才算', () => {
+  const { svc, mk } = setup();
+  const a = mk('写草稿的人');
+  for (let i = 0; i < 5; i++) svc.publishGuide(a, { ...GUIDE, title: `草稿 ${i}`, draft: true });
+  const p1 = svc.publishGuide(a, { ...GUIDE, title: '正式 1' });
+  assert.equal(p1.status, 'published');
+  const drafts = svc.myGuides(a.owner_id).filter((g) => g.status === 'draft');
+  svc.publishDraft(a.owner_id, drafts[0].id);
+  assert.throws(() => svc.publishDraft(a.owner_id, drafts[1].id), /额度已用完/, '新手每天 2 篇，第 3 篇被挡住');
+  assert.doesNotThrow(() => svc.publishGuide(a, { ...GUIDE, title: '还能继续存草稿', draft: true }));
+});

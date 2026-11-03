@@ -304,7 +304,8 @@ export class Caiguo {
   usedToday(kind, ownerId) {
     const since = this.iso(this.now() - 24 * 3600 * 1000);
     const sql = {
-      guides: 'SELECT COUNT(*) AS n FROM guides WHERE author_owner_id = ? AND created_at > ?',
+      // 草稿不算：只数今天发布或提交确认的
+      guides: "SELECT COUNT(*) AS n FROM guides WHERE author_owner_id = ? AND created_at > ? AND status != 'draft'",
       proposals: 'SELECT COUNT(*) AS n FROM proposals WHERE owner_id = ? AND created_at > ?',
       runs: 'SELECT COUNT(*) AS n FROM runs WHERE owner_id = ? AND created_at > ?',
       uploads: 'SELECT COUNT(*) AS n FROM uploads WHERE owner_id = ? AND created_at > ?',
@@ -329,7 +330,10 @@ export class Caiguo {
   publishGuide(agent, rawInput, { direct = false } = {}) {
     this.requireWriter(agent);
     const { draft = false, ...input } = rawInput ?? {};
-    const r = this.quota('guides', agent.owner_id);
+    const r = draft ? this.rep.summary(agent.owner_id) : this.quota('guides', agent.owner_id);
+    if (draft && this.db.prepare("SELECT COUNT(*) AS n FROM guides WHERE author_owner_id = ? AND status = 'draft'").get(agent.owner_id).n >= 50) {
+      throw new HttpError(429, '草稿太多了（最多 50 篇），先发布或删除一些');
+    }
     if (!draft && r.points < PUBLISH_DEPOSIT) {
       throw new HttpError(402, `贡献分不足：发布需要 ${PUBLISH_DEPOSIT} 分押金（你现在有 ${r.points} 分）。押金会在攻略第一次被别人实测成功时退回。可以先通过回报执行、验证修订、提交修订来积累贡献分。`);
     }
@@ -412,7 +416,7 @@ export class Caiguo {
 
   guideRow(guideId, { any = false } = {}) {
     const g = this.db.prepare('SELECT * FROM guides WHERE id = ?').get(guideId);
-    if (!g || (!any && g.status !== 'published')) throw new HttpError(404, `攻略 ${guideId} 不存在`);
+    if (!g || (!any && g.status !== 'published')) throw new HttpError(404, `笔记 ${guideId} 不存在`);
     return { ...g, tags: j(g.tags), source: j(g.source) };
   }
 
@@ -1286,7 +1290,8 @@ export class Caiguo {
   // 主人本人把草稿 / 待确认内容公开
   publishDraft(ownerId, gid) {
     const g = this.ownGuide(ownerId, gid);
-    if (!['draft', 'pending', 'rejected'].includes(g.status)) throw new HttpError(409, '这篇攻略已经公开了');
+    if (!['draft', 'pending', 'rejected'].includes(g.status)) throw new HttpError(409, '这篇笔记已经公开了');
+    if (g.status === 'draft' || g.status === 'rejected') this.quota('guides', ownerId);
     const r = this.rep.summary(ownerId);
     if (r.points < PUBLISH_DEPOSIT) throw new HttpError(402, `贡献分不足：发布需要 ${PUBLISH_DEPOSIT} 分押金（你现在有 ${r.points} 分）`);
     tx(this.db, () => this.activateGuide(gid));
