@@ -1,12 +1,13 @@
 // HTTP 层：REST API（给插件用）+ 网页（给人看）+ 远程 MCP 端点（/mcp）。
 // 只用 node:http，零依赖。
 import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { HttpError } from './service.js';
 import { createMcpHandler } from '../plugin/mcp/protocol.js';
 import { TOOLS, INSTRUCTIONS, callTool } from '../plugin/mcp/tools.js';
-import { renderFeed, renderGuide, renderConnect, renderNotFound } from './web/views.js';
+import { renderFeed, renderGuide, renderConnect, renderNotFound, renderProfile } from './web/views.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const CSS = readFileSync(join(here, 'web', 'style.css'), 'utf8');
@@ -17,11 +18,16 @@ export function createApp(svc, { publicUrl } = {}) {
 
   const routes = [
     ['GET', /^\/$/, (req, res, m, url) => html(res, renderFeed({
-      guides: svc.search(url.searchParams.get('q') ?? '', { tag: url.searchParams.get('tag') ?? undefined, limit: 60, sort: url.searchParams.get('sort') ?? undefined }),
-      q: url.searchParams.get('q') ?? '', tag: url.searchParams.get('tag') ?? '', sort: url.searchParams.get('sort') ?? '',
+      guides: svc.search(url.searchParams.get('q') ?? '', { tag: url.searchParams.get('tag') ?? undefined, kind: url.searchParams.get('kind') ?? undefined, limit: 60, sort: url.searchParams.get('sort') ?? undefined }),
+      q: url.searchParams.get('q') ?? '', tag: url.searchParams.get('tag') ?? '', sort: url.searchParams.get('sort') ?? '', kind: url.searchParams.get('kind') ?? '',
       tags: svc.tags(), stats: svc.stats(),
     }))],
-    ['GET', /^\/g\/([\w-]+)$/, (req, res, m) => html(res, renderGuide(svc.getGuide(m[1])))],
+    ['GET', /^\/g\/([\w-]+)$/, (req, res, m) => html(res, renderGuide(svc.getGuide(m[1], { viewer: anonViewer(req, 'web'), source: 'web' })))],
+    ['GET', /^\/o\/([^/]+)$/, (req, res, m) => html(res, renderProfile(svc.profile(decodeURIComponent(m[1]))))],
+    ['GET', /^\/u\/([a-f0-9]{20})\.(png|jpg|webp|gif)$/, (req, res, m) => {
+      const up = svc.getUpload(m[1]);
+      send(res, 200, up.data, up.mime, { 'cache-control': 'public, max-age=31536000, immutable' });
+    }],
     ['GET', /^\/connect$/, (req, res) => html(res, renderConnect({ base: baseUrl(req) }))],
     ['GET', /^\/static\/style\.css$/, (req, res) => send(res, 200, CSS, 'text/css; charset=utf-8', { 'cache-control': 'public, max-age=300' })],
     ['GET', /^\/healthz$/, (req, res) => json(res, { ok: true })],
@@ -30,7 +36,13 @@ export function createApp(svc, { publicUrl } = {}) {
     ['GET', /^\/api\/guides$/, (req, res, m, url) => json(res, {
       guides: svc.search(url.searchParams.get('q') ?? '', { tag: url.searchParams.get('tag') ?? undefined, limit: Number(url.searchParams.get('limit') ?? 20) }),
     })],
-    ['GET', /^\/api\/guides\/([\w-]+)$/, (req, res, m) => json(res, svc.getGuide(m[1]))],
+    ['GET', /^\/api\/guides\/([\w-]+)$/, (req, res, m) => json(res, svc.getGuide(m[1], { viewer: optionalOwner(req) ?? anonViewer(req, 'api'), source: 'agent' }))],
+    ['GET', /^\/api\/profiles\/([^/]+)$/, (req, res, m) => json(res, svc.profile(decodeURIComponent(m[1])))],
+    ['POST', /^\/api\/uploads$/, async (req, res) => {
+      const up = svc.saveUpload(auth(req), await body(req, 2.2 * 1024 * 1024));
+      json(res, { ...up, url: baseUrl(req) + up.path }, 201);
+    }],
+    ['POST', /^\/api\/usage$/, async (req, res) => json(res, svc.reportUsage(auth(req), (await body(req)).items))],
     ['GET', /^\/api\/proposals\/([\w-]+)$/, (req, res, m) => json(res, svc.getProposal(m[1]))],
     ['POST', /^\/api\/agents\/register$/, async (req, res) => {
       limitRegister(req);
@@ -68,6 +80,18 @@ export function createApp(svc, { publicUrl } = {}) {
     return svc.authenticate(key);
   }
 
+  function optionalOwner(req) {
+    const h = req.headers.authorization ?? '';
+    if (!h.startsWith('Bearer ')) return null;
+    try { return svc.authenticate(h.slice(7).trim()).owner_id; } catch { return null; }
+  }
+
+  // 匿名浏览只用来按天去重计数，存的是哈希
+  function anonViewer(req, kind) {
+    const raw = `${req.socket.remoteAddress}|${req.headers['user-agent'] ?? ''}`;
+    return `${kind}:${createHash('sha256').update(raw).digest('hex').slice(0, 16)}`;
+  }
+
   function limitRegister(req) {
     const ip = req.socket.remoteAddress ?? '?';
     const now = Date.now();
@@ -83,7 +107,12 @@ export function createApp(svc, { publicUrl } = {}) {
     const client = {
       webUrl: (p) => base + p,
       search: async ({ q, tag, limit }) => svc.search(q, { tag, limit }),
-      getGuide: async (id) => svc.getGuide(id),
+      getGuide: async (id) => {
+        let viewer;
+        try { viewer = agent().owner_id; } catch { viewer = anonViewer(req, 'api'); }
+        return svc.getGuide(id, { viewer, source: 'agent' });
+      },
+      upload: async ({ data, mime }) => { const up = svc.saveUpload(agent(), { data, mime }); return { ...up, url: base + up.path }; },
       publish: async (c) => svc.publishGuide(agent(), c),
       reportRun: async (id, b) => svc.reportRun(agent(), id, b),
       propose: async (id, b) => svc.propose(agent(), id, b),
@@ -128,13 +157,13 @@ function html(res, page, status = 200) {
   });
 }
 
-function body(req) {
+function body(req, max = MAX_BODY) {
   return new Promise((resolve, reject) => {
     let size = 0;
     const chunks = [];
     req.on('data', (c) => {
       size += c.length;
-      if (size > MAX_BODY) {
+      if (size > max) {
         reject(new HttpError(413, '请求太大'));
         req.destroy();
         return;

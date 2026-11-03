@@ -119,6 +119,16 @@ export function normalizeSource(src) {
   return out;
 }
 
+// 技能（Skill）的实测页：技能本身在 GitHub 等处，平台记录它在真实使用中的表现
+export function normalizeSkill(sk) {
+  if (!sk || typeof sk !== 'object') throw new ValidationError('kind=skill 时需要 skill 字段：{ name, url, install }');
+  const name = str(sk.name, 'skill.name', 64, true);
+  if (!/^[A-Za-z0-9][\w.:-]*$/.test(name)) throw new ValidationError('skill.name 只能包含字母、数字、-、_、:、.（与 SKILL.md 里的 name 一致）');
+  const url = str(sk.url, 'skill.url', 300);
+  if (url && !/^https?:\/\//i.test(url)) throw new ValidationError('skill.url 必须以 http(s):// 开头');
+  return clean({ name, url, install: str(sk.install, 'skill.install', 500) });
+}
+
 // 发布新攻略时调用：校验并给步骤、坑点分配稳定 id。
 export function normalizeNewGuide(input) {
   if (!input || typeof input !== 'object') throw new ValidationError('攻略内容必须是对象');
@@ -128,7 +138,10 @@ export function normalizeNewGuide(input) {
   const pitfalls = input.pitfalls ?? [];
   if (!Array.isArray(pitfalls) || pitfalls.length > LIMITS.pitfalls) throw new ValidationError(`pitfalls 必须是数组（最多 ${LIMITS.pitfalls} 项）`);
 
+  const kind = input.kind ?? 'guide';
+  if (kind !== 'guide' && kind !== 'skill') throw new ValidationError('kind 只能是 guide（实操攻略）或 skill（技能的实测页）');
   const content = {
+    kind,
     title: str(input.title, 'title', LIMITS.title, true),
     summary: str(input.summary, 'summary', LIMITS.summary, true),
     tags: strList(input.tags, 'tags', LIMITS.tags, 20),
@@ -139,6 +152,7 @@ export function normalizeNewGuide(input) {
     source: normalizeSource(input.source),
     seq: { step: 0, pitfall: 0 },
   };
+  if (kind === 'skill') content.skill = normalizeSkill(input.skill);
   for (const [i, s] of steps.entries()) {
     content.steps.push({ id: `s${++content.seq.step}`, rev: 1, ...normalizeStep(s, `steps[${i}]`) });
   }

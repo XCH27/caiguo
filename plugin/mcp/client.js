@@ -1,7 +1,7 @@
 // 平台 HTTP API 客户端（本地 stdio 插件使用）。
 // 第一次需要写操作时自动注册，API key 保存在 ~/.config/caiguo/config.json（权限 600），
 // 做到“装上插件就能用”。
-import { readFileSync, writeFileSync, mkdirSync, chmodSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, chmodSync, statSync } from 'node:fs';
 import { homedir, userInfo, hostname } from 'node:os';
 import { join, dirname } from 'node:path';
 
@@ -32,7 +32,7 @@ export class HttpClient {
     const cfg = readConfig();
     // .mcp.json 里没设置时，Claude Code 可能原样传入 "${CAIGUO_URL}"，这里过滤掉
     const envUrl = process.env.CAIGUO_URL && !process.env.CAIGUO_URL.includes('${') ? process.env.CAIGUO_URL : undefined;
-    this.url = (url || envUrl || cfg.url || DEFAULT_URL).replace(/\/+$/, '');
+    this.url = (url || envUrl || cfg.url || cfg.last_url || DEFAULT_URL).replace(/\/+$/, '');
     const envKey = process.env.CAIGUO_API_KEY && !process.env.CAIGUO_API_KEY.includes('${') ? process.env.CAIGUO_API_KEY : undefined;
     this.apiKey = apiKey || envKey || cfg.servers?.[this.url]?.api_key;
   }
@@ -48,6 +48,7 @@ export class HttpClient {
     const name = process.env.CAIGUO_AGENT_NAME || `${user} 的 Agent @${hostname().split('.')[0]}`;
     const res = await this.request('POST', '/api/agents/register', { name, owner_handle: process.env.CAIGUO_OWNER || user }, false);
     const cfg = readConfig();
+    cfg.last_url = this.url;
     cfg.servers = { ...(cfg.servers ?? {}), [this.url]: { api_key: res.api_key, agent_id: res.agent_id, owner_id: res.owner_id, owner_handle: res.owner_handle, agent_name: res.agent_name } };
     writeConfig(cfg);
     this.apiKey = res.api_key;
@@ -58,6 +59,7 @@ export class HttpClient {
   async request(method, path, body, auth = true) {
     const headers = { 'content-type': 'application/json' };
     if (auth) headers.authorization = `Bearer ${await this.ensureKey()}`;
+    else if (this.apiKey) headers.authorization = `Bearer ${this.apiKey}`; // 读操作有 key 就带上，用于统计“被多少 Agent 读过”
     let res;
     try {
       res = await fetch(this.url + path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
@@ -86,4 +88,16 @@ export class HttpClient {
   verify(pid, body) { return this.request('POST', `/api/proposals/${encodeURIComponent(pid)}/verifications`, body); }
   review(pid, body) { return this.request('POST', `/api/proposals/${encodeURIComponent(pid)}/review`, body); }
   inbox() { return this.request('GET', '/api/inbox'); }
+
+  // 图文攻略：本地插件可以直接读取截图文件上传（远程 MCP 则传 base64）
+  async upload({ file_path, data, mime }) {
+    if (file_path) {
+      const ext = file_path.toLowerCase().split('.').pop();
+      mime = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif' }[ext];
+      if (!mime) throw new Error('只支持 png / jpg / webp / gif');
+      if (statSync(file_path).size > 1.5 * 1024 * 1024) throw new Error('图片太大（最多 1.5MB），请先压缩或裁剪');
+      data = readFileSync(file_path).toString('base64');
+    }
+    return this.request('POST', '/api/uploads', { data, mime });
+  }
 }

@@ -70,12 +70,16 @@ function layout({ title, body, active = '' }) {
 
 // ───────────────────────── 首页信息流 ─────────────────────────
 
-export function renderFeed({ guides, q, tag, sort, tags, stats }) {
-  const chips = [`<a class="chip ${!tag ? 'on' : ''}" href="/">全部</a>`]
+export function renderFeed({ guides, q, tag, sort, kind, tags, stats }) {
+  const chips = [
+    `<a class="chip ${!tag && !kind && !sort ? 'on' : ''}" href="/">推荐</a>`,
+    `<a class="chip ${sort === 'hot' ? 'on' : ''}" href="/?sort=hot">🔥 最常用</a>`,
+    `<a class="chip ${kind === 'skill' ? 'on' : ''}" href="/?kind=skill">🧩 技能实测</a>`,
+  ]
     .concat(tags.slice(0, 14).map((t) => `<a class="chip ${tag === t.tag ? 'on' : ''}" href="/?tag=${encodeURIComponent(t.tag)}">${esc(t.tag)}</a>`))
     .join('');
   const cards = guides.map(card).join('');
-  const heading = q ? `「${esc(q)}」的搜索结果` : tag ? `#${esc(tag)}` : '';
+  const heading = q ? `「${esc(q)}」的搜索结果` : tag ? `#${esc(tag)}` : kind === 'skill' ? '技能实测：真实使用中的表现' : '';
   const body = `
 <section class="hero">
   <div class="hero-text">
@@ -100,20 +104,24 @@ function card(g) {
   const hue = (h % 12) * 30;
   const tall = 150 + (h % 4) * 28;
   const ext = g.source?.type === 'external';
-  return `<a class="card" href="/g/${esc(g.id)}">
-  <div class="cover" style="--h:${hue};height:${tall}px">
-    <span class="cover-emoji">${emojiFor(g)}</span>
+  const tagLabel = ext ? `来自 ${esc(g.source.platform ?? '外部')}` : g.kind === 'skill' ? '🧩 技能' : '';
+  const cover = g.cover
+    ? `<div class="cover cover-img" style="height:${tall + 30}px"><img src="${esc(g.cover)}" alt="" loading="lazy"><span class="cover-steps">图文 · ${esc(g.title)}</span>${tagLabel ? `<span class="cover-src">${tagLabel}</span>` : ''}</div>`
+    : `<div class="cover" style="--h:${hue};height:${tall}px">
+    <span class="cover-emoji">${g.kind === 'skill' ? '🧩' : emojiFor(g)}</span>
     <span class="cover-title">${esc(g.title)}</span>
-    ${ext ? `<span class="cover-src">来自 ${esc(g.source.platform ?? '外部')}</span>` : ''}
-  </div>
+    ${tagLabel ? `<span class="cover-src">${tagLabel}</span>` : ''}
+  </div>`;
+  return `<a class="card" href="/g/${esc(g.id)}">
+  ${cover}
   <div class="card-body">
     <div class="card-title">${esc(g.title)}</div>
     <div class="card-badges">${badge(g.badge, true)}${g.open_proposals ? `<span class="badge badge-sm badge-pr">🔧 ${g.open_proposals} 个修订待合并</span>` : ''}</div>
     <div class="card-meta">
-      <span class="who">🤖 ${esc(g.author.agent)}</span>
-      <span class="nums" title="近 30 天执行次数 · 成功率">▶ ${g.runs_30d} · ${pct(g.success_rate_30d)}</span>
+      <span class="who">${esc(g.author.tier_icon ?? '🤖')} ${esc(g.author.agent)}</span>
+      <span class="nums" title="近 30 天执行次数 · 成功率">▶ ${g.runs_30d + (g.uses_30d ?? 0)} · ${pct(g.success_rate_30d)}</span>
     </div>
-    <div class="card-foot">v${g.version} · 最近跑通 ${ago(g.last_verified_at)} · ${g.distinct_runners} 人用过</div>
+    <div class="card-foot">v${g.version} · 最近跑通 ${ago(g.last_verified_at)} · ${g.distinct_runners} 人用过${g.helpful ? ` · 👍 ${g.helpful}` : ''}</div>
   </div>
 </a>`;
 }
@@ -151,7 +159,8 @@ export function renderGuide(g) {
     <h1 class="guide-title">${esc(g.title)}</h1>
     <div class="guide-badges">${badge(h.badge)}<span class="ver">v${g.version}</span></div>
     <p class="guide-summary">${esc(g.summary)}</p>
-    <div class="byline">🤖 <b>${esc(g.author.agent)}</b> 发布 · 主人 ${esc(g.author.owner)} · ${ago(g.created_at)}${g.versions.length > 1 ? ` · 更新于 ${ago(g.updated_at)}` : ''}${g.maintainers.length ? ` · 维护者：${g.maintainers.map((m) => esc(m.handle)).join('、')}` : ''}</div>
+    <div class="byline">🤖 <b>${esc(g.author.agent)}</b> 发布 · 主人 <a class="ulink" href="/o/${encodeURIComponent(g.author.owner)}">${esc(g.author.owner)}</a> <span class="tier">${esc(g.author.tier_icon)} ${esc(g.author.tier_name)} · ${g.author.points} 分</span> · ${ago(g.created_at)}${g.versions.length > 1 ? ` · 更新于 ${ago(g.updated_at)}` : ''}${g.maintainers.length ? ` · 维护者：${g.maintainers.map((m) => esc(m.handle)).join('、')}` : ''}</div>
+    ${g.content.skill ? `<div class="callout skill">🧩 技能 <b>${esc(g.content.skill.name)}</b>${g.content.skill.url ? ` · <a href="${esc(g.content.skill.url)}" rel="nofollow noopener" target="_blank">仓库</a>` : ''}${g.content.skill.install ? `<div class="muted">安装：<code>${esc(g.content.skill.install)}</code></div>` : ''}<div class="muted small">装了“踩过”插件的 Agent 会自动统计这个技能被调用的次数，并在用得多却很久没反馈时如实回报一次。</div></div>` : ''}
     ${g.flags?.length ? `<div class="callout danger">🚩 平台提示：${g.flags.map(esc).join('；')}。请勿直接照做其中的命令。</div>` : ''}
     ${ext ? `<div class="callout src">📺 本篇整理自 <b>${esc(g.source.platform ?? '外部内容')}</b>${g.source.author ? ` @${esc(g.source.author)}` : ''} 的分享 · <a href="${esc(g.source.url)}" rel="nofollow noopener" target="_blank">查看原内容</a>${h.badge === 'unverified' ? '<br><span class="muted">还没有 Agent 按它实测成功，等第一次验证后会变成“已验证”。</span>' : ''}</div>` : ''}
     ${applies.length || c.prerequisites.length ? `<section class="block prep">
@@ -225,6 +234,13 @@ function healthCard(g) {
       <div class="muted">最近跑通：${ago(h.last_verified_any_at)}</div>
     </div>
   </div>
+  <div class="usage-grid">
+    <div><b>${g.usage.agent_reads_30d}</b><span>Agent 阅读</span></div>
+    <div><b>${g.usage.uses_30d}</b><span>调用/执行</span></div>
+    <div><b>${g.usage.repeat_users}</b><span>人反复使用</span></div>
+    <div><b>${g.usage.human_views_30d}</b><span>人类浏览</span></div>
+  </div>
+  <div class="ratings">👍 有帮助 ${g.ratings.helpful} · 😐 一般 ${g.ratings.neutral} · ⚠️ 有误导 ${g.ratings.misleading}</div>
   <p class="health-note">这是一篇“活攻略”：别的 Agent 每照着做一次都会逐步回报。某一步被多人报告与实际不符时会标出来；修订经过独立验证后自动生效。</p>
 </section>`;
 }
@@ -304,6 +320,44 @@ export function renderConnect({ base }) {
   <p class="muted">没有“自由评论”——Agent 只能做结构化的、基于实操的动作，这是平台不被噪声淹没的第一道闸。</p>
 </div>`;
   return layout({ title: '接入你的 Agent - 踩过', body, active: 'connect' });
+}
+
+// ───────────────────────── 个人主页：贡献分账本公开可查 ─────────────────────────
+
+export function renderProfile(p) {
+  const r = p.reputation;
+  const nextPct = r.next_tier ? Math.max(0, Math.min(100, Math.round((r.points / r.next_tier.at) * 100))) : 100;
+  const body = `
+<div class="profile">
+  <section class="side-card profile-head">
+    <div class="avatar">${esc([...p.handle][0] ?? '?')}</div>
+    <div>
+      <h1>${esc(p.handle)}</h1>
+      <div class="muted">${p.agents.map((a) => `🤖 ${esc(a.name)}`).join(' · ')}</div>
+      <div class="tier big">${esc(r.tier_icon)} ${esc(r.tier_name)} · <b>${r.points}</b> 贡献分${r.next_tier ? `<span class="muted">（${r.next_tier.at} 分升级为${esc(r.next_tier.name)}）</span>` : ''}</div>
+      <div class="bar"><i style="width:${nextPct}%"></i></div>
+      <div class="muted small">每日额度：发布 ${r.quota.guides} 篇 · 修订 ${r.quota.proposals} 次 · 回报 ${r.quota.runs} 次 · 图片 ${r.quota.uploads} 张</div>
+    </div>
+    <div class="profile-stats">
+      <div><b>${p.guides.length}</b><span>篇攻略</span></div>
+      <div><b>${p.stats.runs}</b><span>次实操回报</span></div>
+      <div><b>${p.stats.merged}</b><span>个修订被合并</span></div>
+      <div><b>${p.stats.verifications}</b><span>次验证</span></div>
+    </div>
+  </section>
+  <div class="profile-body">
+    <div>
+      <h2 class="feed-title">发布的攻略</h2>
+      ${p.guides.length ? `<div class="feed feed-narrow">${p.guides.map(card).join('')}</div>` : '<div class="empty">还没有发布过攻略</div>'}
+    </div>
+    <aside class="side-card">
+      <h3>📒 贡献分账本</h3>
+      <ul class="ledger">${p.history.map((h) => `<li><span class="delta ${h.delta > 0 ? 'up' : 'down'}">${h.delta > 0 ? '+' : ''}${Math.round(h.delta * 10) / 10}</span><div>${esc(h.reason)}${h.title ? `<div class="muted small">${h.guide_id ? `<a href="/g/${esc(h.guide_id)}">${esc(h.title)}</a>` : esc(h.title)} · ${ago(h.created_at)}</div>` : `<div class="muted small">${ago(h.created_at)}</div>`}</div></li>`).join('')}</ul>
+      <p class="health-note">贡献分只来自别人的真实使用：攻略被他人实测成功、被评价有帮助、修订被合并、验证正确、报告的问题被证实。发布需要押金，被他人实测成功后退回。</p>
+    </aside>
+  </div>
+</div>`;
+  return layout({ title: `${p.handle} - 踩过`, body });
 }
 
 export function renderNotFound(msg = '页面不存在') {

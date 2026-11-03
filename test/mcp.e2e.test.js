@@ -5,11 +5,11 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawnSync } from 'node:child_process';
+import { spawnSync, spawn } from 'node:child_process';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
@@ -55,7 +55,7 @@ test('本地 stdio 插件：标准 MCP 客户端可以完成完整闭环', async
   const { tools } = await A.client.listTools();
   assert.deepEqual(tools.map((t) => t.name).sort(), [
     'caiguo_get_guide', 'caiguo_inbox', 'caiguo_propose_change', 'caiguo_publish_guide',
-    'caiguo_report_run', 'caiguo_review_change', 'caiguo_search', 'caiguo_verify_change',
+    'caiguo_report_run', 'caiguo_review_change', 'caiguo_search', 'caiguo_upload_image', 'caiguo_verify_change',
   ]);
   assert.match(A.client.getInstructions() ?? '', /实操攻略/);
 
@@ -136,7 +136,7 @@ test('远程 HTTP MCP 端点（/mcp）可被标准客户端连接', async () => 
   const client = new Client({ name: 'remote-test', version: '1.0.0' });
   await client.connect(transport);
   const { tools } = await client.listTools();
-  assert.equal(tools.length, 8);
+  assert.equal(tools.length, 9);
   const r = text(await client.callTool({ name: 'caiguo_inbox', arguments: {} }));
   assert.match(r, /远程Agent/);
   await client.close();
@@ -145,7 +145,9 @@ test('远程 HTTP MCP 端点（/mcp）可被标准客户端连接', async () => 
 test('反馈闭环钩子：读过攻略没回报会提醒一次，回报过或已提醒过则放行', () => {
   const hook = join(root, 'plugin/hooks/track.js');
   const sid = `t${Date.now()}`;
-  const call = (mode, input) => spawnSync(process.execPath, [hook, mode], { input: JSON.stringify({ session_id: sid, ...input }), encoding: 'utf8' });
+  const tmp = mkdtempSync(join(tmpdir(), 'cg-hook-'));
+  const env = { ...process.env, CAIGUO_CONFIG: join(tmp, 'config.json'), CAIGUO_USAGE_FILE: join(tmp, 'usage.json') };
+  const call = (mode, input) => spawnSync(process.execPath, [hook, mode], { input: JSON.stringify({ session_id: sid, ...input }), encoding: 'utf8', env });
   call('post', { tool_name: 'mcp__plugin_caiguo_caiguo__caiguo_get_guide', tool_input: { guide_id: 'g_1' }, tool_response: { content: [{ type: 'text', text: '# 某攻略  [g_1] v1' }] } });
   const first = call('stop', {});
   assert.equal(JSON.parse(first.stdout).decision, 'block');
@@ -153,12 +155,41 @@ test('反馈闭环钩子：读过攻略没回报会提醒一次，回报过或�
   assert.equal(call('stop', {}).stdout, ''); // 只提醒一次
   // 新会话：回报过就不提醒
   const sid2 = `${sid}b`;
-  const call2 = (mode, input) => spawnSync(process.execPath, [hook, mode], { input: JSON.stringify({ session_id: sid2, ...input }), encoding: 'utf8' });
+  const call2 = (mode, input) => spawnSync(process.execPath, [hook, mode], { input: JSON.stringify({ session_id: sid2, ...input }), encoding: 'utf8', env });
   call2('post', { tool_name: 'mcp__caiguo__caiguo_get_guide', tool_input: { guide_id: 'g_2' } });
   call2('post', { tool_name: 'mcp__caiguo__caiguo_report_run', tool_input: { guide_id: 'g_2' } });
   assert.equal(call2('stop', {}).stdout, '');
   // stop_hook_active 时绝不阻塞
   const sid3 = `${sid}c`;
-  spawnSync(process.execPath, [hook, 'post'], { input: JSON.stringify({ session_id: sid3, tool_name: 'x_caiguo_get_guide', tool_input: { guide_id: 'g_3' } }) });
-  assert.equal(spawnSync(process.execPath, [hook, 'stop'], { input: JSON.stringify({ session_id: sid3, stop_hook_active: true }), encoding: 'utf8' }).stdout, '');
+  spawnSync(process.execPath, [hook, 'post'], { input: JSON.stringify({ session_id: sid3, tool_name: 'x_caiguo_get_guide', tool_input: { guide_id: 'g_3' } }), env });
+  assert.equal(spawnSync(process.execPath, [hook, 'stop'], { input: JSON.stringify({ session_id: sid3, stop_hook_active: true }), encoding: 'utf8', env }).stdout, '');
+});
+
+test('使用统计钩子：本地给技能调用计数，结束时上报，用得多又没反馈时偶尔提醒', async () => {
+  const author = svc.authenticate(svc.registerAgent({ name: '技能作者', owner_handle: 'skill-author' }).api_key);
+  const { guide_id } = svc.publishGuide(author, {
+    kind: 'skill', title: '表格技能实测页', summary: 's', skill: { name: 'sheet-helper' }, steps: [{ action: '安装' }],
+  });
+  const user = svc.registerAgent({ name: '用户Agent', owner_handle: 'skill-user' });
+  const tmp = mkdtempSync(join(tmpdir(), 'cg-usage-'));
+  const cfg = join(tmp, 'config.json');
+  writeFileSync(cfg, JSON.stringify({ last_url: base, servers: { [base]: { api_key: user.api_key } } }));
+  const env = { ...process.env, CAIGUO_CONFIG: cfg, CAIGUO_USAGE_FILE: join(tmp, 'usage.json'), CAIGUO_URL: '' };
+  const hook = join(root, 'plugin/hooks/track.js');
+  const run = (mode, input) => new Promise((resolve) => {
+    const child = spawn(process.execPath, [hook, mode], { env });
+    let out = '';
+    child.stdout.on('data', (d) => { out += d; });
+    child.on('close', () => resolve(out));
+    child.stdin.end(JSON.stringify({ session_id: `u${Date.now()}`, ...input }));
+  });
+  for (let i = 0; i < 6; i++) await run('post', { tool_name: 'Skill', tool_input: { skill: 'sheet-helper' } });
+  await run('post', { tool_name: 'Skill', tool_input: { skill: 'caiguo:using-guides' } }); // 自己的技能不计
+  const out = await run('stop', {});
+  assert.equal(svc.getGuide(guide_id).usage.uses_30d, 6);
+  const usage = JSON.parse(readFileSync(join(tmp, 'usage.json'), 'utf8'));
+  assert.deepEqual(usage.pending, {});
+  assert.equal(usage.skills['sheet-helper'].guide_id, guide_id);
+  assert.match(JSON.parse(out).reason, /sheet-helper（最近用了 6 次/);
+  assert.equal(await run('stop', {}), ''); // 7 天内不重复提醒
 });

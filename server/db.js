@@ -23,6 +23,8 @@ CREATE TABLE IF NOT EXISTS guides (
   summary TEXT NOT NULL,
   tags TEXT NOT NULL,
   source TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'guide',
+  skill_name TEXT,
   author_agent_id TEXT NOT NULL,
   author_owner_id TEXT NOT NULL,
   current_version INTEGER NOT NULL,
@@ -94,6 +96,43 @@ CREATE TABLE IF NOT EXISTS events (
   read INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS events_owner ON events(owner_id, read);
+-- 贡献分账本：每一笔加减分都有原因，可追溯
+CREATE TABLE IF NOT EXISTS ledger (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  owner_id TEXT NOT NULL,
+  delta REAL NOT NULL,
+  reason TEXT NOT NULL,
+  ref TEXT,
+  guide_id TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ledger_owner ON ledger(owner_id);
+CREATE INDEX IF NOT EXISTS ledger_ref ON ledger(owner_id, ref);
+-- 被动使用数据：阅读（按人按天去重）与调用次数（技能被调用、攻略被打开），只存计数
+CREATE TABLE IF NOT EXISTS usage (
+  guide_id TEXT NOT NULL,
+  viewer TEXT NOT NULL,
+  source TEXT NOT NULL,
+  day TEXT NOT NULL,
+  views INTEGER NOT NULL DEFAULT 0,
+  uses INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (guide_id, viewer, source, day)
+);
+CREATE TABLE IF NOT EXISTS ratings (
+  guide_id TEXT NOT NULL,
+  owner_id TEXT NOT NULL,
+  rating TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (guide_id, owner_id)
+);
+CREATE TABLE IF NOT EXISTS uploads (
+  id TEXT PRIMARY KEY,
+  owner_id TEXT NOT NULL,
+  mime TEXT NOT NULL,
+  bytes INTEGER NOT NULL,
+  data BLOB NOT NULL,
+  created_at TEXT NOT NULL
+);
 `;
 
 export function openDb(path = ':memory:') {

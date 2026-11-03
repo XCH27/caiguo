@@ -65,7 +65,7 @@ test('完整闭环：发布 → 多人报告过时 → 提交修订 → 独立�
   const author = mk('作者');
   const { guide_id } = svc.publishGuide(author, GUIDE);
   let g = svc.getGuide(guide_id);
-  assert.equal(g.health.badge, 'fresh');
+  assert.equal(g.health.badge, 'new'); // 只有作者自己跑过
   assert.equal(g.content.pitfalls[0].step_id, 's3');
 
   tick(20);
@@ -168,4 +168,78 @@ test('搜索：中文二字切片匹配', () => {
   assert.equal(svc.search('云服务 注册')[0].title, GUIDE.title);
   assert.equal(svc.search('小程序审核')[0].title, '微信小程序提交审核');
   assert.equal(svc.search('完全无关的东西').length, 0);
+});
+
+test('贡献分：新号额度有限，发布要押金，被别人实测成功才退回并奖励', () => {
+  const { svc, tick, mk } = setup();
+  const a = mk('新人');
+  assert.equal(svc.rep.points(a.owner_id), 10);
+  const g1 = svc.publishGuide(a, GUIDE);
+  svc.publishGuide(a, { ...GUIDE, title: '第二篇' });
+  assert.equal(svc.rep.points(a.owner_id), 4);
+  assert.throws(() => svc.publishGuide(a, { ...GUIDE, title: '第三篇' }), /额度已用完/); // 新手每天 2 篇
+  tick(1);
+  svc.publishGuide(a, { ...GUIDE, title: '第三篇' });
+  tick(1);
+  assert.throws(() => svc.publishGuide(a, { ...GUIDE, title: '第四篇' }), /押金/); // 只剩 1 分
+  // 别人实测成功 → 退押金 3 + 奖励 2×0.5（新手信号打对折），评价有帮助 +0.5
+  const b = mk('路人');
+  svc.reportRun(b, g1.guide_id, { outcome: 'success', step_results: [], rating: 'helpful' });
+  assert.equal(svc.rep.points(a.owner_id), 1 + 3 + 1 + 0.5);
+  // 同一个人重复实测不会重复加分
+  svc.reportRun(b, g1.guide_id, { outcome: 'success', step_results: [], rating: 'helpful' });
+  assert.equal(svc.rep.points(a.owner_id), 5.5);
+  // 自己给自己跑不加分
+  svc.reportRun(a, g1.guide_id, { outcome: 'success', step_results: [], rating: 'helpful' });
+  assert.equal(svc.rep.points(a.owner_id), 5.5);
+});
+
+test('贡献分：修订合并奖励提交者、验证者和最早报告问题的人', () => {
+  const { svc, mk } = setup();
+  const author = mk('作者');
+  const { guide_id } = svc.publishGuide(author, GUIDE);
+  const [x, y, z] = ['x', 'y', 'z'].map(mk);
+  svc.reportRun(z, guide_id, { outcome: 'partial', step_results: [{ step_id: 's2', status: 'drift', observed: '按钮改名' }] });
+  const p = svc.propose(x, guide_id, { rationale: '按钮改名', ops: [{ op: 'replace_step', step_id: 's2', set: { action: '新' } }], evidence: { outcome: 'success' } });
+  svc.verifyProposal(y, p.proposal_id, { outcome: 'success' });
+  svc.reviewProposal(author, p.proposal_id, { action: 'merge' });
+  assert.equal(svc.rep.points(x.owner_id), 15); // 10 + 5
+  assert.equal(svc.rep.points(y.owner_id), 11); // 验证对了 +1
+  assert.equal(svc.rep.points(z.owner_id), 11); // 报告被证实 +1
+  // 被拒绝 -1
+  const p2 = svc.propose(x, guide_id, { rationale: '乱改', ops: [{ op: 'replace_step', step_id: 's1', set: { action: '乱写' } }], evidence: { outcome: 'success' } });
+  svc.reviewProposal(author, p2.proposal_id, { action: 'reject', note: '与官方流程不符' });
+  assert.equal(svc.rep.points(x.owner_id), 14);
+});
+
+test('质量：被多人评为“误导”且没人跑通的内容会被折叠', () => {
+  const { svc, mk } = setup();
+  const spammer = mk('垃圾号');
+  const { guide_id } = svc.publishGuide(spammer, { ...GUIDE, title: '某云服务注册秘籍' });
+  assert.equal(svc.search('某云服务注册秘籍').length, 1);
+  for (const n of ['a', 'b', 'c']) svc.reportRun(mk(n), guide_id, { outcome: 'failed', step_results: [], rating: 'misleading' });
+  assert.equal(svc.search('某云服务注册秘籍').length, 0);
+  assert.ok(svc.rep.points(spammer.owner_id) < 7); // 押金沉没 + 被扣分
+});
+
+test('使用统计：技能调用次数、阅读、回头客', () => {
+  const { svc, tick, mk } = setup();
+  const author = mk('技能作者');
+  const { guide_id } = svc.publishGuide(author, {
+    kind: 'skill', title: '某技能的实测页', summary: '收集真实使用反馈',
+    skill: { name: 'pdf-filler', url: 'https://example.com/skill' },
+    steps: [{ action: '安装技能', expect: '技能出现在列表里' }],
+  });
+  const u = mk('用户');
+  svc.reportUsage(u, [{ skill_name: 'pdf-filler', count: 3 }, { skill_name: 'not-on-platform', count: 9 }]);
+  tick(1);
+  const r = svc.reportUsage(u, [{ skill_name: 'myplugin:pdf-filler', count: 2 }]);
+  assert.equal(r.matched['myplugin:pdf-filler'], guide_id);
+  svc.getGuide(guide_id, { viewer: u.owner_id, source: 'agent' });
+  svc.getGuide(guide_id, { viewer: u.owner_id, source: 'agent' }); // 同一天只算一次阅读
+  const g = svc.getGuide(guide_id);
+  assert.equal(g.usage.uses_30d, 5);
+  assert.equal(g.usage.agent_reads_30d, 1);
+  assert.equal(g.usage.repeat_users, 1);
+  assert.equal(svc.search('', { kind: 'skill' })[0].uses_30d, 5);
 });

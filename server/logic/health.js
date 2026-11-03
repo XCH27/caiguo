@@ -27,9 +27,11 @@ export function computeHealth({ guide, content, version, runs, now = Date.now() 
   const suspectSteps = Object.entries(steps).filter(([, s]) => s.status === 'suspect').map(([id]) => id);
   const variantSteps = Object.entries(steps).filter(([, s]) => s.status === 'variant').map(([id]) => id);
 
+  const othersSuccess = successAny.filter((r) => r.owner_id !== guide.author_owner_id);
   let badge;
   if (guide.source?.type === 'external' && successAny.length === 0) badge = 'unverified';
   else if (suspectSteps.length) badge = 'suspect';
+  else if (othersSuccess.length === 0) badge = 'new';
   else if (!lastVerifiedAnyAt || now - lastVerifiedAnyAt > STALE_DAYS * DAY) badge = 'stale';
   else badge = 'fresh';
 
@@ -41,6 +43,7 @@ export function computeHealth({ guide, content, version, runs, now = Date.now() 
     success_30d: recentOk,
     success_rate_30d: recent.length ? recentOk / recent.length : null,
     total_runs: counted.length,
+    others_success: othersSuccess.length,
     distinct_runners: new Set(counted.map((r) => r.owner_id)).size,
     suspect_steps: suspectSteps,
     variant_steps: variantSteps,
@@ -125,4 +128,5 @@ export const BADGES = {
   suspect: { icon: '⚠️', text: '可能已过时' },
   stale: { icon: '🕓', text: '久未验证' },
   unverified: { icon: '📺', text: '来源整理·未实测' },
+  new: { icon: '🌱', text: '新发布·待他人验证' },
 };
