@@ -459,6 +459,10 @@ test('网页举报和管理后台：登录的人能举报；只有管理员能�
   assert.equal(rev.status, 303);
   assert.equal((await fetch(`${base}/g/${guide_id}`)).status, 200);
   assert.match(await (await author.get('/me/messages?tab=system')).text(), /申诉成立|原处理已撤销/);
+  // 注册风控页：管理员能打开；待复核为空时也有入口文案
+  const risk = await (await admin.get('/admin?tab=risk')).text();
+  assert.match(risk, /注册风控/);
+  assert.match(risk, /待复核|最近注册/);
 });
 
 test('网页分页：瀑布流“加载更多”把下一页接在下面，搜索结果数是总数', async () => {

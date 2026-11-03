@@ -142,21 +142,26 @@ export function createApp(svc, { publicUrl, feedPage = 40, trustProxy = false } 
       if (!me.admin) throw new HttpError(403, '只有管理员可以打开管理后台');
       const tab = url.searchParams.get('tab') || 'open';
       const appealsStatus = url.searchParams.get('status') === 'done' ? 'done' : 'open';
+      const riskStatus = ['recent', 'cleared', 'limited'].includes(url.searchParams.get('status')) ? url.searchParams.get('status') : 'review';
+      const skipQueue = tab === 'banned' || tab === 'appeals' || tab === 'risk';
       return html(res, V.renderAdmin({
-        me, tab, appealsStatus,
-        queue: tab === 'banned' || tab === 'appeals' ? [] : svc.moderationQueue({ status: tab === 'done' ? 'done' : 'open' }),
+        me, tab, appealsStatus, riskStatus,
+        queue: skipQueue ? [] : svc.moderationQueue({ status: tab === 'done' ? 'done' : 'open' }),
         banned: svc.bannedOwners(),
         appeals: tab === 'appeals' ? svc.appealsQueue({ status: appealsStatus }) : [],
+        risk: tab === 'risk' ? svc.signupRiskQueue({ status: riskStatus }) : [],
+        riskCounts: svc.signupRiskCounts(),
       }));
     }],
-    ['POST', /^\/admin\/(resolve|unban|restore|appeal)$/, async (req, res, m) => {
+    ['POST', /^\/admin\/(resolve|unban|restore|appeal|risk)$/, async (req, res, m) => {
       const f = await form(req);
       const me = requireMe(req, f);
       if (m[1] === 'resolve') svc.resolveReports(me.owner_id, { target_type: f.target_type, target_id: f.target_id, action: f.action, note: f.note });
       if (m[1] === 'unban') svc.unban(me.owner_id, f.owner_id);
       if (m[1] === 'restore') svc.restoreContent(me.owner_id, { target_type: f.target_type, target_id: f.target_id });
       if (m[1] === 'appeal') svc.resolveAppeal(me.owner_id, { appeal_id: f.appeal_id, action: f.action, note: f.note });
-      const back = m[1] === 'unban' ? '/admin?tab=banned' : m[1] === 'restore' ? '/admin?tab=done' : m[1] === 'appeal' ? '/admin?tab=appeals' : '/admin';
+      if (m[1] === 'risk') svc.resolveSignupRisk(me.owner_id, { owner_id: f.owner_id, action: f.action, note: f.note });
+      const back = m[1] === 'unban' ? '/admin?tab=banned' : m[1] === 'restore' ? '/admin?tab=done' : m[1] === 'appeal' ? '/admin?tab=appeals' : m[1] === 'risk' ? '/admin?tab=risk' : '/admin';
       redirect(res, back);
     }],
     ['POST', /^\/follow$/, async (req, res) => {
@@ -201,7 +206,7 @@ export function createApp(svc, { publicUrl, feedPage = 40, trustProxy = false } 
       const f = await form(req);
       try {
         checkLogin(req, f);
-        const r = svc.loginWithCode(f.phone, f.code);
+        const r = svc.loginWithCode(f.phone, f.code, { ip: clientIp(req), device: deviceFingerprint(req) });
         res.writeHead(303, { location: safeBack(f.next) ?? (r.created ? '/me/settings' : '/me'), 'set-cookie': sessionCookie(r.session) });
         return res.end();
       } catch (e) {
@@ -565,6 +570,13 @@ export function createApp(svc, { publicUrl, feedPage = 40, trustProxy = false } 
   function anonViewer(req, kind) {
     const raw = `${clientIp(req)}|${req.headers['user-agent'] ?? ''}`;
     return `${kind}:${createHash('sha256').update(raw).digest('hex').slice(0, 16)}`;
+  }
+
+  // 设备指纹：User-Agent + Accept-Language（不含 IP，和 IP 限流分开）。只用于注册计数，不存原文。
+  function deviceFingerprint(req) {
+    const ua = String(req.headers['user-agent'] ?? '');
+    const lang = String(req.headers['accept-language'] ?? '');
+    return createHash('sha256').update(`ua:${ua}|lang:${lang}`).digest('hex').slice(0, 32);
   }
 
   function limitRegister(req) {

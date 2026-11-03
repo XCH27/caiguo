@@ -673,6 +673,74 @@ test('注册风控：默认不接受虚拟运营商号段；主人可以写一�
   assert.ok(!bio.includes('13812345678'), '简介里的手机号被打码');
 });
 
+test('注册风控：同 IP / 设备新号限流并进复核队列；管理员可放行、限制或封禁', () => {
+  let clock = Date.parse('2026-11-03T00:00:00Z');
+  const svc = new Caiguo(openDb(':memory:'), { now: () => clock });
+  const adminReg = svc.registerAgent({ name: '运营Agent', owner_handle: '运营风控', verified: true, model: '测试模型' });
+  svc.db.prepare("UPDATE owners SET role = 'admin' WHERE id = ?").run(adminReg.owner_id);
+
+  const signup = (phone, { ip, device }) => {
+    clock += 120e3;
+    const sent = svc.sendLoginCode(phone, { ip });
+    return svc.loginWithCode(phone, sent.dev_code, { ip, device });
+  };
+
+  // 同 IP + 同设备：第 1 个正常，第 2 个起标 review
+  const a1 = signup('13800000001', { ip: '203.0.113.9', device: 'dev-a' });
+  assert.equal(svc.db.prepare('SELECT risk_status FROM owners WHERE id = ?').get(a1.owner_id).risk_status, null);
+  const a2 = signup('13800000002', { ip: '203.0.113.9', device: 'dev-a' });
+  assert.equal(svc.db.prepare('SELECT risk_status FROM owners WHERE id = ?').get(a2.owner_id).risk_status, 'review');
+  assert.equal(svc.signupRiskCounts().review, 1);
+
+  // 同设备、不同 IP：第 3 个仍可建（设备日限 3），第 4 个拒
+  signup('13800000003', { ip: '203.0.113.10', device: 'dev-a' });
+  clock += 120e3;
+  const s4 = svc.sendLoginCode('13800000004', { ip: '203.0.113.11' });
+  assert.throws(() => svc.loginWithCode('13800000004', s4.dev_code, { ip: '203.0.113.11', device: 'dev-a' }), /设备今天注册/);
+
+  // 同 IP、不同设备：每小时最多 3 个（该 IP 已有 a1、a2，再建 1 个到上限，再一个撞小时限）
+  signup('13800000005', { ip: '203.0.113.9', device: 'dev-b' });
+  clock += 120e3;
+  const s6 = svc.sendLoginCode('13800000006', { ip: '203.0.113.9' });
+  assert.throws(() => svc.loginWithCode('13800000006', s6.dev_code, { ip: '203.0.113.9', device: 'dev-c' }), /网络注册太频繁/);
+
+  // 过一小时后同 IP 还能再注册，但 24h 日限 5：当前该 IP 已有 3 个，再 2 个到日限，第 6 个拒
+  clock += 3600e3;
+  signup('13800000007', { ip: '203.0.113.9', device: 'dev-d' });
+  signup('13800000008', { ip: '203.0.113.9', device: 'dev-e' });
+  clock += 120e3;
+  const s9 = svc.sendLoginCode('13800000009', { ip: '203.0.113.9' });
+  assert.throws(() => svc.loginWithCode('13800000009', s9.dev_code, { ip: '203.0.113.9', device: 'dev-f' }), /网络今天注册/);
+
+  const q = svc.signupRiskQueue({ status: 'review' });
+  assert.ok(q.some((x) => x.id === a2.owner_id && x.flags.includes('ip_burst')));
+
+  // 管理员限制写操作，放行后恢复；封禁写入 banned_at
+  assert.throws(() => svc.resolveSignupRisk(adminReg.owner_id, { owner_id: a2.owner_id, action: 'limit' }), /原因/);
+  svc.resolveSignupRisk(adminReg.owner_id, { owner_id: a2.owner_id, action: 'limit', note: '同网短时多号，先限制' });
+  const limitedKey = svc.registerAgent({ name: '受限Agent', owner_id: a2.owner_id, model: '测试模型' }).api_key;
+  const limited = svc.authenticate(limitedKey);
+  svc.updateSettings(a2.owner_id, { require_publish_approval: false });
+  assert.throws(() => svc.publishGuide(limited, {
+    kind: 'pitfall', title: '不该发出去', summary: 's', tags: ['测'], pitfalls: [{ symptom: 'x', fix: 'y' }],
+  }), /限制/);
+  svc.resolveSignupRisk(adminReg.owner_id, { owner_id: a2.owner_id, action: 'clear', note: '人审通过' });
+  assert.equal(svc.db.prepare('SELECT risk_status FROM owners WHERE id = ?').get(a2.owner_id).risk_status, 'cleared');
+  assert.doesNotThrow(() => svc.publishGuide(limited, {
+    kind: 'pitfall', title: '复核通过后能发', summary: 's', tags: ['测'], pitfalls: [{ symptom: 'x', fix: 'y' }],
+  }));
+  const flagged = svc.signupRiskQueue({ status: 'review' }).find((x) => x.flags.length);
+  const banTarget = flagged?.id ?? a1.owner_id;
+  // 另建一个待复核号专门封禁：换全新 IP/设备
+  clock += 3600e3;
+  const b1 = signup('13900000001', { ip: '198.51.100.1', device: 'ban-dev' });
+  const b2 = signup('13900000002', { ip: '198.51.100.1', device: 'ban-dev' });
+  svc.resolveSignupRisk(adminReg.owner_id, { owner_id: b2.owner_id, action: 'ban', note: '批量注册' });
+  assert.ok(svc.db.prepare('SELECT banned_at FROM owners WHERE id = ?').get(b2.owner_id).banned_at);
+  assert.ok(svc.signupRiskQueue({ status: 'recent' }).length >= 5);
+  assert.ok(svc.signupRiskQueue({ status: 'limited' }).some((x) => x.id === b2.owner_id));
+})
+
 test('举报和管理：举报进队列；管理员下架笔记、隐藏评论、封禁账号；举报人和作者都收到结果', () => {
   const { svc, mk } = setup();
   const a = mk('作者');

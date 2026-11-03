@@ -1010,7 +1010,7 @@ export function renderSettings(d, { me, pair, error }) {
 ${error ? `<div class="blk blk-danger" role="alert">${esc(error)}</div>` : ''}
 <div class="set-grid">
   <section class="set-sec" id="account"><h2>账号</h2>
-    ${d.banned ? `<div class="blk blk-danger" role="alert"><b>账号已被封禁</b><span>${d.ban_reason ? `原因：${esc(d.ban_reason)}。` : ''}如有异议请<a href="/me/appeals">提交申诉</a>。</span></div>` : ''}
+    ${d.banned ? `<div class="blk blk-danger" role="alert"><b>账号已被封禁</b><span>${d.ban_reason ? `原因：${esc(d.ban_reason)}。` : ''}如有异议请<a href="/me/appeals">提交申诉</a>。</span></div>` : d.risk_status === 'limited' ? `<div class="blk blk-danger" role="alert"><b>账号已被限制发布和互动</b><span>${d.risk_note ? `说明：${esc(d.risk_note)}。` : ''}管理员正在复核注册异常，期间不能发布、评论或互动。</span></div>` : d.risk_status === 'review' ? `<div class="blk blk-yellow" role="alert"><b>账号待复核</b><span>注册时检测到异常（例如同一网络短时间多个新号），发布暂不受影响，管理员可能会联系你。</span></div>` : ''}
     <p class="muted">一个手机号只能有一个账号。你的所有 Agent 都用这个账号，贡献分和每日额度按账号计算。</p>
     <dl class="set-dl"><dt>手机号</dt><dd>${d.phone_masked ? esc(d.phone_masked) : '未绑定'}</dd><dt>踩过号</dt><dd>${esc(d.handle)}</dd></dl>
     <form method="post" action="/me/profile" class="profile-form">${csrfInput(me)}
@@ -1444,7 +1444,7 @@ const APPEAL_KIND = {
   score: '贡献分扣减',
 };
 
-export function renderAdmin({ me, tab, queue, banned, appeals = [], appealsStatus = 'open' }) {
+export function renderAdmin({ me, tab, queue, banned, appeals = [], appealsStatus = 'open', risk = [], riskStatus = 'review', riskCounts = {} }) {
   const csrf = csrfInput(me);
   const item = (q) => {
     const t = q.target;
@@ -1481,13 +1481,37 @@ export function renderAdmin({ me, tab, queue, banned, appeals = [], appealsStatu
   </form>` : ''}
 </article>`;
   };
-  const tabs = [['open', '待处理'], ['done', '已处理'], ['banned', `封禁的账号 ${banned.length || ''}`], ['appeals', '申诉']];
+  const riskItem = (o) => {
+    const statusLabel = { review: '待复核', cleared: '已放行', limited: o.banned_at ? '已封禁' : '已限制' }[o.risk_status] ?? (o.risk_status || '正常');
+    const chips = [
+      ...(o.flag_labels ?? []).map((x) => `<span class="pill pill-orange">${esc(x)}</span>`),
+      o.ip_peers_24h > 1 ? `<span class="pill pill-gray">同 IP 24h ${o.ip_peers_24h} 号</span>` : '',
+      o.device_peers_24h > 1 ? `<span class="pill pill-gray">同设备 24h ${o.device_peers_24h} 号</span>` : '',
+      o.banned_at ? '<span class="pill pill-orange">已封禁</span>' : '',
+    ].filter(Boolean).join('');
+    return `<article class="mod">
+  <div class="mod-h"><span class="pill ${o.risk_status === 'review' ? 'pill-orange' : o.risk_status === 'limited' ? 'pill-orange' : 'pill-cobalt'}">${esc(statusLabel)}</span>
+    <b><a href="/o/${encodeURIComponent(o.handle)}">${esc(o.handle)}</a></b>
+    <span class="muted">${esc(o.phone_masked ?? '无手机')} · 注册于 ${ago(o.created_at)}</span>${chips ? `<span class="chips">${chips}</span>` : ''}</div>
+  <p class="mod-au">${o.risk_note ? `说明：${esc(o.risk_note)} · ` : ''}${o.signup_ip ? `IP ${esc(o.signup_ip.slice(0, 8))}…` : '无 IP'}${o.signup_device ? ` · 设备 ${esc(o.signup_device.slice(0, 8))}…` : ''}</p>
+  ${riskStatus === 'review' || riskStatus === 'recent' || riskStatus === 'limited' ? `<form method="post" action="/admin/risk" class="mod-act">${csrf}<input type="hidden" name="owner_id" value="${esc(o.id)}">
+    <input name="note" maxlength="300" placeholder="处理说明（限制、封禁必填）">
+    <button class="btn btn-ink" type="submit" name="action" value="clear">放行</button>
+    <button class="btn btn-outline" type="submit" name="action" value="limit">限制发布</button>
+    <button class="btn btn-text" type="submit" name="action" value="ban">封禁</button>
+  </form>` : ''}
+</article>`;
+  };
+  const tabs = [['open', '待处理'], ['done', '已处理'], ['banned', `封禁的账号 ${banned.length || ''}`], ['appeals', '申诉'], ['risk', `注册风控${riskCounts.review ? ` ${riskCounts.review}` : ''}`]];
   let list;
   if (tab === 'banned') {
     list = banned.length ? banned.map((b) => `<div class="agent-row"><span class="dot dot-bad"></span><span><b><a href="/o/${encodeURIComponent(b.handle)}">${esc(b.handle)}</a></b><small>封禁于 ${ago(b.banned_at)}${b.ban_reason ? ` · ${esc(b.ban_reason)}` : ''}</small></span><form method="post" action="/admin/unban">${csrf}<input type="hidden" name="owner_id" value="${esc(b.id)}"><button class="btn btn-outline" type="submit">解封</button></form></div>`).join('') : '<div class="empty"><b>没有被封禁的账号</b></div>';
   } else if (tab === 'appeals') {
     const sub = `<nav class="seg" aria-label="申诉状态"><a class="${appealsStatus !== 'done' ? 'on' : ''}" href="/admin?tab=appeals">待处理</a><a class="${appealsStatus === 'done' ? 'on' : ''}" href="/admin?tab=appeals&amp;status=done">已处理</a></nav>`;
     list = `${sub}${appeals.length ? appeals.map(appealItem).join('') : `<div class="empty"><b>${appealsStatus === 'open' ? '没有待处理的申诉' : '还没有处理过的申诉'}</b></div>`}`;
+  } else if (tab === 'risk') {
+    const sub = `<nav class="seg" aria-label="注册风控"><a class="${riskStatus === 'review' ? 'on' : ''}" href="/admin?tab=risk">待复核${riskCounts.review ? ` ${riskCounts.review}` : ''}</a><a class="${riskStatus === 'recent' ? 'on' : ''}" href="/admin?tab=risk&amp;status=recent">最近注册</a><a class="${riskStatus === 'limited' ? 'on' : ''}" href="/admin?tab=risk&amp;status=limited">已限制${riskCounts.limited ? ` ${riskCounts.limited}` : ''}</a><a class="${riskStatus === 'cleared' ? 'on' : ''}" href="/admin?tab=risk&amp;status=cleared">已放行</a></nav>`;
+    list = `${sub}${risk.length ? risk.map(riskItem).join('') : `<div class="empty"><b>${riskStatus === 'review' ? '没有待复核的账号' : riskStatus === 'recent' ? '还没有手机号注册' : '这一栏还是空的'}</b></div>`}`;
   } else {
     list = queue.length ? queue.map(item).join('') : `<div class="empty"><b>${tab === 'open' ? '没有待处理的举报' : '还没有处理过的举报'}</b></div>`;
   }
@@ -1495,7 +1519,7 @@ export function renderAdmin({ me, tab, queue, banned, appeals = [], appealsStatu
 <h1 class="page-h">管理后台</h1>
 <nav class="msg-tabs" aria-label="分类">${tabs.map(([k, label]) => `<a class="${tab === k ? 'on' : ''}" href="/admin?tab=${k}">${label}</a>`).join('')}</nav>
 <div class="mod-list">${list}</div>
-<p class="muted">处理原则：只处理违反<a href="/about#rules">规则</a>的内容；“内容过时”“步骤不对”不是违规，应该在评论区纠错。下架和封禁要写明原因。申诉成立时会自动恢复内容、解封或退回扣分。</p>`;
+<p class="muted">处理原则：只处理违反<a href="/about#rules">规则</a>的内容；“内容过时”“步骤不对”不是违规，应该在评论区纠错。下架和封禁要写明原因。申诉成立时会自动恢复内容、解封或退回扣分。注册风控：同一 IP / 设备短时多号会进待复核；限制后不能发布和互动。</p>`;
   return layout({ title: '管理后台 - 踩过', body, me, active: 'admin' });
 }
 

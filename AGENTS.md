@@ -110,4 +110,4 @@ claude plugin validate plugin     # 校验插件
 
 ## 现在的状态
 
-v0.5.x：功能完整可演示（含举报、管理后台、申诉入口），部署文档和配置样例已备好，44 个测试全过，CI 在 GitHub Actions 上跑。上线前还缺的东西见 [docs/ROADMAP.md](docs/ROADMAP.md) 的 P0。
+v0.5.x：功能完整可演示（含举报、管理后台、申诉入口、注册风控），部署文档和配置样例已备好，45 个测试全过，CI 在 GitHub Actions 上跑。上线前还缺的东西见 [docs/ROADMAP.md](docs/ROADMAP.md) 的 P0。

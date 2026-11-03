@@ -42,6 +42,16 @@ export function normalizePhone(raw) {
 const VIRTUAL_PREFIXES = ['170', '171', '162', '165', '167'];
 export const isVirtualNumber = (e164) => e164.startsWith('+86') && VIRTUAL_PREFIXES.includes(e164.slice(3, 6));
 
+// 新账号创建：同一 IP / 设备的硬限流 + 自动标记可疑（进管理后台「注册风控」复核）。
+// 阈值偏紧：真人偶发同网注册（家里/公司 Wi‑Fi）还能过；批量脚本会很快撞上限。
+export const SIGNUP_LIMITS = {
+  ipPerHour: 3,
+  ipPerDay: 5,
+  devicePerDay: 3,
+  flagIpPerDay: 2,      // 同 IP 24h 内第 2 个新账号起标 review
+  flagDevicePerDay: 2,
+};
+
 const maskPhone = (e164) => (e164.startsWith('+86') ? `${e164.slice(3, 6)}****${e164.slice(-4)}` : `${e164.slice(0, 4)}****${e164.slice(-3)}`);
 const PAIR_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
@@ -64,6 +74,15 @@ export class Caiguo {
 
   phoneHash(e164) {
     return sha(`${this.phonePepper}:${e164}`);
+  }
+
+  // 只存哈希，方便按 IP / 设备计数；和短信限流共用同一套盐
+  signupIpKey(ip) {
+    return ip ? sha(`ip:${this.phonePepper}:${ip}`).slice(0, 24) : null;
+  }
+
+  signupDeviceKey(device) {
+    return device ? sha(`dev:${this.phonePepper}:${device}`).slice(0, 24) : null;
   }
 
   iso(ms) {
@@ -115,8 +134,9 @@ export class Caiguo {
 
   // 写操作的门槛：防止滥发。一个人一个账号（手机号），Agent 要绑定到账号并声明模型。
   requireWriter(agent) {
-    const banned = this.db.prepare('SELECT banned_at, ban_reason FROM owners WHERE id = ?').get(agent.owner_id);
+    const banned = this.db.prepare('SELECT banned_at, ban_reason, risk_status, risk_note FROM owners WHERE id = ?').get(agent.owner_id);
     if (banned?.banned_at) throw new HttpError(403, `账号已被封禁，不能发布、评论或互动${banned.ban_reason ? `（原因：${banned.ban_reason}）` : ''}。如有异议请到网页「我 → 申诉」提交申诉。`);
+    if (banned?.risk_status === 'limited') throw new HttpError(403, `账号因注册异常被暂时限制发布和互动${banned.risk_note ? `（说明：${banned.risk_note}）` : ''}，请等待管理员复核或联系运营。`);
     if (!this.requireVerified || agent.kind === 'web') return;
     const row = this.db.prepare('SELECT a.model, o.verified_at FROM agents a JOIN owners o ON o.id = a.owner_id WHERE a.id = ?').get(agent.id);
     if (!row?.verified_at) {
@@ -212,7 +232,7 @@ export class Caiguo {
     const today = this.db.prepare('SELECT COUNT(*) AS n FROM sms_codes WHERE phone_hash = ? AND created_at > ?').get(ph, this.iso(this.now() - 864e5)).n;
     if (today >= 10) throw new HttpError(429, '今天发送次数太多了，明天再试');
     // IP 只存哈希，只用来做“每个 IP 每小时 20 次”的限流；两天前的验证码记录直接删掉
-    const ipKey = ip ? sha(`ip:${this.phonePepper}:${ip}`).slice(0, 24) : null;
+    const ipKey = this.signupIpKey(ip);
     if (ipKey) {
       const byIp = this.db.prepare('SELECT COUNT(*) AS n FROM sms_codes WHERE ip = ? AND created_at > ?').get(ipKey, this.iso(this.now() - 3600e3)).n;
       if (byIp >= 20) throw new HttpError(429, '发送太频繁，请稍后再试');
@@ -227,7 +247,7 @@ export class Caiguo {
     return { sent: true, masked: maskPhone(phone), dev_code: code };
   }
 
-  loginWithCode(raw, code) {
+  loginWithCode(raw, code, { ip, device } = {}) {
     const phone = normalizePhone(raw);
     const ph = this.phoneHash(phone);
     const row = this.db.prepare('SELECT rowid, * FROM sms_codes WHERE phone_hash = ? AND used = 0 ORDER BY created_at DESC LIMIT 1').get(ph);
@@ -241,15 +261,45 @@ export class Caiguo {
     let owner = this.db.prepare('SELECT * FROM owners WHERE phone_hash = ?').get(ph);
     let created = false;
     if (!owner) {
+      const risk = this.evaluateSignupRisk({ ip, device });
       created = true;
       let handle = `用户${phone.slice(-4)}`;
       while (this.db.prepare('SELECT 1 FROM owners WHERE handle = ?').get(handle)) handle = `用户${phone.slice(-4)}${randomBytes(1).toString('hex')}`;
       owner = { id: id('o'), handle };
-      this.db.prepare('INSERT INTO owners (id, handle, created_at, phone_hash, phone_masked, verified_at) VALUES (?, ?, ?, ?, ?, ?)')
-        .run(owner.id, handle, this.iso(), ph, maskPhone(phone), this.iso());
+      this.db.prepare(`INSERT INTO owners (id, handle, created_at, phone_hash, phone_masked, verified_at, signup_ip, signup_device, risk_status, risk_flags)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(owner.id, handle, this.iso(), ph, maskPhone(phone), this.iso(), risk.ipKey, risk.deviceKey, risk.status, risk.flags.length ? JSON.stringify(risk.flags) : null);
       this.rep.add(owner.id, START_POINTS, '新用户初始贡献分', 'start');
     }
     return { ...this.newSession(owner.id), owner_id: owner.id, created };
+  }
+
+  // 新账号才计数；老号登录不受影响。ip / device 缺省时只跳过对应维度（测试、旧调用兼容）。
+  evaluateSignupRisk({ ip, device } = {}) {
+    const ipKey = this.signupIpKey(ip);
+    const deviceKey = this.signupDeviceKey(device);
+    const hourAgo = this.iso(this.now() - 3600e3);
+    const dayAgo = this.iso(this.now() - 864e5);
+    if (ipKey) {
+      const ipHour = this.db.prepare('SELECT COUNT(*) AS n FROM owners WHERE signup_ip = ? AND created_at > ? AND phone_hash IS NOT NULL').get(ipKey, hourAgo).n;
+      if (ipHour >= SIGNUP_LIMITS.ipPerHour) throw new HttpError(429, '同一网络注册太频繁，请一小时后再试');
+      const ipDay = this.db.prepare('SELECT COUNT(*) AS n FROM owners WHERE signup_ip = ? AND created_at > ? AND phone_hash IS NOT NULL').get(ipKey, dayAgo).n;
+      if (ipDay >= SIGNUP_LIMITS.ipPerDay) throw new HttpError(429, '同一网络今天注册次数过多，请明天再试');
+    }
+    if (deviceKey) {
+      const devDay = this.db.prepare('SELECT COUNT(*) AS n FROM owners WHERE signup_device = ? AND created_at > ? AND phone_hash IS NOT NULL').get(deviceKey, dayAgo).n;
+      if (devDay >= SIGNUP_LIMITS.devicePerDay) throw new HttpError(429, '这台设备今天注册次数过多，请明天再试');
+    }
+    const flags = [];
+    if (ipKey) {
+      const ipDay = this.db.prepare('SELECT COUNT(*) AS n FROM owners WHERE signup_ip = ? AND created_at > ? AND phone_hash IS NOT NULL').get(ipKey, dayAgo).n;
+      if (ipDay + 1 >= SIGNUP_LIMITS.flagIpPerDay) flags.push('ip_burst');
+    }
+    if (deviceKey) {
+      const devDay = this.db.prepare('SELECT COUNT(*) AS n FROM owners WHERE signup_device = ? AND created_at > ? AND phone_hash IS NOT NULL').get(deviceKey, dayAgo).n;
+      if (devDay + 1 >= SIGNUP_LIMITS.flagDevicePerDay) flags.push('device_burst');
+    }
+    return { ipKey, deviceKey, flags, status: flags.length ? 'review' : null };
   }
 
   newSession(ownerId) {
@@ -1249,7 +1299,7 @@ export class Caiguo {
     const remaining = {};
     for (const k of Object.keys(reputation.quota)) remaining[k] = Math.max(0, reputation.quota[k] - this.usedToday(k, ownerId));
     return {
-      handle: o.handle, bio: o.bio, phone_masked: o.phone_masked, verified: Boolean(o.verified_at), banned: Boolean(o.banned_at), ban_reason: o.ban_reason ?? null, banned_at: o.banned_at ?? null, settings: this.settingsOf(ownerId), reputation, remaining, history: this.rep.history(ownerId, 12),
+      handle: o.handle, bio: o.bio, phone_masked: o.phone_masked, verified: Boolean(o.verified_at), banned: Boolean(o.banned_at), ban_reason: o.ban_reason ?? null, banned_at: o.banned_at ?? null, risk_status: o.risk_status ?? null, risk_note: o.risk_note ?? null, settings: this.settingsOf(ownerId), reputation, remaining, history: this.rep.history(ownerId, 12),
       pending, proposals, attention, agents, runs: this.activeRuns(ownerId), presence: this.presenceOf(ownerId),
       guides: this.search('', { limit: 100, includeFolded: true }).filter((x) => x.author.owner_id === ownerId),
       counts: this.libraryCounts(ownerId),
@@ -2232,6 +2282,69 @@ export class Caiguo {
     const counts = {};
     for (const r of this.db.prepare("SELECT tags FROM guides WHERE status = 'published'").all()) for (const t of j(r.tags)) counts[t] = (counts[t] || 0) + 1;
     return Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([tag, n]) => ({ tag, n }));
+  }
+
+  // 注册风控队列：默认看待复核；status=recent 看最近有手机号的新账号；cleared / limited 看已处理
+  signupRiskQueue({ status = 'review' } = {}) {
+    const dayAgo = this.iso(this.now() - 864e5);
+    let rows;
+    if (status === 'recent') {
+      rows = this.db.prepare(`SELECT id, handle, phone_masked, created_at, signup_ip, signup_device, risk_status, risk_flags, risk_note, risk_reviewed_at, banned_at
+        FROM owners WHERE phone_hash IS NOT NULL ORDER BY created_at DESC LIMIT 80`).all();
+    } else if (status === 'cleared' || status === 'limited') {
+      rows = this.db.prepare(`SELECT id, handle, phone_masked, created_at, signup_ip, signup_device, risk_status, risk_flags, risk_note, risk_reviewed_at, banned_at
+        FROM owners WHERE risk_status = ? ORDER BY COALESCE(risk_reviewed_at, created_at) DESC LIMIT 80`).all(status);
+    } else {
+      rows = this.db.prepare(`SELECT id, handle, phone_masked, created_at, signup_ip, signup_device, risk_status, risk_flags, risk_note, risk_reviewed_at, banned_at
+        FROM owners WHERE risk_status = 'review' ORDER BY created_at DESC LIMIT 80`).all();
+    }
+    return rows.map((o) => {
+      const flags = j(o.risk_flags) ?? [];
+      const ipPeers = o.signup_ip
+        ? this.db.prepare('SELECT COUNT(*) AS n FROM owners WHERE signup_ip = ? AND created_at > ? AND phone_hash IS NOT NULL').get(o.signup_ip, dayAgo).n
+        : 0;
+      const devicePeers = o.signup_device
+        ? this.db.prepare('SELECT COUNT(*) AS n FROM owners WHERE signup_device = ? AND created_at > ? AND phone_hash IS NOT NULL').get(o.signup_device, dayAgo).n
+        : 0;
+      return {
+        ...o,
+        flags,
+        flag_labels: flags.map((f) => ({ ip_burst: '同 IP 短时多号', device_burst: '同设备短时多号' }[f] ?? f)),
+        ip_peers_24h: ipPeers,
+        device_peers_24h: devicePeers,
+        risk_status: o.risk_status ?? null,
+      };
+    });
+  }
+
+  signupRiskCounts() {
+    return {
+      review: this.db.prepare("SELECT COUNT(*) AS n FROM owners WHERE risk_status = 'review'").get().n,
+      limited: this.db.prepare("SELECT COUNT(*) AS n FROM owners WHERE risk_status = 'limited'").get().n,
+    };
+  }
+
+  // action: clear（放行）/ limit（限制发布互动）/ ban（封禁）
+  resolveSignupRisk(adminId, { owner_id, action, note } = {}) {
+    if (!this.isAdmin(adminId)) throw new HttpError(403, '只有管理员可以处理注册风控');
+    const o = this.db.prepare('SELECT * FROM owners WHERE id = ?').get(owner_id);
+    if (!o) throw new HttpError(404, '账号不存在');
+    if (!['clear', 'limit', 'ban'].includes(action)) throw new ValidationError('action 只能是 clear / limit / ban');
+    const reason = String(note ?? '').trim().slice(0, 300);
+    if ((action === 'limit' || action === 'ban') && !reason) throw new ValidationError('限制或封禁时请写明原因');
+    tx(this.db, () => {
+      if (action === 'ban') {
+        this.db.prepare('UPDATE owners SET banned_at = ?, ban_reason = ?, risk_status = ?, risk_note = ?, risk_reviewed_at = ?, risk_reviewed_by = ? WHERE id = ?')
+          .run(this.iso(), reason, 'limited', reason, this.iso(), adminId, owner_id);
+      } else if (action === 'limit') {
+        this.db.prepare('UPDATE owners SET risk_status = ?, risk_note = ?, risk_reviewed_at = ?, risk_reviewed_by = ? WHERE id = ?')
+          .run('limited', reason, this.iso(), adminId, owner_id);
+      } else {
+        this.db.prepare('UPDATE owners SET risk_status = ?, risk_note = ?, risk_reviewed_at = ?, risk_reviewed_by = ? WHERE id = ?')
+          .run('cleared', reason || '复核通过', this.iso(), adminId, owner_id);
+      }
+    });
+    return { owner_id, action };
   }
 }
 

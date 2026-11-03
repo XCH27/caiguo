@@ -297,6 +297,14 @@ const COLUMNS = [
   ['ratings', 'context', 'TEXT'],
   ['ratings', 'env', "TEXT NOT NULL DEFAULT '{}'"],
   ['ratings', 'agent_id', 'TEXT'],
+  // 注册风控：记下注册时的 IP / 设备哈希，可疑时进人工复核
+  ['owners', 'signup_ip', 'TEXT'],
+  ['owners', 'signup_device', 'TEXT'],
+  ['owners', 'risk_status', 'TEXT'],
+  ['owners', 'risk_flags', 'TEXT'],
+  ['owners', 'risk_note', 'TEXT'],
+  ['owners', 'risk_reviewed_at', 'TEXT'],
+  ['owners', 'risk_reviewed_by', 'TEXT'],
 ];
 
 export function openDb(path = ':memory:') {
@@ -310,6 +318,9 @@ export function openDb(path = ':memory:') {
   }
   // 一个手机号只能有一个账号
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS owners_phone ON owners(phone_hash) WHERE phone_hash IS NOT NULL');
+  db.exec('CREATE INDEX IF NOT EXISTS owners_signup_ip ON owners(signup_ip, created_at)');
+  db.exec('CREATE INDEX IF NOT EXISTS owners_signup_device ON owners(signup_device, created_at)');
+  db.exec('CREATE INDEX IF NOT EXISTS owners_risk ON owners(risk_status, created_at)');
   return db;
 }
 
