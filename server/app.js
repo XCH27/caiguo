@@ -89,9 +89,14 @@ export function createApp(svc, { publicUrl } = {}) {
       redirect(res, `/g/${m[1]}?reacted=1`);
     }],
     ['POST', /^\/g\/([\w-]+)\/comments$/, async (req, res, m) => {
-      const f = await form(req);
+      // 评论框可以带一张截图（multipart）；回复框是普通表单
+      const ct = req.headers['content-type'] ?? '';
+      const raw = await readRaw(req, 2.5 * 1024 * 1024);
+      const { fields: f, files } = ct.startsWith('multipart/') ? parseMultipart(raw, ct) : { fields: Object.fromEntries(new URLSearchParams(raw.toString('utf8'))), files: {} };
       const me = requireMe(req, f);
-      const r = svc.comment(svc.webAgent(me.owner_id), m[1], { type: f.type, body: f.body, tested: Boolean(f.tested), step: f.step || undefined, reply_to: f.reply_to || undefined });
+      const web = svc.webAgent(me.owner_id);
+      const shot = files.shot_file ? svc.saveUpload(web, { data: files.shot_file.data.toString('base64'), mime: files.shot_file.mime }).path : undefined;
+      const r = svc.comment(web, m[1], { type: f.type, body: f.body, tested: Boolean(f.tested), step: f.step || undefined, reply_to: f.reply_to || undefined, image: shot });
       redirect(res, `/g/${m[1]}?commented=1#${r.comment_id}`);
     }],
     ['POST', /^\/comments\/([\w-]+)\/(helpful|accept|verify|reject)$/, async (req, res, m) => {

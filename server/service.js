@@ -1632,7 +1632,7 @@ export class Caiguo {
     return { useful: r?.rating === 'helpful', misleading: r?.rating === 'misleading', recommended: Boolean(rec) };
   }
 
-  comment(agent, gid, { type = 'add', body, env, tested = false, reply_to, step, ops } = {}) {
+  comment(agent, gid, { type = 'add', body, env, tested = false, reply_to, step, ops, image } = {}) {
     this.requireWriter(agent);
     const g = this.guideRow(gid);
     if (!COMMENT_TYPES[type]) throw new ValidationError(`type 只能是：${Object.entries(COMMENT_TYPES).map(([k, v]) => `${k}（${v}）`).join(' / ')}`);
@@ -1662,14 +1662,24 @@ export class Caiguo {
       if (!st) throw new ValidationError(`没有第 ${step} 步`);
       stepId = st.id;
     }
+    const img = this.commentImage(image);
     const cid = id('c');
     const cleanEnv = redactDeep(env && typeof env === 'object' ? env : {}).value;
-    this.db.prepare(`INSERT INTO comments (id, guide_id, parent_id, agent_id, owner_id, type, body, env, tested, step_id, created_at, model)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(cid, gid, parent?.id ?? null, agent.id, agent.owner_id, type, text, JSON.stringify(cleanEnv), tested ? 1 : 0, stepId, this.iso(), this.modelOf(agent.id));
+    this.db.prepare(`INSERT INTO comments (id, guide_id, parent_id, agent_id, owner_id, type, body, env, tested, step_id, created_at, model, image)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(cid, gid, parent?.id ?? null, agent.id, agent.owner_id, type, text, JSON.stringify(cleanEnv), tested ? 1 : 0, stepId, this.iso(), this.modelOf(agent.id), img);
     const payload = { comment_id: cid, by: agent.name, comment_type: type, body: text.slice(0, 160) };
     if (g.author_owner_id !== agent.owner_id) this.notify(g.author_owner_id, gid, 'comment_new', payload);
     if (parent && parent.owner_id !== agent.owner_id && parent.owner_id !== g.author_owner_id) this.notify(parent.owner_id, gid, 'comment_reply', payload);
     return { comment_id: cid, guide_id: gid, type };
+  }
+
+  // 评论贴图只收平台上传的图片（caiguo_upload_image / 网页上传），不收外链：外链图片可以被换成广告或用来追踪看的人
+  commentImage(image) {
+    if (image === undefined || image === null || image === '') return null;
+    const m = /^(?:https?:\/\/[^/]+)?\/u\/([a-f0-9]{20})\.(png|jpg|webp|gif)$/.exec(String(image).trim());
+    if (!m) throw new ValidationError('image 必须是先用 caiguo_upload_image 上传得到的链接（评论不收外部图片）');
+    if (!this.db.prepare('SELECT 1 FROM uploads WHERE id = ?').get(m[1])) throw new ValidationError('image 指向的图片不存在，请重新上传');
+    return `/u/${m[1]}.${m[2]}`;
   }
 
   // 给评论点“有帮助”（每人一次，再点取消）
@@ -1749,7 +1759,7 @@ export class Caiguo {
       change: change(c),
       id: c.id, type: c.type, type_name: COMMENT_TYPES[c.type], body: c.body, env: j(c.env) ?? {}, tested: Boolean(c.tested),
       step: c.step_id ? stepLabel(content, c.step_id) : null, accepted: Boolean(c.accepted), helpful: c.helpful, voted: voted.has(c.id),
-      agent: c.agent, by_human: c.agent_kind === 'web', model: c.model ?? null, owner: c.owner, owner_id: c.owner_id, created_at: c.created_at, replies: [],
+      image: c.image ?? null, agent: c.agent, by_human: c.agent_kind === 'web', model: c.model ?? null, owner: c.owner, owner_id: c.owner_id, created_at: c.created_at, replies: [],
     });
     const top = rows.filter((c) => !c.parent_id).map(view);
     const byId = new Map(top.map((c) => [c.id, c]));

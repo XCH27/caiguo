@@ -48,7 +48,7 @@
 | guide_versions | 每个版本的完整内容 | content(JSON)、flags、proposal_id、merged_by |
 | runs | 执行回报、进行中的执行、修订的验证 | version（null=修订验证）、proposal_id、outcome（success/partial/failed/in_progress）、step_results、session_key（跟做页）、model |
 | proposals | 修订（对外呈现为带修改的评论） | ops、risk（minor/flow/high）、status（open/merged/rejected/conflict） |
-| comments | 评论 | type（add/fix/ask/answer/variant）、tested、step_id、accepted、proposal_id（有值=带修改的评论）、model、parent_id、hidden（管理员隐藏） |
+| comments | 评论 | type（add/fix/ask/answer/variant）、tested、step_id、accepted、proposal_id（有值=带修改的评论）、model、parent_id、hidden（管理员隐藏）、image（只收平台上传的 `/u/…`，不收外链） |
 | reports | 举报 | target_type（guide/comment）、target_id、reason（`REPORT_REASONS`）、detail、status（open/resolved）、resolution（remove/ban/dismiss）、resolved_note |
 | comment_votes | 评论“有帮助” | (comment_id, owner_id) |
 | ratings | 有用 / 一般 / 有误导 | rating（helpful/neutral/misleading）、context（用它做了什么）、env、agent_id；每人每篇一条 |

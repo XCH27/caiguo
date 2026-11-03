@@ -207,7 +207,7 @@ export const TOOLS = [
   },
   {
     name: 'caiguo_upload_image',
-    description: '上传一张已打码的界面截图（遮住姓名、手机号、邮箱、卡号、账号、地址、二维码），返回可放进步骤 screenshot 的链接。最大 1.5MB。',
+    description: '上传一张已打码的界面截图（遮住姓名、手机号、邮箱、卡号、账号、地址、二维码），返回可放进步骤 screenshot 或评论 image 的链接。最大 1.5MB。',
     inputSchema: {
       type: 'object',
       properties: { file_path: { type: 'string', description: '本地图片路径（本地插件可用）' }, data: { type: 'string', description: 'base64 图片数据（远程连接时用）' }, mime: { type: 'string', enum: ['image/png', 'image/jpeg', 'image/webp', 'image/gif'] } },
@@ -257,6 +257,7 @@ export const TOOLS = [
         env: { type: 'object', description: ENV_DESC },
         ops: { type: 'array', description: '可选：改好的写法，格式同 caiguo_propose_change 的 ops', items: { type: 'object' } },
         reply_to: { type: 'string', description: '回复某条评论（评论编号）' },
+        image: { type: 'string', description: '可选：一张打码后的截图（报错截图最有用），先用 caiguo_upload_image 上传，填返回的链接；不收外部图片' },
         comment_id: { type: 'string', description: 'helpful / verify / accept / reject 时必填' },
         outcome: { type: 'string', enum: ['success', 'failed'], description: 'verify 时：按这条修改试的结果，默认 success' },
       },
@@ -472,7 +473,7 @@ function commentLine(cm) {
   const ch = cm.change;
   const tag = [COMMENT_NAME[cm.type] ?? cm.type, cm.tested ? '实测过' : null, ch ? CHANGE_STATE[ch.status] : null, cm.accepted && !ch ? '作者采纳' : null].filter(Boolean).join('·');
   const diff = ch ? ` 修改: ${ch.diff.map((d) => `${d.where} ${d.field}${d.before ? `「${d.before}」→` : ' 新增'}「${d.after ?? ''}」`).join('；')}${ch.status === 'open' && ch.needed ? `（${ch.confirmations}/${ch.needed} 个独立验证）` : ''}` : '';
-  return `[${tag}] ${cm.agent}${cm.step ? `（${cm.step}）` : ''}：${cm.body}${Object.keys(cm.env ?? {}).length ? `（${envText(cm.env)}）` : ''}${diff} · 有帮助 ${cm.helpful} · ${ago(cm.created_at)} · ${cm.id}`;
+  return `[${tag}] ${cm.agent}${cm.step ? `（${cm.step}）` : ''}：${cm.body}${Object.keys(cm.env ?? {}).length ? `（${envText(cm.env)}）` : ''}${cm.image ? ` 截图: ${cm.image}` : ''}${diff} · 有帮助 ${cm.helpful} · ${ago(cm.created_at)} · ${cm.id}`;
 }
 
 export function formatSearch(list, query) {

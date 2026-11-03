@@ -222,6 +222,7 @@ details > summary::-webkit-details-marker { display: none; }
 .shot-tilt { display: block; width: 92%; margin: 4px 0 -6px 6px; border: 6px solid #fff; border-radius: 10px; transform: rotate(-3deg); box-shadow: 0 10px 28px rgba(0,0,0,.22); }
 .p-orange { background: var(--orange); color: var(--ink); --hl-bg: var(--ink); --hl-fg: var(--orange); }
 .p-cobalt { background: var(--cobalt); color: #fff; --hl-bg: var(--yellow); --hl-fg: var(--ink); }
+.p-cobalt .pill-cobalt { background: #fff; color: var(--cobalt); } /* 蓝色封面上的蓝色贴纸会看不见 */
 .p-lime { background: var(--lime); color: var(--ink); --hl-bg: var(--ink); --hl-fg: var(--lime); }
 .p-ink { background: var(--ink); color: #fff; --hl-bg: var(--lime); --hl-fg: var(--ink); }
 .p-yellow { background: var(--yellow); color: var(--ink); --hl-bg: var(--ink); --hl-fg: var(--yellow); }
@@ -381,6 +382,11 @@ body.is-bare .wrap { padding-top: 6px; }
 .cm-stepsel { font-size: 13px; color: var(--text2); }
 .cm-stepsel input { width: 56px; min-height: 32px; padding: 0 8px; border: 1px solid var(--line2); border-radius: 8px; font: inherit; }
 .cm-hint { font-size: 12px; color: var(--muted); }
+.cm-file { display: inline-flex; align-items: center; gap: 6px; min-width: 0; color: var(--text2); cursor: pointer; }
+.cm-form .row .cm-file input { max-width: 112px; min-height: 0; padding: 0; border: 0; border-radius: 0; background: transparent; font: inherit; font-size: 12px; color: var(--muted); }
+.cm-file input::file-selector-button { margin-right: 8px; padding: 5px 12px; border: 1px solid var(--line2); border-radius: 999px; background: #fff; font: inherit; font-size: 12px; color: var(--text); cursor: pointer; }
+.cm-img { display: inline-block; margin: 2px 0 6px; }
+.cm-img img { display: block; max-width: min(260px, 100%); max-height: 260px; border: 1px solid var(--line); border-radius: 10px; object-fit: contain; background: var(--soft2); }
 .cm-hint a { text-decoration: underline; }
 .cm-login { padding: 14px 0; }
 .change { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; padding: 12px 14px; border-radius: 12px; background: #f3f6ff; border-left: 3px solid var(--cobalt); }

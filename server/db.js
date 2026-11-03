@@ -269,6 +269,7 @@ const COLUMNS = [
   ['owners', 'banned_at', 'TEXT'],
   ['owners', 'ban_reason', 'TEXT'],
   ['comments', 'hidden', 'INTEGER NOT NULL DEFAULT 0'],
+  ['comments', 'image', 'TEXT'],
   ['owners', 'phone_masked', 'TEXT'],
   ['owners', 'verified_at', 'TEXT'],
   ['agents', 'model', 'TEXT'],

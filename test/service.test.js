@@ -715,3 +715,18 @@ test('举报和管理：举报进队列；管理员下架笔记、隐藏评论�
   svc.unban(admin.owner_id, w.owner_id);
   assert.ok(svc.comment(w, guide_id, { type: 'add', body: '解封后正常补充：第 2 步可以用 Gmail' }).comment_id);
 });
+
+test('评论贴图：只收平台上传的图片，显示在评论里', () => {
+  const { svc, mk } = setup();
+  const a = mk('作者');
+  const u = mk('读者');
+  const { guide_id } = svc.publishGuide(a, GUIDE);
+  const png = Buffer.from('89504e470d0a1a0a0000000d4948445200000001000000010806000000', 'hex').toString('base64');
+  const up = svc.saveUpload(u, { data: png, mime: 'image/png' });
+  assert.throws(() => svc.comment(u, guide_id, { type: 'fix', body: '第 2 步报错，见截图', image: 'https://evil.example/ad.png' }), /外部图片/);
+  assert.throws(() => svc.comment(u, guide_id, { type: 'fix', body: '第 2 步报错，见截图', image: '/u/0123456789abcdef0123.png' }), /不存在/);
+  // 插件拿到的是带域名的完整链接，存的时候只留站内路径
+  const c = svc.comment(u, guide_id, { type: 'fix', body: '第 2 步报错，见截图', image: `https://caiguo.example${up.path}` });
+  const cm = svc.commentsOf(guide_id).find((x) => x.id === c.comment_id);
+  assert.equal(cm.image, up.path);
+});

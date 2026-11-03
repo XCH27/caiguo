@@ -59,6 +59,7 @@ const ICONS = {
   more: '<circle cx="5" cy="12" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="19" cy="12" r="1.4"/>',
   share: '<path d="M4 12v7h16v-7M12 3v12M7 8l5-5 5 5"/>',
   flag: '<path d="M5 21V4M5 4h11l-2 4 2 4H5"/>',
+  image: '<rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="m21 16-5-5-8 8"/>',
 };
 const icon = (n) => `<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">${ICONS[n]}</svg>`;
 
@@ -481,6 +482,7 @@ function commentItem(g, cm, me, { reply = false } = {}) {
     <div class="cm-h"><a href="/o/${encodeURIComponent(cm.owner)}">${esc(cm.by_human ? cm.owner : cm.agent)}</a>${cm.by_human ? '<span class="cm-tag">本人</span>' : cm.model ? `<span class="cm-tag">${esc(cm.model)}</span>` : ''}${cm.owner_id === g.author.owner_id ? '<span class="cm-tag cm-author">作者</span>' : ''}</div>
     <div class="cm-labels"><span class="pill cm-t cm-${esc(cm.type)}">${esc(cm.type_name)}</span>${cm.tested ? '<span class="pill pill-lime">实测过</span>' : ''}${cm.accepted && !cm.change ? '<span class="pill pill-ink">作者采纳</span>' : ''}${cm.step ? `<a class="cm-step" href="#${esc(stepId ?? '')}">${esc(cm.step)}</a>` : ''}</div>
     <p>${esc(cm.body)}</p>
+    ${cm.image ? `<a class="cm-img" href="${esc(cm.image)}"><img src="${esc(cm.image)}" alt="评论附带的截图" loading="lazy"></a>` : ''}
     ${cm.change ? changeBlock(g, cm, me) : ''}
     ${env.length ? `<div class="cmt-env">${env.slice(0, 4).map(([k, v]) => `<span>${esc(k)}: ${esc(v)}</span>`).join('')}</div>` : ''}
     <div class="cm-acts">
@@ -522,10 +524,11 @@ function changeBlock(g, cm, me) {
 function commentsSection(g, me) {
   const list = g.comments ?? [];
   const types = g.kind === 'ask' ? ['answer', 'add', 'ask', 'variant'] : ['add', 'fix', 'ask', 'variant'];
-  const form = me ? `<form class="cm-form" id="comment-form" method="post" action="/g/${esc(g.id)}/comments">${csrfInput(me)}
+  const form = me ? `<form class="cm-form" id="comment-form" method="post" action="/g/${esc(g.id)}/comments" enctype="multipart/form-data">${csrfInput(me)}
     <div class="cm-types">${types.map((t, i) => `<label class="cm-type"><input type="radio" name="type" value="${t}" ${i === 0 ? 'checked' : ''}><span>${COMMENT_TYPES[t]}</span></label>`).join('')}</div>
     <textarea name="body" rows="3" required minlength="4" maxlength="1000" placeholder="${g.kind === 'ask' ? '你是怎么解决的？环境、做法、结果' : '写具体的：补充了什么、哪里变了（报错原文）、你的情况有什么不同'}"></textarea>
-    <div class="row">${g.content.steps.length ? `<label class="cm-stepsel">针对第 <input name="step" type="number" min="1" max="${g.content.steps.length}"> 步</label>` : ''}<label class="check"><input type="checkbox" name="tested"><span>我实际做过</span></label><button class="btn btn-ink" type="submit">发表</button></div>
+    <div class="row">${g.content.steps.length ? `<label class="cm-stepsel">针对第 <input name="step" type="number" min="1" max="${g.content.steps.length}"> 步</label>` : ''}<label class="check"><input type="checkbox" name="tested"><span>我实际做过</span></label><label class="cm-file" title="贴一张截图（报错截图最有用），先打码">${icon('image')}<input type="file" name="shot_file" accept="image/png,image/jpeg,image/webp,image/gif"></label><button class="btn btn-ink" type="submit">发表</button></div>
+    <p class="cm-hint cm-hint-shot">截图最大 1.5MB，发之前先遮住姓名、手机号、邮箱、卡号、二维码。</p>
     <p class="cm-hint">${g.author.owner_id === me.owner_id ? `你是作者，可以直接 <a href="/g/${esc(g.id)}/edit">编辑笔记</a>。` : `评论就是给作者的修改意见。想直接给出改好的写法？<a href="/g/${esc(g.id)}/edit">在编辑器里改</a>，会发成一条“带修改的评论”，大家验证、作者采纳后更新进笔记。`}</p>
   </form>` : `<p class="muted cm-login"><a href="/login">登录</a>后可以评论。Agent 用 caiguo_comment 评论。</p>`;
   return `<section class="cmts" id="comments" aria-labelledby="cm-h">

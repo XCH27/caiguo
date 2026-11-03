@@ -408,7 +408,7 @@ const cm = (who, g, d, type, body, extra = {}) => { at(d, 16); return svc.commen
 const c1 = cm(ken, news, 8, 'add', '补充：老账号升级套餐后再降级，也会按新规则算。', { tested: false });
 cm(ajie, news, 7, 'variant', '我这边是 9 号注册的，创建 4 核实例仍然成功了，可能分区域生效？', { env: { region: '中国大陆', home_region: '东京' }, tested: true });
 cm(lin, oracle, 10, 'fix', '第 2 步的按钮现在叫“验证电子邮件地址”，国家/地区挪到了下一页。', { step: 2, tested: true, env: { region: '中国大陆' } });
-cm(leo, oracle, 6, 'ask', '用的是虚拟信用卡，第 6 步一直提示“无法处理您的交易”，有人用虚拟卡成功过吗？', { step: 6 });
+cm(leo, oracle, 6, 'ask', '用的是虚拟信用卡，第 6 步一直提示“无法处理您的交易”，有人用虚拟卡成功过吗？', { step: 6, image: img(leo, 'card-declined') });
 const ans = cm(kiki, ask, 4, 'answer', '换成能收国际短信的号码（比如香港号）就能收到；+86 我试了两次也不行。', { tested: true, env: { browser: 'Chrome' } });
 cm(putao, ask, 3, 'answer', '先用邮箱注册，绑手机那一步选“稍后”，用了一周后再绑，+86 能收到。', { tested: true });
 cm(momo, pit, 15, 'add', 'Windows 上不是这个报错，是 EPERM，一般是杀毒软件锁了文件，关掉实时防护再装。', { env: { os: 'Windows 11' }, tested: true });

@@ -422,6 +422,16 @@ test('网页举报和管理后台：登录的人能举报；只有管理员能�
   // 笔记页对别人显示举报入口，对作者不显示
   assert.match(await (await reader.get(`/g/${guide_id}`)).text(), /action="\/report"/);
   assert.doesNotMatch(await (await author.get(`/g/${guide_id}`)).text(), /action="\/report"/);
+  // 评论框可以贴一张截图（multipart）
+  const html0 = await (await reader.get(`/g/${guide_id}`)).text();
+  const csrf0 = html0.match(/name="csrf" value="([a-f0-9]+)"/)[1];
+  const png = Buffer.from('89504e470d0a1a0a0000000d4948445200000001000000010806000000', 'hex');
+  const cf = new FormData();
+  for (const [k, v] of Object.entries({ csrf: csrf0, type: 'add', body: '我这边报的是 401，不是 403，截图在这' })) cf.append(k, v);
+  cf.append('shot_file', new Blob([png], { type: 'image/png' }), 'err.png');
+  const posted = await fetch(`${base}/g/${guide_id}/comments`, { method: 'POST', headers: { cookie: reader.cookie }, body: cf, redirect: 'manual' });
+  assert.equal(posted.status, 303);
+  assert.match(await (await reader.get(`/g/${guide_id}`)).text(), /class="cm-img" href="\/u\/[a-f0-9]{20}\.png"/);
   const r = await reader.post('/report', { target_type: 'guide', target_id: guide_id, reason: 'fake', detail: '照做不行', back: `/g/${guide_id}` });
   assert.equal(r.headers.get('location'), `/g/${guide_id}?reported=1`);
   // 后台：普通人 403，管理员看得到队列
