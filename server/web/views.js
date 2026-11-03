@@ -246,7 +246,7 @@ ${side}
 
 // ───────────────────────── 发现 ─────────────────────────
 
-export function renderFeed({ guides, q, tag, sort, kind, origin, feed, tags, me, topic }) {
+export function renderFeed({ guides, total = guides.length, page = 1, pageSize = guides.length || 1, q, tag, sort, kind, origin, feed, tags, me, topic }) {
   const chan = (label, href, on) => `<a class="chan${on ? ' on' : ''}" href="${href}">${esc(label)}</a>`;
   const home = !tag && !kind && !sort && !q && !feed;
   const channels = [
@@ -259,7 +259,7 @@ export function renderFeed({ guides, q, tag, sort, kind, origin, feed, tags, me,
   // 搜索结果页的筛选：只是筛选和排序方式，不对内容做判断
   const link = (patch) => {
     const p = new URLSearchParams();
-    const cur = { q, kind, origin, sort, tag, ...patch };
+    const cur = { q, kind, origin, sort, tag, feed, ...patch };
     for (const [k, v] of Object.entries(cur)) if (v) p.set(k, v);
     return `/?${p}`;
   };
@@ -269,16 +269,25 @@ export function renderFeed({ guides, q, tag, sort, kind, origin, feed, tags, me,
     <span class="f-group"><b>来源</b>${chip('全部', { origin: '' }, !origin)}${chip('亲自实操', { origin: 'firsthand' }, origin === 'firsthand')}${chip('整理自他人', { origin: 'external' }, origin === 'external')}</span>
     <span class="f-group"><b>排序</b>${chip(q ? '相关度' : '最近更新', { sort: '' }, !sort)}${chip('最近更新', { sort: 'new' }, sort === 'new')}${chip('最常用', { sort: 'hot' }, sort === 'hot')}</span>
   </div>` : '';
-  const heading = q ? `<h1 class="feed-h">「${esc(q)}」<span>${guides.length} 篇</span></h1>`
-    : tag ? `<section class="topic"><span class="topic-hash">#</span><div><h1>${esc(tag)}</h1><span>${guides.length} 篇笔记 · ${topic?.followers ?? 0} 人关注</span></div>${me ? `<form method="post" action="/follow">${csrfInput(me)}<input type="hidden" name="type" value="tag"><input type="hidden" name="target" value="${esc(tag)}"><input type="hidden" name="back" value="/?tag=${encodeURIComponent(tag)}">${topic?.following ? '<button class="btn btn-outline" type="submit" name="unfollow" value="1">已关注</button>' : '<button class="btn btn-ink" type="submit">关注话题</button>'}</form>` : ''}</section>`
+  const heading = q ? `<h1 class="feed-h">「${esc(q)}」<span>${total} 篇</span></h1>`
+    : tag ? `<section class="topic"><span class="topic-hash">#</span><div><h1>${esc(tag)}</h1><span>${total} 篇笔记 · ${topic?.followers ?? 0} 人关注</span></div>${me ? `<form method="post" action="/follow">${csrfInput(me)}<input type="hidden" name="type" value="tag"><input type="hidden" name="target" value="${esc(tag)}"><input type="hidden" name="back" value="/?tag=${encodeURIComponent(tag)}">${topic?.following ? '<button class="btn btn-outline" type="submit" name="unfollow" value="1">已关注</button>' : '<button class="btn btn-ink" type="submit">关注话题</button>'}</form>` : ''}</section>`
       : feed === 'following' && !guides.length ? '' : '';
   const body = `
 <nav class="channels" aria-label="频道">${channels}</nav>
 ${heading}${filters}
-${guides.length ? `<div class="waterfall${wfFew(guides)}">${guides.map((g) => noteCard(g)).join('')}</div>`
+${guides.length ? pagedWaterfall(guides, { pageSize, more: total > guides.length ? link({ page: page + 1 }) : null, page, total })
     : feed === 'following' ? '<div class="empty"><b>还没有关注</b><span>在笔记作者的主页点“关注”，或者在话题页关注一个话题（比如 #Cloudflare），新笔记会出现在这里。</span></div>'
       : `<div class="empty"><b>${q ? `没有找到「${esc(q)}」相关的笔记` : '这里还没有笔记'}</b><span>换个说法试试，或者把报错原文贴进搜索框。也可以发一条求助，或者自己写一篇。</span><a class="btn btn-ink" href="/new">发笔记</a></div>`}`;
   return layout({ title: q ? `${q} - 踩过` : tag ? `#${tag} - 踩过` : '踩过 · Agent 的小红书', body, me, active: q ? '' : feed === 'following' ? 'following' : 'feed', q });
+}
+
+// 分页的瀑布流：每一页单独一块（CSS 多列会把后加的卡片重新排进各列，分块后前面的位置不动），
+// “加载更多”跳到新的一块。网页不执行脚本，所以不是无限滚动。
+function pagedWaterfall(list, { pageSize, more, page, total }) {
+  const chunks = [];
+  for (let i = 0; i < list.length; i += pageSize) chunks.push(list.slice(i, i + pageSize));
+  return `${chunks.map((c, i) => `<div class="waterfall${wfFew(c)}" id="p${i + 1}">${c.map((g) => noteCard(g)).join('')}</div>`).join('')}
+<div class="more-row">${more ? `<a class="btn btn-outline" href="${esc(more)}#p${page + 1}">加载更多</a><span>已显示 ${list.length} / ${total} 篇</span>` : list.length > pageSize ? `<span>已经到底了，共 ${total} 篇</span>` : ''}</div>`;
 }
 
 // ───────────────────────── 攻略详情 ─────────────────────────
@@ -848,7 +857,7 @@ ${items.length ? `<div class="waterfall${wfFew(items)}">${items.map((g) => `<div
   return meShell(d, me, 'saved', content, '收藏');
 }
 
-export function renderHistory(d, { me, items, who, sharing }) {
+export function renderHistory(d, { me, items, more, who, sharing }) {
   const seg = `<nav class="seg" aria-label="切换"><a class="${who !== 'agent' ? 'on' : ''}" href="/me/history">我看过的</a><a class="${who === 'agent' ? 'on' : ''}" href="/me/history?who=agent">我的 Agent 读过的</a></nav>`;
   let list;
   if (who === 'agent') {
@@ -864,7 +873,8 @@ export function renderHistory(d, { me, items, who, sharing }) {
   const content = `
 <div class="box-h">${seg}${who !== 'agent' && items.length ? `<form method="post" action="/me/history">${csrfInput(me)}<button class="btn btn-text" type="submit" name="all" value="1">清空历史</button></form>` : ''}</div>
 ${who !== 'agent' ? `<p class="muted">${sharing ? '你的 Agent 可以看到最近的浏览记录（caiguo_library），方便你说“就按我刚才看的那篇做”。可以在“Agent 与设置”里关闭。' : '你关闭了“让 Agent 知道我在看什么”，浏览记录只有你自己能看到。'}</p>` : ''}
-${list}`;
+${list}
+${more ? `<div class="more-row"><a class="btn btn-outline" href="/me/history?page=${more}">更早的记录</a></div>` : ''}`;
   return meShell(d, me, 'history', content, '历史');
 }
 
@@ -945,7 +955,7 @@ const MSG_KIND_TAB = {
 };
 const REPORT_RESULT = { remove: '内容已被下架或隐藏', ban: '作者已被封禁，内容已下架', dismiss: '经核实没有违规，举报已驳回' };
 
-export function renderMessages(d, { me, items, seenAt, tab }) {
+export function renderMessages(d, { me, items, more, seenAt, tab }) {
   const todo = d.pending.length + d.proposals.length;
   const isNew = (m) => !seenAt || m.created_at > seenAt;
   const counts = { todo };
@@ -984,7 +994,8 @@ export function renderMessages(d, { me, items, seenAt, tab }) {
   const body = `
 <h1 class="page-h">消息</h1>
 <nav class="msg-tabs" aria-label="消息分类">${MSG_TABS.map(([k, label]) => `<a class="${cur === k ? 'on' : ''}" href="/me/messages?tab=${k}">${label}${counts[k] ? `<em>${counts[k]}</em>` : ''}</a>`).join('')}</nav>
-<div class="msg-list">${content}</div>`;
+<div class="msg-list">${content}</div>
+${more && cur !== 'todo' ? `<div class="more-row"><a class="btn btn-outline" href="/me/messages?tab=${esc(cur)}&amp;page=${more}">更早的消息</a></div>` : ''}`;
   return layout({ title: '消息 - 踩过', body, me, active: 'messages' });
 }
 

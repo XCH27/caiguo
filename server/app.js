@@ -19,7 +19,9 @@ const CSS = readFileSync(join(here, 'web', 'style.css'), 'utf8');
 const MAX_BODY = 256 * 1024;
 const COOKIE = 'cg_s';
 
-export function createApp(svc, { publicUrl } = {}) {
+export function createApp(svc, { publicUrl, feedPage = 40 } = {}) {
+  const FEED_PAGE = feedPage; // 瀑布流每页多少篇
+  const MAX_PAGES = 25;
   const registerHits = new Map();
   const secure = Boolean(publicUrl && publicUrl.startsWith('https://'));
 
@@ -46,13 +48,18 @@ export function createApp(svc, { publicUrl } = {}) {
     ['GET', /^\/$/, (req, res, m, url) => page(req, res, (me) => {
       const p = (k) => url.searchParams.get(k) || '';
       const home = !p('q') && !p('tag') && !p('kind') && !p('sort') && !p('feed');
+      // 分页：网页不执行脚本，没有无限滚动；“加载更多”把下一页接在下面（?page=2 显示 1–2 页）
+      const page = Math.max(1, Math.min(MAX_PAGES, Number.parseInt(p('page'), 10) || 1));
+      const ALL = 10000;
       let guides;
-      if (p('feed') === 'following' && me) guides = svc.followingFeed(me.owner_id);
-      else if (home) guides = svc.forYou(me?.owner_id, { limit: 60 }).map((g) => (me ? g : { ...g, reason: undefined }));
-      else guides = svc.search(p('q'), { tag: p('tag') || undefined, kind: p('kind') || undefined, origin: p('origin') || undefined, limit: 60, sort: p('sort') || undefined });
+      if (p('feed') === 'following' && me) guides = svc.followingFeed(me.owner_id, { limit: ALL });
+      else if (home) guides = svc.forYou(me?.owner_id, { limit: ALL }).map((g) => (me ? g : { ...g, reason: undefined }));
+      else guides = svc.search(p('q'), { tag: p('tag') || undefined, kind: p('kind') || undefined, origin: p('origin') || undefined, limit: ALL, sort: p('sort') || undefined });
+      const total = guides.length;
+      guides = guides.slice(0, page * FEED_PAGE);
       const topic = p('tag') ? { followers: svc.followersCount('tag', p('tag')), following: svc.isFollowing(me?.owner_id, 'tag', p('tag')) } : null;
       return V.renderFeed({
-        guides, q: p('q'), tag: p('tag'), sort: p('sort'), kind: p('kind'), origin: p('origin'), feed: p('feed'), topic, tags: svc.tags(), stats: svc.stats(), me,
+        guides, total, page, pageSize: FEED_PAGE, q: p('q'), tag: p('tag'), sort: p('sort'), kind: p('kind'), origin: p('origin'), feed: p('feed'), topic, tags: svc.tags(), stats: svc.stats(), me,
       });
     })],
     ['GET', /^\/g\/([\w-]+)\.md$/, (req, res, m) => markdown(res, guideMarkdown(req, m[1]))],
@@ -226,6 +233,9 @@ export function createApp(svc, { publicUrl } = {}) {
       if (!me) return loginPage(req, res);
       const d = svc.consoleData(me.owner_id);
       const o = me.owner_id;
+      // 消息和历史：“更多”把条数往上加（?page=2 显示前 2 页）
+      const page = Math.max(1, Math.min(MAX_PAGES, Number.parseInt(url.searchParams.get('page'), 10) || 1));
+      const upTo = (fetch, size) => { const rows = fetch(page * size + 1); return { items: rows.slice(0, page * size), more: rows.length > page * size ? page + 1 : null }; };
       switch (m[1]) {
         case 'saved': {
           const folder = url.searchParams.get('folder') || undefined;
@@ -233,14 +243,17 @@ export function createApp(svc, { publicUrl } = {}) {
         }
         case 'history': {
           const who = url.searchParams.get('who') === 'agent' ? 'agent' : 'me';
-          return html(res, V.renderHistory(d, { me, who, sharing: d.settings.share_presence, items: who === 'agent' ? svc.agentTrail(o) : svc.historyOf(o) }));
+          if (who === 'agent') return html(res, V.renderHistory(d, { me, who, sharing: d.settings.share_presence, items: svc.agentTrail(o) }));
+          const h = upTo((limit) => svc.historyOf(o, { limit }), 100);
+          return html(res, V.renderHistory(d, { me, who, sharing: d.settings.share_presence, items: h.items, more: h.more }));
         }
         case 'runs': return html(res, V.renderRuns(d, { me, items: svc.runsOfOwner(o) }));
         case 'guides': return redirect(res, `/me${url.search}`);
         case 'useful': return html(res, V.renderUseful(d, { me, items: svc.usefulBy(o) }));
         case 'messages': {
           const seenAt = svc.db.prepare('SELECT seen_at FROM owners WHERE id = ?').get(o).seen_at;
-          const pageHtml = V.renderMessages(d, { me, items: svc.messages(o), seenAt, tab: url.searchParams.get('tab') || '' });
+          const msgs = upTo((limit) => svc.messages(o, { limit }), 60);
+          const pageHtml = V.renderMessages(d, { me, items: msgs.items, more: msgs.more, seenAt, tab: url.searchParams.get('tab') || '' });
           svc.markMessagesSeen(o);
           return html(res, pageHtml);
         }

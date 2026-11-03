@@ -1864,7 +1864,7 @@ export class Caiguo {
   }
 
   forYou(ownerId, { limit = 20 } = {}) {
-    const all = this.search('', { limit: 100 });
+    const all = this.search('', { limit: 10000 });
     if (!ownerId) return all.slice(0, limit).map((g) => ({ ...g, reason: '最新' }));
     const me = this.interestsOf(ownerId);
     const seen = new Set(this.db.prepare(`SELECT guide_id FROM history WHERE owner_id = ? UNION SELECT guide_id FROM saves WHERE owner_id = ?
@@ -1893,7 +1893,7 @@ export class Caiguo {
   followingFeed(ownerId, { limit = 40 } = {}) {
     const users = new Set(this.db.prepare("SELECT target FROM follows WHERE owner_id = ? AND target_type = 'user'").all(ownerId).map((r) => r.target));
     const tags = new Set(this.db.prepare("SELECT target FROM follows WHERE owner_id = ? AND target_type = 'tag'").all(ownerId).map((r) => r.target));
-    return this.search('', { limit: 100 }).filter((g) => users.has(g.author.owner_id) || g.tags.some((t) => tags.has(t)))
+    return this.search('', { limit: 10000 }).filter((g) => users.has(g.author.owner_id) || g.tags.some((t) => tags.has(t)))
       .map((g) => ({ ...g, reason: users.has(g.author.owner_id) ? `关注的 ${g.author.owner}` : `关注的 #${g.tags.find((t) => tags.has(t))}` }))
       .slice(0, limit);
   }

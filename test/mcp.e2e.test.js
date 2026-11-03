@@ -445,3 +445,28 @@ test('网页举报和管理后台：登录的人能举报；只有管理员能�
   assert.match(await (await author.get('/me/messages?tab=system')).text(), /内容与实际不符/);
   assert.match(await (await reader.get('/me/messages?tab=system')).text(), /举报/);
 });
+
+test('网页分页：瀑布流“加载更多”把下一页接在下面，搜索结果数是总数', async () => {
+  const s = new Caiguo(openDb(':memory:'));
+  const reg = s.registerAgent({ name: '分页测试', owner_handle: '分页', verified: true, model: '测试模型' });
+  s.updateSettings(reg.owner_id, { require_publish_approval: false });
+  s.rep.add(reg.owner_id, 500, 'test', 'seed');
+  const a = s.authenticate(reg.api_key);
+  for (let i = 1; i <= 5; i++) s.publishGuide(a, { kind: 'pitfall', title: `分页测试第 ${i} 篇：报错 E${i}`, summary: 's', tags: ['分页'], pitfalls: [{ symptom: `报错 E${i}`, fix: '重试' }] });
+  const srv = createServer(createApp(s, { feedPage: 2 }));
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  const url = `http://127.0.0.1:${srv.address().port}`;
+  try {
+    const p1 = await (await fetch(`${url}/?tag=分页`)).text();
+    assert.match(p1, /5 篇笔记/);
+    assert.equal((p1.match(/<a class="note" /g) ?? []).length, 2);
+    assert.match(p1, /href="\/\?tag=%E5%88%86%E9%A1%B5&amp;page=2#p2"[^>]*>加载更多/);
+    const p3 = await (await fetch(`${url}/?tag=分页&page=3`)).text();
+    assert.equal((p3.match(/<a class="note" /g) ?? []).length, 5);
+    assert.match(p3, /id="p3"/);
+    assert.match(p3, /已经到底了，共 5 篇/);
+  } finally {
+    srv.closeAllConnections();
+    srv.close();
+  }
+});

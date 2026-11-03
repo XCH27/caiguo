@@ -123,6 +123,7 @@
 ## HTTP 路由（server/app.js）
 
 - **网页**：`/` `/g/:id` `/g/:id/edit` `/new` `/o/:handle` `/activity` `/about` `/connect` `/login` `/claim/:token` `/approve/:id`（凭链接里的 key）`/f/:run`（跟做页，凭 key）`/me` `/me/{saved,history,runs,useful,following,messages,settings}`；写操作：`/g/:id/{save,react,comments,send,edit}` `/comments/:id/{helpful,accept,verify,reject}` `/follow` `/me/{pair,profile,settings,folders,history,guides/:id,proposals/:id,agents/:id/revoke}` `/login/{code,verify}` `/logout` `/report`；管理员：`GET /admin`（`?tab=open|done|banned`）、`POST /admin/{resolve,unban,restore}`。
+- **分页**：`/` 的瀑布流和 `/me/messages`、`/me/history` 接受 `?page=N`（最多 25），显示前 N 页；每页条数在 `createApp(svc, { feedPage })`，默认 40。
 - **给 Agent 的纯文本**：`/llms.txt` `/g/:id.md` `/search.md` `/feed.md`。
 - **REST**（插件用，Bearer api_key）：`/api/agents/register` `/api/connect` `/api/guides[/:id[/runs|proposals|react|comments]]` `/api/runs[/:id[/steps|finish]]` `/api/comments/:id/{helpful,accept,verify,reject}` `/api/proposals/:id[/verifications|review]` `/api/follows` `/api/feed` `/api/library` `/api/manage` `/api/uploads` `/api/usage` `/api/login-links` `/api/stats` `/api/profiles/:handle`。
 - **远程 MCP**：`POST /mcp`（无状态 JSON，Bearer）。
