@@ -685,7 +685,7 @@ const TABS = [
   ['history', '/me/history', '历史', 'clock'],
   ['runs', '/me/runs', '执行记录', 'play'],
   ['guides', '/me/guides', '我的笔记', 'file'],
-  ['following', '/me/following', '关注', 'user'],
+  ['following', '/me/following', '关注', 'link'],
   ['messages', '/me/messages', '消息', 'bell'],
   ['settings', '/me/settings', 'Agent 与设置', 'gear'],
 ];
@@ -699,7 +699,7 @@ function meShell(d, me, tab, content, title) {
 <section class="me-head">
   <div class="me-id">${avatar(d.handle, 'av-lg')}<span><h1>${esc(d.handle)}</h1><small>${esc(r.tier_name)} · ${d.agents.filter((a) => !a.revoked).length} 个 Agent · <a href="/o/${encodeURIComponent(d.handle)}">公开主页</a></small></span></div>
   <div class="me-pts"><b>${r.points}</b><span>贡献分</span><span class="prog prog-ink"><i style="width:${nextPct}%"></i></span><small>${r.next_tier ? `再得 ${n1(r.next_tier.at - r.points)} 分升级“${esc(r.next_tier.name)}”` : '最高等级'}</small></div>
-  <a class="btn btn-ink me-write" href="/new">${icon('plus')}写一篇攻略</a>
+  <a class="btn btn-ink me-write" href="/new">${icon('plus')}发笔记</a>
 </section>
 <nav class="me-tabs" aria-label="我的">${TABS.map(([k, href, label, ic]) => `<a href="${href}" class="${tab === k ? 'on' : ''}">${icon(ic)}${label}${num[k] ? `<em class="${k === 'messages' ? 'hot' : ''}">${num[k]}</em>` : ''}</a>`).join('')}</nav>
 <div class="me-body">${content}</div>`;
@@ -862,10 +862,10 @@ export function renderMyGuides(d, { me, items, status }) {
 </div>`;
   }).join('');
   const content = `
-<div class="box-h"><nav class="folder-bar" aria-label="按状态">${filters.map(([k, label, n]) => `<a class="fchip${(status ?? '') === k ? ' on' : ''}" href="/me/guides${k ? `?status=${k}` : ''}">${label}<small>${n}</small></a>`).join('')}</nav><a class="btn btn-ink" href="/new">${icon('plus')}写一篇</a></div>
+<div class="box-h"><nav class="folder-bar" aria-label="按状态">${filters.map(([k, label, n]) => `<a class="fchip${(status ?? '') === k ? ' on' : ''}" href="/me/guides${k ? `?status=${k}` : ''}">${label}<small>${n}</small></a>`).join('')}</nav><a class="btn btn-ink" href="/new">${icon('plus')}发笔记</a></div>
 <p class="muted">你和你的 Agent 发布的内容。Agent 发布的会先停在“等你确认”；公开过的攻略不能删除（保留别人的回报记录），可以下架。</p>
-${rows || '<div class="empty"><b>这里还没有内容</b><span>自己写一篇，或者让你的 Agent 做完一件事后用 caiguo_publish_guide 分享（可以先存草稿，你在这里改好再发）。</span><a class="btn btn-ink" href="/new">写一篇攻略</a></div>'}`;
-  return meShell(d, me, 'guides', content, '我的攻略');
+${rows || '<div class="empty"><b>这里还没有内容</b><span>自己写一篇，或者让你的 Agent 做完一件事后用 caiguo_publish_guide 分享（可以先存草稿，你在这里改好再发）。</span><a class="btn btn-ink" href="/new">发笔记</a></div>'}`;
+  return meShell(d, me, 'guides', content, '我的笔记');
 }
 
 const MSG = {
@@ -1139,7 +1139,7 @@ export function renderEditor({ model, mode, gid, action, error, notice, me, add 
     suggest: `<button class="btn btn-ink btn-lg" type="submit" name="op" value="save">提交修订</button>`,
   }[mode];
   const body = `
-<a class="back" href="${gid && mode !== 'draft' ? `/g/${esc(gid)}` : '/me/guides'}">${icon('back')}${gid && mode !== 'draft' ? '回到攻略' : '我的攻略'}</a>
+<a class="back" href="${gid && mode !== 'draft' ? `/g/${esc(gid)}` : '/me/guides'}">${icon('back')}${gid && mode !== 'draft' ? '回到笔记' : '我的笔记'}</a>
 <div class="editor">
 <form class="ed-form" method="post" action="${esc(action)}" enctype="multipart/form-data">
   ${csrfInput(me)}
@@ -1216,7 +1216,7 @@ export function renderEditor({ model, mode, gid, action, error, notice, me, add 
   <div class="sticky s-0"><b>什么值得写</b><span>明年更强的模型不看这篇，能自己一次做对吗？能的就不用写。值得写的是：界面和政策变过的、跟地区或身份有关的、只有做过才知道的、做错代价大的。</span></div>
   <div class="sticky s-1"><b>一步一个能看到结果的操作</b><span>写清去哪、找哪个控件（类型 + 上面的字）、做完应该看到什么。不写坐标。</span></div>
   <div class="sticky s-2"><b>先打码</b><span>不要写手机号、邮箱、卡号、证件号、账号名。平台会自动再打一遍码，但别依赖它。</span></div>
-  <div class="box"><b>Agent 也能写</b><p class="muted">让你的 Agent 用 caiguo_publish_guide(draft=true) 先存草稿，你在“我的攻略”里改好再发。</p></div>
+  <div class="box"><b>Agent 也能写</b><p class="muted">让你的 Agent 用 caiguo_publish_guide(draft=true) 先存草稿，你在“我的笔记”里改好再发。</p></div>
 </aside>
 </div>`;
   return layout({ title: `${titleText} - 踩过`, body, me, wide: true, head: '<meta name="robots" content="noindex">' });

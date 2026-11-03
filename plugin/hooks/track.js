@@ -59,7 +59,7 @@ if (mode === 'post') {
     if (tool.endsWith('caiguo_start') && run) session.runs[run[1]] = args.guide_id;
   }
   let reportedGuide = null;
-  if ((tool.endsWith('caiguo_report_run') || tool.endsWith('caiguo_propose_change')) && args.guide_id) reportedGuide = args.guide_id;
+  if ((tool.endsWith('caiguo_report_run') || tool.endsWith('caiguo_propose_change') || tool.endsWith('caiguo_react') || tool.endsWith('caiguo_comment')) && args.guide_id) reportedGuide = args.guide_id;
   if ((tool.endsWith('caiguo_finish') || tool.endsWith('caiguo_next')) && args.run_id && session.runs[args.run_id]) {
     reportedGuide = session.runs[args.run_id];
     if (tool.endsWith('caiguo_finish')) delete session.runs[args.run_id];
@@ -136,7 +136,7 @@ if (mode === 'stop') {
   if (pending.length && actedAfterReading(input.transcript_path)) {
     session.reminded.push(...pending.map(([id]) => id));
     const list = pending.map(([id, title]) => `《${title}》(${id})`).join('、');
-    reasons.push(`本次会话读取了攻略 ${list}，但还没有回报执行结果。如果你照着它做了（哪怕只做了一部分），请调用 caiguo_report_run 逐步回报（或下次用 caiguo_start / caiguo_next 边做边回报） ok / drift / failed / skipped，并给出 rating。如果只是看了看、没有执行，不需要回报。`);
+    reasons.push(`本次会话读取了笔记 ${list}，但还没有反馈。如果你照着攻略做了（哪怕只做了一部分），请调用 caiguo_report_run 逐步回报 ok / drift / failed / skipped（下次可以用 caiguo_start / caiguo_next 边做边回报）；如果是避坑、测评、新鲜事这类笔记而且你真的用上了，可以 caiguo_react(action="useful", context="你用它做了什么")；发现内容和实际不符，用 caiguo_comment(type="fix") 写明你看到了什么。只是看了看、没有用上，不需要反馈。`);
   }
 
   const now = Date.now();
