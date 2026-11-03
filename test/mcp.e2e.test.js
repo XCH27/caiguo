@@ -213,7 +213,9 @@ test('网页：主人登录后写攻略（带截图）→ 存草稿 → 发布 �
   const login = await fetch(base + path, { redirect: 'manual' });
   const cookie = login.headers.get('set-cookie').split(';')[0];
   const get = (p) => fetch(base + p, { headers: { cookie }, redirect: 'manual' });
-  const csrf = (await (await get('/new')).text()).match(/name="csrf" value="([a-f0-9]+)"/)[1];
+  const newHtml = await (await get('/new')).text();
+  const csrf = newHtml.match(/name="csrf" value="([a-f0-9]+)"/)[1];
+  assert.ok((newHtml.match(/保存草稿/g) || []).length >= 3, '各大段落后有保存草稿按钮');
   const png = Buffer.from('89504e470d0a1a0a0000000d4948445200000001000000010806000000', 'hex');
   const fd = (fields, file) => {
     const f = new FormData();

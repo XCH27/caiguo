@@ -621,6 +621,7 @@ body.is-bare .wrap { padding-top: 6px; }
 .radio-card input { width: 18px; height: 18px; margin-top: 3px; accent-color: var(--ink); }
 .radio-card span { display: flex; flex-direction: column; }
 .radio-card small { font-size: 12px; color: var(--muted); }
+.ed-sec-save { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 4px; }
 .ed-submit { position: sticky; bottom: 0; z-index: 5; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px; padding: 14px 0; background: linear-gradient(rgba(255,255,255,0), #fff 35%); }
 .ed-tips { position: sticky; top: 84px; display: flex; flex-direction: column; gap: 10px; }
 .tip { display: flex; flex-direction: column; gap: 4px; padding: 14px 16px; border-radius: 16px; background: var(--soft2); font-size: 13px; color: var(--text2); line-height: 1.7; }

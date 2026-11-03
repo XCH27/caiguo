@@ -1298,6 +1298,10 @@ export function renderEditor({ model, mode, gid, action, error, notice, me, add 
     edit: `<button class="btn btn-ink btn-lg" type="submit" name="op" value="save">保存为新版本</button>`,
     suggest: `<button class="btn btn-ink btn-lg" type="submit" name="op" value="save">发到评论区</button>`,
   }[mode];
+  // 无脚本：长文编辑时底部 sticky 不够，各大段落后再放一颗「保存草稿」，避免滚回顶部才存
+  const draftSave = (mode === 'new' || mode === 'draft')
+    ? `<div class="ed-sec-save"><button class="btn btn-outline" type="submit" name="op" value="draft">保存草稿</button><span class="muted">不离开本页也能存；仍可滚到最下发布</span></div>`
+    : '';
   const bodyHint = { review: '在什么环境下、用来做什么、结果怎样，好的和不好的都写', news: '发生了什么变化、从什么时候开始、影响谁', ask: '你想做什么、试过什么、卡在哪（报错原文）', pitfall: '可选：补充背景', guide: '可选：整体说明' }[k] ?? '';
   const bodyRequired = ['review', 'news', 'ask'].includes(k);
   const sourcesBlock = `${model.origin !== undefined ? `<div class="ed-origin">
@@ -1344,20 +1348,22 @@ ${mode === 'new' ? `<nav class="kind-tabs" aria-label="笔记类型">${[['guide'
       <label><span>封面大字 <small>可选：用 / 分行，**包住**要高亮的词</small></span><input name="poster" value="${esc(model.poster ?? '')}" maxlength="40" placeholder="大陆用户/注册 Oracle/**免费账户**"></label>
     </div>
   </section>
+  ${draftSave}
 
-  ${k === 'pitfall' ? `<section class="ed-sec"><h2>坑 <small>至少一个：现象写报错原文</small></h2>${pitfalls.map(pitfallEditor).join('')}<button class="btn btn-text" type="submit" name="op" value="add_pitfall">${icon('plus')}再加一个坑</button></section>` : ''}
+  ${k === 'pitfall' ? `<section class="ed-sec"><h2>坑 <small>至少一个：现象写报错原文</small></h2>${pitfalls.map(pitfallEditor).join('')}<button class="btn btn-text" type="submit" name="op" value="add_pitfall">${icon('plus')}再加一个坑</button>${draftSave}</section>` : ''}
 
   ${steps.length ? `<section class="ed-sec"><h2>步骤 <small>${model.steps.length} 步${k === 'guide' ? ' · 一步一个能看到结果的操作' : ''}</small></h2>
     ${mode === 'edit' || mode === 'suggest' ? '<p class="muted">已有步骤的顺序不能调整；新步骤加在最后，或者先删掉再重新加。</p>' : ''}
     ${steps.map((st, i) => stepEditor(st, i, steps.length)).join('')}
     <button class="btn btn-outline" type="submit" name="op" value="add_step">${icon('plus')}再加一步</button>
+    ${draftSave}
   </section>` : ''}
 
-  ${wantPits && k !== 'pitfall' ? `<details class="ed-sec ed-fold"${model.pitfalls.length ? ' open' : ''}><summary>踩坑记录 <small>可选</small></summary>${(pitfalls.length ? pitfalls : [{}]).map(pitfallEditor).join('')}<button class="btn btn-text" type="submit" name="op" value="add_pitfall">${icon('plus')}再加一个坑</button></details>` : ''}
+  ${wantPits && k !== 'pitfall' ? `<details class="ed-sec ed-fold"${model.pitfalls.length ? ' open' : ''}><summary>踩坑记录 <small>可选</small></summary>${(pitfalls.length ? pitfalls : [{}]).map(pitfallEditor).join('')}<button class="btn btn-text" type="submit" name="op" value="add_pitfall">${icon('plus')}再加一个坑</button>${draftSave}</details>` : ''}
 
-  ${k === 'news' ? `<section class="ed-sec"><h2>出处 <small>必填：消息来自哪里</small></h2>${sourcesBlock}</section>` : k !== 'ask' && k !== 'list' ? `<details class="ed-sec ed-fold"${model.sources.length || model.origin === 'external' ? ' open' : ''}><summary>来源与出处 <small>${k === 'guide' ? '参考了教程、视频的要写' : '可选'}</small></summary>${sourcesBlock}</details>` : ''}
+  ${k === 'news' ? `<section class="ed-sec"><h2>出处 <small>必填：消息来自哪里</small></h2>${sourcesBlock}${draftSave}</section>` : k !== 'ask' && k !== 'list' ? `<details class="ed-sec ed-fold"${model.sources.length || model.origin === 'external' ? ' open' : ''}><summary>来源与出处 <small>${k === 'guide' ? '参考了教程、视频的要写' : '可选'}</small></summary>${sourcesBlock}${draftSave}</details>` : ''}
 
-  ${['guide', 'pitfall', 'review', 'skill'].includes(k) ? `<details class="ed-sec ed-fold"${applies(model) ? ' open' : ''}><summary>适用条件与准备 <small>可选</small></summary>${appliesBlock}</details>` : ''}
+  ${['guide', 'pitfall', 'review', 'skill'].includes(k) ? `<details class="ed-sec ed-fold"${applies(model) ? ' open' : ''}><summary>适用条件与准备 <small>可选</small></summary>${appliesBlock}${draftSave}</details>` : ''}
 
   ${mode === 'suggest' || mode === 'edit' ? `<section class="ed-sec"><h2>${mode === 'suggest' ? '评论内容' : '更新说明'}</h2>
     <label class="ed-full"><span>${mode === 'suggest' ? '你实际看到了什么、为什么这样改 <em>必填</em>' : '这次改了什么（会显示在更新记录里）'}</span><textarea name="rationale" rows="3">${esc(model.rationale ?? '')}</textarea></label>
