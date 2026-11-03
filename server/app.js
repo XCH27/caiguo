@@ -124,21 +124,40 @@ export function createApp(svc, { publicUrl, feedPage = 40, trustProxy = false } 
       const [path, hash] = (safeBack(f.back) ?? '/').split('#');
       redirect(res, `${path}${path.includes('?') ? '&' : '?'}reported=1${hash ? `#${hash}` : ''}`);
     }],
+    ['POST', /^\/appeal$/, async (req, res) => {
+      const f = await form(req);
+      const me = requireMe(req, f);
+      try {
+        svc.submitAppeal(me.owner_id, { kind: f.kind, target_type: f.target_type, target_id: f.target_id, reason: f.reason });
+      } catch (e) {
+        if (e.status && e.status < 500) return redirect(res, `/me/appeals?err=${encodeURIComponent(e.message)}`);
+        throw e;
+      }
+      redirect(res, '/me/appeals?ok=1');
+    }],
     ['GET', /^\/(terms|privacy|rules)$/, (req, res, m) => page(req, res, (me) => V.renderLegal(m[1], { me }))],
     ['GET', /^\/admin$/, (req, res, m, url) => {
       const me = meInfo(req);
       if (!me) return loginPage(req, res);
       if (!me.admin) throw new HttpError(403, '只有管理员可以打开管理后台');
       const tab = url.searchParams.get('tab') || 'open';
-      return html(res, V.renderAdmin({ me, tab, queue: tab === 'banned' ? [] : svc.moderationQueue({ status: tab === 'done' ? 'done' : 'open' }), banned: svc.bannedOwners() }));
+      const appealsStatus = url.searchParams.get('status') === 'done' ? 'done' : 'open';
+      return html(res, V.renderAdmin({
+        me, tab, appealsStatus,
+        queue: tab === 'banned' || tab === 'appeals' ? [] : svc.moderationQueue({ status: tab === 'done' ? 'done' : 'open' }),
+        banned: svc.bannedOwners(),
+        appeals: tab === 'appeals' ? svc.appealsQueue({ status: appealsStatus }) : [],
+      }));
     }],
-    ['POST', /^\/admin\/(resolve|unban|restore)$/, async (req, res, m) => {
+    ['POST', /^\/admin\/(resolve|unban|restore|appeal)$/, async (req, res, m) => {
       const f = await form(req);
       const me = requireMe(req, f);
       if (m[1] === 'resolve') svc.resolveReports(me.owner_id, { target_type: f.target_type, target_id: f.target_id, action: f.action, note: f.note });
       if (m[1] === 'unban') svc.unban(me.owner_id, f.owner_id);
       if (m[1] === 'restore') svc.restoreContent(me.owner_id, { target_type: f.target_type, target_id: f.target_id });
-      redirect(res, m[1] === 'unban' ? '/admin?tab=banned' : m[1] === 'restore' ? '/admin?tab=done' : '/admin');
+      if (m[1] === 'appeal') svc.resolveAppeal(me.owner_id, { appeal_id: f.appeal_id, action: f.action, note: f.note });
+      const back = m[1] === 'unban' ? '/admin?tab=banned' : m[1] === 'restore' ? '/admin?tab=done' : m[1] === 'appeal' ? '/admin?tab=appeals' : '/admin';
+      redirect(res, back);
     }],
     ['POST', /^\/follow$/, async (req, res) => {
       const f = await form(req);
@@ -229,7 +248,7 @@ export function createApp(svc, { publicUrl, feedPage = 40, trustProxy = false } 
       res.writeHead(303, { location: '/', 'set-cookie': `${COOKIE}=; Path=/; Max-Age=0` });
       res.end();
     }],
-    ['GET', /^\/me(?:\/(saved|history|runs|guides|messages|settings|following|useful))?$/, (req, res, m, url) => {
+    ['GET', /^\/me(?:\/(saved|history|runs|guides|messages|settings|following|useful|appeals))?$/, (req, res, m, url) => {
       const me = meInfo(req);
       if (!me) return loginPage(req, res);
       const d = svc.consoleData(me.owner_id);
@@ -260,6 +279,7 @@ export function createApp(svc, { publicUrl, feedPage = 40, trustProxy = false } 
         }
         case 'settings': return html(res, V.renderSettings(d, { me }));
         case 'following': return html(res, V.renderFollowing(d, { me, following: svc.followingOf(o), stats: svc.creatorStats(o) }));
+        case 'appeals': return html(res, V.renderAppeals(d, { me, actionable: svc.appealableOf(o), appeals: svc.myAppeals(o), notice: url.searchParams.get('ok') === '1' ? '申诉已提交，管理员会尽快处理' : null, error: url.searchParams.get('err') || null }));
         default: return html(res, V.renderMyGuides(d, { me, items: svc.myGuides(o), status: url.searchParams.get('status') || '' }));
       }
     }],

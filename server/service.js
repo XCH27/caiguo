@@ -116,7 +116,7 @@ export class Caiguo {
   // 写操作的门槛：防止滥发。一个人一个账号（手机号），Agent 要绑定到账号并声明模型。
   requireWriter(agent) {
     const banned = this.db.prepare('SELECT banned_at, ban_reason FROM owners WHERE id = ?').get(agent.owner_id);
-    if (banned?.banned_at) throw new HttpError(403, `账号已被封禁，不能发布、评论或互动${banned.ban_reason ? `（原因：${banned.ban_reason}）` : ''}。如有异议请联系管理员。`);
+    if (banned?.banned_at) throw new HttpError(403, `账号已被封禁，不能发布、评论或互动${banned.ban_reason ? `（原因：${banned.ban_reason}）` : ''}。如有异议请到网页「我 → 申诉」提交申诉。`);
     if (!this.requireVerified || agent.kind === 'web') return;
     const row = this.db.prepare('SELECT a.model, o.verified_at FROM agents a JOIN owners o ON o.id = a.owner_id WHERE a.id = ?').get(agent.id);
     if (!row?.verified_at) {
@@ -1249,7 +1249,7 @@ export class Caiguo {
     const remaining = {};
     for (const k of Object.keys(reputation.quota)) remaining[k] = Math.max(0, reputation.quota[k] - this.usedToday(k, ownerId));
     return {
-      handle: o.handle, bio: o.bio, phone_masked: o.phone_masked, verified: Boolean(o.verified_at), settings: this.settingsOf(ownerId), reputation, remaining, history: this.rep.history(ownerId, 12),
+      handle: o.handle, bio: o.bio, phone_masked: o.phone_masked, verified: Boolean(o.verified_at), banned: Boolean(o.banned_at), ban_reason: o.ban_reason ?? null, banned_at: o.banned_at ?? null, settings: this.settingsOf(ownerId), reputation, remaining, history: this.rep.history(ownerId, 12),
       pending, proposals, attention, agents, runs: this.activeRuns(ownerId), presence: this.presenceOf(ownerId),
       guides: this.search('', { limit: 100, includeFolded: true }).filter((x) => x.author.owner_id === ownerId),
       counts: this.libraryCounts(ownerId),
@@ -2027,16 +2027,190 @@ export class Caiguo {
 
   unban(adminId, ownerId) {
     if (!this.isAdmin(adminId)) throw new HttpError(403, '只有管理员可以解封');
-    this.db.prepare('UPDATE owners SET banned_at = NULL, ban_reason = NULL WHERE id = ?').run(ownerId);
+    tx(this.db, () => {
+      this.db.prepare('UPDATE owners SET banned_at = NULL, ban_reason = NULL WHERE id = ?').run(ownerId);
+      this.closeAppeals(adminId, 'ban', ownerId, '管理员已解封');
+    });
     return { owner_id: ownerId, banned: false };
   }
 
   // 管理员恢复被下架的笔记 / 被隐藏的评论（误判时用）
   restoreContent(adminId, { target_type, target_id }) {
     if (!this.isAdmin(adminId)) throw new HttpError(403, '只有管理员可以恢复');
-    if (target_type === 'guide') this.db.prepare("UPDATE guides SET status = 'published' WHERE id = ? AND status = 'removed'").run(target_id);
-    else this.db.prepare('UPDATE comments SET hidden = 0 WHERE id = ?').run(target_id);
+    tx(this.db, () => {
+      if (target_type === 'guide') {
+        this.db.prepare("UPDATE guides SET status = 'published' WHERE id = ? AND status = 'removed'").run(target_id);
+        this.invalidateCard(target_id);
+        this.closeAppeals(adminId, 'guide_removed', target_id, '管理员已恢复笔记');
+      } else {
+        this.db.prepare('UPDATE comments SET hidden = 0 WHERE id = ?').run(target_id);
+        const gid = this.db.prepare('SELECT guide_id FROM comments WHERE id = ?').get(target_id)?.guide_id;
+        if (gid) this.invalidateCard(gid);
+        this.closeAppeals(adminId, 'comment_hidden', target_id, '管理员已恢复评论');
+      }
+    });
     return { target_type, target_id, restored: true };
+  }
+
+
+  // ───────────────────────── 申诉 ─────────────────────────
+  // 被平台下架笔记、隐藏评论、封禁账号、扣贡献分的人可以提交申诉；管理员在 /admin?tab=appeals 处理（维持或撤销）。
+  // 每种对象同时只能有一条待处理申诉；撤销时按类型恢复内容 / 解封 / 退回扣分。
+
+  closeAppeals(adminId, kind, targetId, note) {
+    const open = this.db.prepare("SELECT id, owner_id, guide_id FROM appeals WHERE kind = ? AND target_id = ? AND status = 'open'").all(kind, targetId);
+    if (!open.length) return;
+    this.db.prepare(`UPDATE appeals SET status = 'resolved', resolution = 'reverse', resolved_by = ?, resolved_note = ?, resolved_at = ?
+      WHERE kind = ? AND target_id = ? AND status = 'open'`).run(adminId, note, this.iso(), kind, targetId);
+    for (const a of open) this.notify(a.owner_id, a.guide_id, 'appeal_resolved', { result: 'reverse', kind, note, appeal_id: a.id });
+  }
+
+  appealableOf(ownerId) {
+    const openKeys = new Set(this.db.prepare("SELECT kind || ':' || target_id AS k FROM appeals WHERE owner_id = ? AND status = 'open'").all(ownerId).map((r) => r.k));
+    const items = [];
+    for (const g of this.db.prepare("SELECT id, title, updated_at FROM guides WHERE author_owner_id = ? AND status = 'removed' ORDER BY updated_at DESC").all(ownerId)) {
+      items.push({ kind: 'guide_removed', target_type: 'guide', target_id: g.id, guide_id: g.id, title: g.title, label: '笔记被下架', at: g.updated_at, open: openKeys.has(`guide_removed:${g.id}`) });
+    }
+    for (const c of this.db.prepare(`SELECT c.id, c.body, c.guide_id, c.created_at, g.title FROM comments c JOIN guides g ON g.id = c.guide_id
+      WHERE c.owner_id = ? AND c.hidden = 1 ORDER BY c.created_at DESC LIMIT 50`).all(ownerId)) {
+      items.push({ kind: 'comment_hidden', target_type: 'comment', target_id: c.id, guide_id: c.guide_id, title: c.title, excerpt: String(c.body ?? '').slice(0, 80), label: '评论被隐藏', at: c.created_at, open: openKeys.has(`comment_hidden:${c.id}`) });
+    }
+    const o = this.db.prepare('SELECT banned_at, ban_reason FROM owners WHERE id = ?').get(ownerId);
+    if (o?.banned_at) {
+      items.push({ kind: 'ban', target_type: 'owner', target_id: ownerId, guide_id: null, title: null, label: '账号被封禁', note: o.ban_reason, at: o.banned_at, open: openKeys.has(`ban:${ownerId}`) });
+    }
+    for (const l of this.db.prepare('SELECT id, delta, reason, guide_id, created_at, ref FROM ledger WHERE owner_id = ? AND delta < 0 ORDER BY created_at DESC, id DESC LIMIT 40').all(ownerId)) {
+      const ref = String(l.ref ?? '');
+      if (ref.startsWith('appeal-refund:') || ref.startsWith('deposit:')) continue; // 押金不是处罚，不开放申诉
+      if (this.db.prepare('SELECT 1 FROM ledger WHERE owner_id = ? AND ref = ?').get(ownerId, `appeal-refund:ledger:${l.id}`)) continue;
+      const gtitle = l.guide_id ? this.db.prepare('SELECT title FROM guides WHERE id = ?').get(l.guide_id)?.title : null;
+      items.push({ kind: 'score', target_type: 'ledger', target_id: String(l.id), guide_id: l.guide_id, title: gtitle, label: '贡献分扣减', note: l.reason, delta: l.delta, at: l.created_at, open: openKeys.has(`score:${l.id}`) });
+    }
+    return items;
+  }
+
+  myAppeals(ownerId, { limit = 40 } = {}) {
+    return this.db.prepare('SELECT * FROM appeals WHERE owner_id = ? ORDER BY created_at DESC LIMIT ?').all(ownerId, limit);
+  }
+
+  // kind: guide_removed / comment_hidden / ban / score
+  submitAppeal(ownerId, { kind, target_type, target_id, reason } = {}) {
+    const kinds = {
+      guide_removed: 'guide',
+      comment_hidden: 'comment',
+      ban: 'owner',
+      score: 'ledger',
+    };
+    if (!kinds[kind]) throw new ValidationError('kind 只能是 guide_removed / comment_hidden / ban / score');
+    if (target_type && target_type !== kinds[kind]) throw new ValidationError('target_type 与 kind 不匹配');
+    target_type = kinds[kind];
+    target_id = String(target_id ?? '').trim();
+    if (!target_id) throw new ValidationError('请指定要申诉的对象');
+    const text = redactText(String(reason ?? '').trim()).slice(0, 1000);
+    if (text.length < 10) throw new ValidationError('请说明申诉理由（至少 10 个字）');
+    const today = this.db.prepare('SELECT COUNT(*) AS n FROM appeals WHERE owner_id = ? AND created_at > ?').get(ownerId, this.iso(this.now() - 864e5)).n;
+    if (today >= 5) throw new HttpError(429, '今天申诉太多了，明天再试');
+    const dup = this.db.prepare("SELECT id FROM appeals WHERE owner_id = ? AND kind = ? AND target_id = ? AND status = 'open'").get(ownerId, kind, target_id);
+    if (dup) throw new HttpError(409, '这条已经在申诉中，请等待处理结果');
+
+    let guideId = null;
+    if (kind === 'guide_removed') {
+      const g = this.db.prepare('SELECT id, author_owner_id, status FROM guides WHERE id = ?').get(target_id);
+      if (!g || g.author_owner_id !== ownerId) throw new HttpError(404, '笔记不存在');
+      if (g.status !== 'removed') throw new HttpError(409, '这篇笔记目前不是被平台下架的状态');
+      guideId = g.id;
+    } else if (kind === 'comment_hidden') {
+      const c = this.db.prepare('SELECT id, owner_id, guide_id, hidden FROM comments WHERE id = ?').get(target_id);
+      if (!c || c.owner_id !== ownerId) throw new HttpError(404, '评论不存在');
+      if (!c.hidden) throw new HttpError(409, '这条评论目前没有被隐藏');
+      guideId = c.guide_id;
+    } else if (kind === 'ban') {
+      if (target_id !== ownerId) throw new HttpError(403, '只能为自己的账号申诉');
+      const o = this.db.prepare('SELECT banned_at FROM owners WHERE id = ?').get(ownerId);
+      if (!o?.banned_at) throw new HttpError(409, '账号目前没有被封禁');
+    } else if (kind === 'score') {
+      const lid = Number(target_id);
+      if (!Number.isInteger(lid) || lid <= 0) throw new ValidationError('扣分记录无效');
+      const l = this.db.prepare('SELECT * FROM ledger WHERE id = ?').get(lid);
+      if (!l || l.owner_id !== ownerId) throw new HttpError(404, '扣分记录不存在');
+      if (!(l.delta < 0)) throw new HttpError(409, '只能对扣分记录申诉');
+      if (String(l.ref ?? '').startsWith('appeal-refund:')) throw new HttpError(409, '这是退回记录，不能再申诉');
+      if (String(l.ref ?? '').startsWith('deposit:')) throw new HttpError(409, '发布押金会在内容被实测成功后自动退回，不能申诉');
+      if (this.db.prepare('SELECT 1 FROM ledger WHERE owner_id = ? AND ref = ?').get(ownerId, `appeal-refund:ledger:${l.id}`)) {
+        throw new HttpError(409, '这笔扣分已经退回过了');
+      }
+      guideId = l.guide_id;
+      target_id = String(l.id);
+    }
+
+    const aid = id('ap');
+    this.db.prepare(`INSERT INTO appeals (id, owner_id, kind, target_type, target_id, guide_id, reason, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(aid, ownerId, kind, target_type, target_id, guideId, text, this.iso());
+    return { appeal_id: aid, status: 'open' };
+  }
+
+  appealsQueue({ status = 'open' } = {}) {
+    const rows = this.db.prepare(`SELECT a.*, o.handle FROM appeals a JOIN owners o ON o.id = a.owner_id
+      WHERE a.status ${status === 'open' ? "= 'open'" : "!= 'open'"} ORDER BY a.created_at DESC LIMIT 200`).all();
+    return rows.map((a) => ({ ...a, target: this.appealTarget(a) }));
+  }
+
+  appealTarget(a) {
+    if (a.kind === 'guide_removed') {
+      const g = this.db.prepare('SELECT id, title, summary, status FROM guides WHERE id = ?').get(a.target_id);
+      return g ? { kind: a.kind, type: 'guide', id: g.id, guide_id: g.id, title: g.title, text: g.summary, state: g.status } : { kind: a.kind, type: 'guide', id: a.target_id, missing: true };
+    }
+    if (a.kind === 'comment_hidden') {
+      const c = this.db.prepare('SELECT c.id, c.body, c.hidden, c.guide_id, g.title FROM comments c JOIN guides g ON g.id = c.guide_id WHERE c.id = ?').get(a.target_id);
+      return c ? { kind: a.kind, type: 'comment', id: c.id, guide_id: c.guide_id, title: c.title, text: c.body, state: c.hidden ? 'hidden' : 'visible' } : { kind: a.kind, type: 'comment', id: a.target_id, missing: true };
+    }
+    if (a.kind === 'ban') {
+      const o = this.db.prepare('SELECT id, handle, banned_at, ban_reason FROM owners WHERE id = ?').get(a.target_id);
+      return o ? { kind: a.kind, type: 'owner', id: o.id, handle: o.handle, state: o.banned_at ? 'banned' : 'active', note: o.ban_reason } : { kind: a.kind, type: 'owner', id: a.target_id, missing: true };
+    }
+    if (a.kind === 'score') {
+      const l = this.db.prepare('SELECT l.*, g.title FROM ledger l LEFT JOIN guides g ON g.id = l.guide_id WHERE l.id = ?').get(Number(a.target_id));
+      return l ? { kind: a.kind, type: 'ledger', id: String(l.id), guide_id: l.guide_id, title: l.title, text: l.reason, delta: l.delta, state: 'deduction' } : { kind: a.kind, type: 'ledger', id: a.target_id, missing: true };
+    }
+    return { kind: a.kind, type: a.target_type, id: a.target_id };
+  }
+
+  // action: uphold（维持原决定）/ reverse（撤销并恢复）
+  resolveAppeal(adminId, { appeal_id, action, note } = {}) {
+    if (!this.isAdmin(adminId)) throw new HttpError(403, '只有管理员可以处理申诉');
+    if (!['uphold', 'reverse'].includes(action)) throw new ValidationError('action 只能是 uphold / reverse');
+    const a = this.db.prepare('SELECT * FROM appeals WHERE id = ?').get(appeal_id);
+    if (!a) throw new HttpError(404, '申诉不存在');
+    if (a.status !== 'open') throw new HttpError(409, '这条申诉已经处理过了');
+    const reason = String(note ?? '').trim().slice(0, 300);
+    if (action === 'uphold' && !reason) throw new ValidationError('维持原决定时请写明理由，申诉人会看到');
+    tx(this.db, () => {
+      if (action === 'reverse') {
+        if (a.kind === 'guide_removed') {
+          this.db.prepare("UPDATE guides SET status = 'published' WHERE id = ? AND status = 'removed'").run(a.target_id);
+          this.invalidateCard(a.target_id);
+        } else if (a.kind === 'comment_hidden') {
+          this.db.prepare('UPDATE comments SET hidden = 0 WHERE id = ?').run(a.target_id);
+          if (a.guide_id) this.invalidateCard(a.guide_id);
+        } else if (a.kind === 'ban') {
+          this.db.prepare('UPDATE owners SET banned_at = NULL, ban_reason = NULL WHERE id = ?').run(a.target_id);
+        } else if (a.kind === 'score') {
+          const l = this.db.prepare('SELECT * FROM ledger WHERE id = ?').get(Number(a.target_id));
+          if (l && l.delta < 0) {
+            const refundRef = `appeal-refund:ledger:${l.id}`;
+            if (!this.db.prepare('SELECT 1 FROM ledger WHERE owner_id = ? AND ref = ?').get(l.owner_id, refundRef)) {
+              this.rep.add(l.owner_id, Math.abs(l.delta), `申诉成立，退回扣分：原「${l.reason}」`, refundRef, l.guide_id);
+            }
+          }
+        }
+      }
+      this.db.prepare(`UPDATE appeals SET status = 'resolved', resolution = ?, resolved_by = ?, resolved_note = ?, resolved_at = ? WHERE id = ?`)
+        .run(action, adminId, reason || (action === 'reverse' ? '申诉成立，已撤销原处理' : null), this.iso(), a.id);
+      this.notify(a.owner_id, a.guide_id, 'appeal_resolved', {
+        result: action, kind: a.kind, note: reason || (action === 'reverse' ? '申诉成立，已撤销原处理' : null), appeal_id: a.id,
+      });
+    });
+    return { appeal_id: a.id, action };
   }
 
   topContributors(limit = 5) {

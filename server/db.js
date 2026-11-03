@@ -243,6 +243,24 @@ CREATE TABLE IF NOT EXISTS reports (
   resolved_at TEXT
 );
 CREATE INDEX IF NOT EXISTS reports_target ON reports(target_type, target_id, status);
+CREATE TABLE IF NOT EXISTS appeals (
+  id TEXT PRIMARY KEY,
+  owner_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  target_type TEXT NOT NULL,
+  target_id TEXT NOT NULL,
+  guide_id TEXT,
+  reason TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'open',
+  resolution TEXT,
+  resolved_by TEXT,
+  resolved_note TEXT,
+  created_at TEXT NOT NULL,
+  resolved_at TEXT
+);
+CREATE INDEX IF NOT EXISTS appeals_status ON appeals(status, created_at);
+CREATE INDEX IF NOT EXISTS appeals_owner ON appeals(owner_id, status);
+CREATE INDEX IF NOT EXISTS appeals_target ON appeals(kind, target_id, status);
 CREATE TABLE IF NOT EXISTS presence (
   owner_id TEXT NOT NULL,
   guide_id TEXT NOT NULL,

@@ -261,7 +261,7 @@ test('网页：主人登录后写攻略（带截图）→ 存草稿 → 发布 �
   assert.equal(g.content.steps[0].rev, 1);
   assert.equal(g.content.steps[1].rev, 2);
   // “我的”各页
-  for (const p of ['/me', '/me/saved', '/me/history', '/me/history?who=agent', '/me/runs', '/me/useful', '/me/following', '/me/messages', '/me/messages?tab=likes', '/me/settings', `/g/${gid}/edit`, '/about', '/login']) {
+  for (const p of ['/me', '/me/saved', '/me/history', '/me/history?who=agent', '/me/runs', '/me/useful', '/me/following', '/me/messages', '/me/messages?tab=likes', '/me/appeals', '/me/settings', `/g/${gid}/edit`, '/about', '/login']) {
     assert.equal((await get(p)).status, 200, p);
   }
   assert.match(await (await get('/me/history')).text(), /网页上写的测试攻略/);
@@ -448,6 +448,17 @@ test('网页举报和管理后台：登录的人能举报；只有管理员能�
   assert.equal((await fetch(`${base}/g/${guide_id}`)).status, 404);
   assert.match(await (await author.get('/me/messages?tab=system')).text(), /内容与实际不符/);
   assert.match(await (await reader.get('/me/messages?tab=system')).text(), /举报/);
+  // 申诉入口：作者可提交；管理员在申诉页撤销后笔记恢复
+  const appeals = await (await author.get('/me/appeals')).text();
+  assert.match(appeals, /笔记下架/);
+  assert.match(appeals, /action="\/appeal"/);
+  const ap = await author.post('/appeal', { kind: 'guide_removed', target_type: 'guide', target_id: guide_id, reason: '这篇没有违规内容，请恢复公开让大家继续看' });
+  assert.equal(ap.status, 303);
+  assert.match(await (await admin.get('/admin?tab=appeals')).text(), /笔记下架/);
+  const rev = await admin.post('/admin/appeal', { appeal_id: svc.appealsQueue({ status: 'open' })[0].id, action: 'reverse', note: '误判，恢复' });
+  assert.equal(rev.status, 303);
+  assert.equal((await fetch(`${base}/g/${guide_id}`)).status, 200);
+  assert.match(await (await author.get('/me/messages?tab=system')).text(), /申诉成立|原处理已撤销/);
 });
 
 test('网页分页：瀑布流“加载更多”把下一页接在下面，搜索结果数是总数', async () => {

@@ -722,6 +722,83 @@ test('举报和管理：举报进队列；管理员下架笔记、隐藏评论�
   assert.ok(svc.comment(w, guide_id, { type: 'add', body: '解封后正常补充：第 2 步可以用 Gmail' }).comment_id);
 });
 
+test('申诉：被下架/隐藏/封禁/扣分可申诉；管理员维持或撤销；撤销恢复内容并退回扣分；通知三处', () => {
+  const { svc, mk } = setup();
+  const a = mk('作者');
+  const u = mk('读者');
+  const admin = mk('运营');
+  svc.db.prepare("UPDATE owners SET role = 'admin' WHERE id = ?").run(admin.owner_id);
+  const { guide_id } = svc.publishGuide(a, GUIDE);
+  const c = svc.comment(a, guide_id, { type: 'add', body: '这条评论稍后会被隐藏，用来测申诉' });
+  // 扣分：用 misleading 评价制造负分，方便测 score 申诉
+  svc.react(u, guide_id, { action: 'misleading', context: '照着做发现步骤不对' });
+  const led = svc.db.prepare('SELECT id, delta FROM ledger WHERE owner_id = ? AND delta < 0 ORDER BY id DESC').get(a.owner_id);
+  assert.ok(led && led.delta < 0, '作者应有一笔扣分');
+
+  // 下架笔记 + 隐藏评论 + 封禁（另开一人）
+  const banned = mk('被封');
+  svc.comment(banned, guide_id, { type: 'add', body: '广告引流加微信领账号' });
+  // 先举报并处理笔记与评论
+  svc.report(u.owner_id, { target_type: 'guide', target_id: guide_id, reason: 'danger' });
+  svc.resolveReports(admin.owner_id, { target_type: 'guide', target_id: guide_id, action: 'remove', note: '危险操作' });
+  svc.report(u.owner_id, { target_type: 'comment', target_id: c.comment_id, reason: 'spam' });
+  svc.resolveReports(admin.owner_id, { target_type: 'comment', target_id: c.comment_id, action: 'remove', note: '广告' });
+  // 封禁另一个账号（通过举报其评论）
+  const bc = svc.db.prepare("SELECT id FROM comments WHERE owner_id = ? ORDER BY created_at DESC").get(banned.owner_id);
+  svc.report(u.owner_id, { target_type: 'comment', target_id: bc.id, reason: 'spam' });
+  svc.resolveReports(admin.owner_id, { target_type: 'comment', target_id: bc.id, action: 'ban', note: '引流广告' });
+
+  // 可申诉列表
+  const actionable = svc.appealableOf(a.owner_id);
+  assert.ok(actionable.some((x) => x.kind === 'guide_removed' && x.target_id === guide_id));
+  assert.ok(actionable.some((x) => x.kind === 'comment_hidden' && x.target_id === c.comment_id));
+  assert.ok(actionable.some((x) => x.kind === 'score' && x.target_id === String(led.id)));
+  assert.ok(svc.appealableOf(banned.owner_id).some((x) => x.kind === 'ban'));
+
+  // 校验：理由太短、非当事人、重复 open
+  assert.throws(() => svc.submitAppeal(a.owner_id, { kind: 'guide_removed', target_id: guide_id, reason: '不对' }), /10/);
+  assert.throws(() => svc.submitAppeal(u.owner_id, { kind: 'guide_removed', target_id: guide_id, reason: '这不是我的笔记却要申诉' }), /不存在/);
+  const ap1 = svc.submitAppeal(a.owner_id, { kind: 'guide_removed', target_id: guide_id, reason: '这篇没有危险操作，第 4 步只是备份不是删库' });
+  assert.throws(() => svc.submitAppeal(a.owner_id, { kind: 'guide_removed', target_id: guide_id, reason: '再申诉一次应该被拒绝因为已在处理中' }), /已经在申诉/);
+
+  // 管理员只能处理；维持必须写原因
+  assert.throws(() => svc.resolveAppeal(u.owner_id, { appeal_id: ap1.appeal_id, action: 'uphold', note: 'x' }), /管理员/);
+  assert.throws(() => svc.resolveAppeal(admin.owner_id, { appeal_id: ap1.appeal_id, action: 'uphold' }), /理由/);
+  svc.resolveAppeal(admin.owner_id, { appeal_id: ap1.appeal_id, action: 'uphold', note: '经复核第 4 步确有风险，维持下架' });
+  assert.equal(svc.myGuides(a.owner_id).find((g) => g.id === guide_id)?.status, 'removed');
+  assert.equal(svc.messages(a.owner_id)[0].kind, 'appeal_resolved');
+  assert.equal(svc.messages(a.owner_id)[0].result, 'uphold');
+
+  // 再次申诉并撤销：笔记恢复公开
+  const ap2 = svc.submitAppeal(a.owner_id, { kind: 'guide_removed', target_id: guide_id, reason: '我已删掉危险步骤，请再审一次恢复公开' });
+  svc.resolveAppeal(admin.owner_id, { appeal_id: ap2.appeal_id, action: 'reverse', note: '已确认安全，恢复' });
+  assert.equal(svc.search('注册').some((g) => g.id === guide_id), true);
+  assert.equal(svc.messages(a.owner_id)[0].result, 'reverse');
+
+  // 评论隐藏申诉成立
+  const apC = svc.submitAppeal(a.owner_id, { kind: 'comment_hidden', target_id: c.comment_id, reason: '这条不是广告，是正常补充说明' });
+  svc.resolveAppeal(admin.owner_id, { appeal_id: apC.appeal_id, action: 'reverse' });
+  assert.ok(svc.commentsOf(guide_id).some((x) => x.id === c.comment_id));
+
+  // 封禁申诉成立 → 解封
+  const apB = svc.submitAppeal(banned.owner_id, { kind: 'ban', target_id: banned.owner_id, reason: '那条评论是误发，愿意删除并保证不再发广告' });
+  svc.resolveAppeal(admin.owner_id, { appeal_id: apB.appeal_id, action: 'reverse', note: '解封观察' });
+  assert.equal(svc.bannedOwners().some((b) => b.id === banned.owner_id), false);
+  assert.ok(svc.comment(banned, guide_id, { type: 'add', body: '解封后正常提问：第 2 步邮箱收不到验证码怎么办' }).comment_id);
+
+  // 扣分申诉成立 → 退回
+  const before = svc.rep.points(a.owner_id);
+  const apS = svc.submitAppeal(a.owner_id, { kind: 'score', target_id: String(led.id), reason: '评价有误导不成立，步骤按原文可以完成' });
+  svc.resolveAppeal(admin.owner_id, { appeal_id: apS.appeal_id, action: 'reverse' });
+  assert.ok(svc.rep.points(a.owner_id) > before - 0.01);
+  assert.throws(() => svc.submitAppeal(a.owner_id, { kind: 'score', target_id: String(led.id), reason: '已经退回过了还想再申诉一次不行' }), /退回/);
+
+  // 队列与非管理员
+  assert.equal(svc.appealsQueue({ status: 'done' }).length >= 4, true);
+  assert.equal(svc.appealsQueue({ status: 'open' }).length, 0);
+});
+
+
 test('评论贴图：只收平台上传的图片，显示在评论里', () => {
   const { svc, mk } = setup();
   const a = mk('作者');

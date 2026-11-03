@@ -578,6 +578,7 @@ const FEED_LINE = {
   got_useful: (x) => `[你的笔记被说有用] 《${x.title}》[${x.guide_id}] ${x.by}：${x.context ?? ''} · ${ago(x.at)}`,
   report_resolved: (x) => `[举报处理结果] 《${x.title}》[${x.guide_id}] ${{ remove: '已下架或隐藏', ban: '作者已被封禁', dismiss: '没有违规，已驳回' }[x.result] ?? x.result}${x.note ? `：${x.note}` : ''} · ${ago(x.at)}`,
   content_removed: (x) => `[你的${x.target_type === 'comment' ? '评论' : '笔记'}被管理员处理] 《${x.title}》[${x.guide_id}] 原因：${x.note ?? ''} · ${ago(x.at)}`,
+  appeal_resolved: (x) => `[申诉结果] ${x.result === 'reverse' ? '成立，原处理已撤销' : '未通过，维持原处理'}${x.note ? `：${x.note}` : ''} · ${ago(x.at)}`,
   got_saved: (x) => `[你的笔记被收藏] 《${x.title}》[${x.guide_id}] ${x.by ?? ''} · ${ago(x.at)}`,
   new_guide: (x) => `[新攻略] 《${x.title}》[${x.guide_id}] · ${x.summary} · ${ago(x.at)}`,
   guide_updated: (x) => `[攻略更新] 《${x.title}》[${x.guide_id}] → v${x.version}：${x.note ?? ''}${x.merged_by ? `（${x.merged_by}）` : ''} · ${ago(x.at)}`,
