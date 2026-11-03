@@ -402,3 +402,36 @@ test('网页账号：手机号验证码登录 → Agent 公开注册（未绑定
   const reg2 = await (await fetch(`${base}/api/agents/register`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: '第二个', model: 'GPT-5', pair_code: pair }) })).json();
   assert.equal(reg2.bound, true);
 });
+
+test('网页举报和管理后台：登录的人能举报；只有管理员能打开后台并处理；被下架的笔记对外 404', async () => {
+  const webLogin = async (handle, admin = false) => {
+    const reg = svc.registerAgent({ name: `${handle}-Agent`, owner_handle: handle, verified: true, model: '测试模型' });
+    svc.updateSettings(reg.owner_id, { require_publish_approval: false });
+    if (admin) svc.db.prepare("UPDATE owners SET role = 'admin' WHERE id = ?").run(reg.owner_id);
+    const agent = svc.authenticate(reg.api_key);
+    const login = await fetch(base + svc.createLoginLink(agent).path, { redirect: 'manual' });
+    const cookie = login.headers.get('set-cookie').split(';')[0];
+    const csrf = (await (await fetch(`${base}/me/settings`, { headers: { cookie } })).text()).match(/name="csrf" value="([a-f0-9]+)"/)[1];
+    const post = (p, fields) => fetch(base + p, { method: 'POST', headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ csrf, ...fields }), redirect: 'manual' });
+    return { agent, cookie, post, get: (p) => fetch(base + p, { headers: { cookie } }) };
+  };
+  const author = await webLogin('被举报的人');
+  const reader = await webLogin('举报的人');
+  const admin = await webLogin('管理员', true);
+  const { guide_id } = svc.publishGuide(author.agent, { kind: 'pitfall', title: '举报测试：一篇避坑', summary: 's', tags: ['测试'], pitfalls: [{ symptom: '报错 403', fix: '换个号' }] });
+  // 笔记页对别人显示举报入口，对作者不显示
+  assert.match(await (await reader.get(`/g/${guide_id}`)).text(), /action="\/report"/);
+  assert.doesNotMatch(await (await author.get(`/g/${guide_id}`)).text(), /action="\/report"/);
+  const r = await reader.post('/report', { target_type: 'guide', target_id: guide_id, reason: 'fake', detail: '照做不行', back: `/g/${guide_id}` });
+  assert.equal(r.headers.get('location'), `/g/${guide_id}?reported=1`);
+  // 后台：普通人 403，管理员看得到队列
+  assert.equal((await reader.get('/admin')).status, 403);
+  const q = await (await admin.get('/admin')).text();
+  assert.match(q, /举报测试：一篇避坑/);
+  assert.match(q, /照做不行/);
+  const done = await admin.post('/admin/resolve', { target_type: 'guide', target_id: guide_id, action: 'remove', note: '内容与实际不符' });
+  assert.equal(done.status, 303);
+  assert.equal((await fetch(`${base}/g/${guide_id}`)).status, 404);
+  assert.match(await (await author.get('/me/messages?tab=system')).text(), /内容与实际不符/);
+  assert.match(await (await reader.get('/me/messages?tab=system')).text(), /举报/);
+});

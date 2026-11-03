@@ -63,7 +63,8 @@ export function createApp(svc, { publicUrl } = {}) {
       const related = g.tags.filter((t) => t !== '示例').length
         ? svc.search('', { limit: 100 }).filter((x) => x.id !== g.id && x.tags.some((t) => t !== '示例' && g.tags.includes(t))).slice(0, 8) : [];
       const notice = url.searchParams.has('updated') ? '已保存为新版本。' : url.searchParams.has('proposed') ? '已作为带修改的评论发在评论区，等作者采纳或其他人验证。'
-        : url.searchParams.has('published') ? '已发布。' : url.searchParams.has('reacted') ? '已记录，谢谢你的真实反馈。' : url.searchParams.has('commented') ? '评论已发表。' : null;
+        : url.searchParams.has('published') ? '已发布。' : url.searchParams.has('reacted') ? '已记录，谢谢你的真实反馈。' : url.searchParams.has('commented') ? '评论已发表。'
+          : url.searchParams.has('reported') ? '举报已提交，管理员处理后会通知你。' : null;
       g.mine = me ? svc.myReactions(me.owner_id, g.id) : {};
       const followingAuthor = me ? svc.isFollowing(me.owner_id, 'user', g.author.owner_id) : false;
       return html(res, V.renderGuide(g, {
@@ -103,6 +104,28 @@ export function createApp(svc, { publicUrl } = {}) {
         reject: () => svc.rejectComment(me.owner_id, m[1], f.note),
       }[m[2]]();
       redirect(res, `/g/${r.guide_id}${m[2] === 'accept' && r.merged_version ? '?updated=1' : ''}#${m[1]}`);
+    }],
+    ['POST', /^\/report$/, async (req, res) => {
+      const f = await form(req);
+      const me = requireMe(req, f);
+      svc.report(me.owner_id, { target_type: f.target_type, target_id: f.target_id, reason: f.reason, detail: f.detail });
+      const [path, hash] = (safeBack(f.back) ?? '/').split('#');
+      redirect(res, `${path}${path.includes('?') ? '&' : '?'}reported=1${hash ? `#${hash}` : ''}`);
+    }],
+    ['GET', /^\/admin$/, (req, res, m, url) => {
+      const me = meInfo(req);
+      if (!me) return loginPage(req, res);
+      if (!me.admin) throw new HttpError(403, '只有管理员可以打开管理后台');
+      const tab = url.searchParams.get('tab') || 'open';
+      return html(res, V.renderAdmin({ me, tab, queue: tab === 'banned' ? [] : svc.moderationQueue({ status: tab === 'done' ? 'done' : 'open' }), banned: svc.bannedOwners() }));
+    }],
+    ['POST', /^\/admin\/(resolve|unban|restore)$/, async (req, res, m) => {
+      const f = await form(req);
+      const me = requireMe(req, f);
+      if (m[1] === 'resolve') svc.resolveReports(me.owner_id, { target_type: f.target_type, target_id: f.target_id, action: f.action, note: f.note });
+      if (m[1] === 'unban') svc.unban(me.owner_id, f.owner_id);
+      if (m[1] === 'restore') svc.restoreContent(me.owner_id, { target_type: f.target_type, target_id: f.target_id });
+      redirect(res, m[1] === 'unban' ? '/admin?tab=banned' : m[1] === 'restore' ? '/admin?tab=done' : '/admin');
     }],
     ['POST', /^\/follow$/, async (req, res) => {
       const f = await form(req);

@@ -666,3 +666,52 @@ test('注册风控：默认不接受虚拟运营商号段；主人可以写一�
   assert.ok(bio.startsWith('出海独立开发者'));
   assert.ok(!bio.includes('13812345678'), '简介里的手机号被打码');
 });
+
+test('举报和管理：举报进队列；管理员下架笔记、隐藏评论、封禁账号；举报人和作者都收到结果', () => {
+  const { svc, mk } = setup();
+  const a = mk('作者');
+  const u = mk('读者');
+  const w = mk('路人');
+  const admin = mk('运营');
+  svc.db.prepare("UPDATE owners SET role = 'admin' WHERE id = ?").run(admin.owner_id);
+  const { guide_id } = svc.publishGuide(a, GUIDE);
+  const c = svc.comment(w, guide_id, { type: 'add', body: '加微信 xxx 领免费账号，包过审核' });
+  // 举报：理由必须是固定的几种；重复举报只算一条
+  assert.throws(() => svc.report(u.owner_id, { target_type: 'guide', target_id: guide_id, reason: '不喜欢' }), /reason/);
+  svc.report(u.owner_id, { target_type: 'comment', target_id: c.comment_id, reason: 'spam', detail: '广告' });
+  svc.report(u.owner_id, { target_type: 'comment', target_id: c.comment_id, reason: 'spam', detail: '广告，引流' });
+  svc.react(a, guide_id, { action: 'report', reason: 'spam', context: '评论区有广告' }); // Agent 通过 caiguo_react 举报笔记
+  svc.report(w.owner_id, { target_type: 'guide', target_id: guide_id, reason: 'fake' });
+  const q = svc.moderationQueue();
+  assert.equal(q.length, 2);
+  assert.equal(q.find((x) => x.target.type === 'comment').reports.length, 1, '同一个人重复举报只算一条');
+  assert.equal(q.find((x) => x.target.type === 'guide').reports.length, 2);
+  // 只有管理员能处理；下架和封禁必须写原因
+  assert.throws(() => svc.resolveReports(u.owner_id, { target_type: 'comment', target_id: c.comment_id, action: 'remove', note: 'x' }), /管理员/);
+  assert.throws(() => svc.resolveReports(admin.owner_id, { target_type: 'comment', target_id: c.comment_id, action: 'ban' }), /原因/);
+  assert.throws(() => svc.resolveReports(admin.owner_id, { target_type: 'comment', target_id: c.comment_id, action: 'delete' }), /action/);
+  // 封禁评论者：评论隐藏、账号不能再写
+  svc.resolveReports(admin.owner_id, { target_type: 'comment', target_id: c.comment_id, action: 'ban', note: '评论区引流广告' });
+  assert.equal(svc.commentsOf(guide_id).length, 0, '被隐藏的评论不再显示');
+  assert.throws(() => svc.comment(w, guide_id, { type: 'add', body: '我又来了，换个说法发一次' }), /封禁/);
+  assert.equal(svc.messages(w.owner_id)[0].kind, 'content_removed');
+  assert.equal(svc.messages(u.owner_id)[0].kind, 'report_resolved');
+  assert.equal(svc.bannedOwners()[0].handle, '路人');
+  // 驳回对笔记的举报：笔记照常公开
+  svc.resolveReports(admin.owner_id, { target_type: 'guide', target_id: guide_id, action: 'dismiss' });
+  assert.equal(svc.search('注册').length, 1);
+  assert.equal(svc.moderationQueue().length, 0);
+  assert.equal(svc.moderationQueue({ status: 'done' }).length, 2);
+  // 再次举报后下架：公开渠道看不到，作者在“我的笔记”里看到“已被平台下架”
+  svc.report(u.owner_id, { target_type: 'guide', target_id: guide_id, reason: 'danger', detail: '第 4 步会删库' });
+  svc.resolveReports(admin.owner_id, { target_type: 'guide', target_id: guide_id, action: 'remove', note: '包含危险操作' });
+  assert.equal(svc.search('注册').length, 0);
+  assert.throws(() => svc.getGuide(guide_id), /不存在/);
+  assert.equal(svc.myGuides(a.owner_id).find((g) => g.id === guide_id)?.status, 'removed');
+  assert.throws(() => svc.restoreGuide(a.owner_id, guide_id), /被平台下架/, '作者不能自己恢复被平台下架的笔记');
+  // 误判可以恢复和解封
+  svc.restoreContent(admin.owner_id, { target_type: 'guide', target_id: guide_id });
+  assert.equal(svc.search('注册').length, 1);
+  svc.unban(admin.owner_id, w.owner_id);
+  assert.ok(svc.comment(w, guide_id, { type: 'add', body: '解封后正常补充：第 2 步可以用 Gmail' }).comment_id);
+});

@@ -2,7 +2,7 @@
 // HTTP API、网页、远程 MCP 都调用这里，保证规则只有一份。
 import { createHash, randomBytes } from 'node:crypto';
 import { tx } from './db.js';
-import { normalizeNewGuide, ValidationError, stepLabel, KINDS, COMMENT_TYPES } from './logic/content.js';
+import { normalizeNewGuide, ValidationError, stepLabel, KINDS, COMMENT_TYPES, REPORT_REASONS } from './logic/content.js';
 import { normalizeOps, applyOps, classifyRisk, describeOps, diffToOps } from './logic/patch.js';
 import { computeHealth } from './logic/health.js';
 import { evaluateProposal, mergePolicy } from './logic/merge.js';
@@ -112,6 +112,8 @@ export class Caiguo {
 
   // 写操作的门槛：防止滥发。一个人一个账号（手机号），Agent 要绑定到账号并声明模型。
   requireWriter(agent) {
+    const banned = this.db.prepare('SELECT banned_at, ban_reason FROM owners WHERE id = ?').get(agent.owner_id);
+    if (banned?.banned_at) throw new HttpError(403, `账号已被封禁，不能发布、评论或互动${banned.ban_reason ? `（原因：${banned.ban_reason}）` : ''}。如有异议请联系管理员。`);
     if (!this.requireVerified || agent.kind === 'web') return;
     const row = this.db.prepare('SELECT a.model, o.verified_at FROM agents a JOIN owners o ON o.id = a.owner_id WHERE a.id = ?').get(agent.id);
     if (!row?.verified_at) {
@@ -297,9 +299,9 @@ export class Caiguo {
 
   sessionOwner(sid) {
     if (!sid) return null;
-    const row = this.db.prepare(`SELECT s.owner_id, s.csrf, s.expires_at, o.handle FROM web_sessions s JOIN owners o ON o.id = s.owner_id WHERE s.id_hash = ?`).get(sha(sid));
+    const row = this.db.prepare(`SELECT s.owner_id, s.csrf, s.expires_at, o.handle, o.role, o.banned_at FROM web_sessions s JOIN owners o ON o.id = s.owner_id WHERE s.id_hash = ?`).get(sha(sid));
     if (!row || Date.parse(row.expires_at) < this.now()) return null;
-    return { owner_id: row.owner_id, handle: row.handle, csrf: row.csrf };
+    return { owner_id: row.owner_id, handle: row.handle, csrf: row.csrf, admin: row.role === 'admin', banned: Boolean(row.banned_at) };
   }
 
   logout(sid) {
@@ -1284,14 +1286,15 @@ export class Caiguo {
   // 下架（不再出现在搜索和信息流里，链接对他人失效；可以恢复）
   archiveGuide(ownerId, gid) {
     const g = this.ownGuide(ownerId, gid);
-    if (g.status !== 'published') throw new HttpError(409, '只有已公开的攻略可以下架');
+    if (g.status !== 'published') throw new HttpError(409, '只有已公开的笔记可以下架');
     this.db.prepare("UPDATE guides SET status = 'archived' WHERE id = ?").run(gid);
     return { guide_id: gid, status: 'archived' };
   }
 
   restoreGuide(ownerId, gid) {
     const g = this.ownGuide(ownerId, gid);
-    if (g.status !== 'archived') throw new HttpError(409, '只有已下架的攻略可以恢复');
+    if (g.status === 'removed') throw new HttpError(409, '这篇笔记是被平台下架的，不能自己恢复；有异议请联系管理员');
+    if (g.status !== 'archived') throw new HttpError(409, '只有你自己下架的笔记可以恢复');
     this.db.prepare("UPDATE guides SET status = 'published' WHERE id = ?").run(gid);
     return { guide_id: gid, status: 'published' };
   }
@@ -1568,6 +1571,7 @@ export class Caiguo {
     this.requireWriter(agent);
     const g = this.guideRow(gid);
     if (action === 'save' || action === 'unsave') return this.manage(agent, { action, guide_id: gid, folder });
+    if (action === 'report') return { guide_id: gid, action, ...this.report(agent.owner_id, { target_type: 'guide', target_id: gid, reason, detail: context }) };
     if (action === 'recommend') {
       const why = redactText(String(reason ?? '').trim()).slice(0, 300);
       if (!why) throw new ValidationError('推荐给主人时写一句理由（reason）：为什么觉得主人用得上');
@@ -1577,7 +1581,7 @@ export class Caiguo {
       this.notify(agent.owner_id, gid, 'agent_recommend', { by: agent.name, reason: why, note_kind: g.kind });
       return { guide_id: gid, action, recommended_to: agent.owner_handle ?? '主人' };
     }
-    if (action !== 'useful' && action !== 'misleading') throw new ValidationError('action 只能是 useful / misleading / recommend / save / unsave');
+    if (action !== 'useful' && action !== 'misleading') throw new ValidationError('action 只能是 useful / misleading / recommend / save / unsave / report');
     if (g.author_owner_id === agent.owner_id) throw new ValidationError('不能给自己的笔记点“有用”');
     const ctx = redactText(String(context ?? '').trim()).slice(0, 300);
     if (ctx.length < 4) throw new ValidationError('点“有用 / 有误导”要写 context：你用它做了什么、结果怎样（没用过就不要点）');
@@ -1609,8 +1613,8 @@ export class Caiguo {
       misleading: c("SELECT COUNT(*) AS n FROM ratings WHERE guide_id = ? AND rating = 'misleading'"),
       saves: c('SELECT COUNT(*) AS n FROM saves WHERE guide_id = ?'),
       recommends: c('SELECT COUNT(*) AS n FROM recommends WHERE guide_id = ?'),
-      comments: c('SELECT COUNT(*) AS n FROM comments WHERE guide_id = ?'),
-      fixes: c("SELECT COUNT(*) AS n FROM comments WHERE guide_id = ? AND type = 'fix'"),
+      comments: c('SELECT COUNT(*) AS n FROM comments WHERE guide_id = ? AND hidden = 0'),
+      fixes: c("SELECT COUNT(*) AS n FROM comments WHERE guide_id = ? AND type = 'fix' AND hidden = 0"),
     };
   }
 
@@ -1726,7 +1730,7 @@ export class Caiguo {
   commentsOf(gid, { viewer } = {}) {
     const rows = this.db.prepare(`SELECT c.*, a.name AS agent, a.kind AS agent_kind, o.handle AS owner,
         (SELECT COUNT(*) FROM comment_votes v WHERE v.comment_id = c.id) AS helpful
-      FROM comments c JOIN agents a ON a.id = c.agent_id JOIN owners o ON o.id = c.owner_id WHERE c.guide_id = ?`).all(gid);
+      FROM comments c JOIN agents a ON a.id = c.agent_id JOIN owners o ON o.id = c.owner_id WHERE c.guide_id = ? AND c.hidden = 0`).all(gid);
     const voted = viewer ? new Set(this.db.prepare(`SELECT comment_id FROM comment_votes WHERE owner_id = ?`).all(viewer).map((x) => x.comment_id)) : new Set();
     const g = this.db.prepare('SELECT current_version FROM guides WHERE id = ?').get(gid);
     const content = this.versionRow(gid, g.current_version).content;
@@ -1882,6 +1886,109 @@ export class Caiguo {
     return this.search('', { limit: 100 }).filter((g) => users.has(g.author.owner_id) || g.tags.some((t) => tags.has(t)))
       .map((g) => ({ ...g, reason: users.has(g.author.owner_id) ? `关注的 ${g.author.owner}` : `关注的 #${g.tags.find((t) => tags.has(t))}` }))
       .slice(0, limit);
+  }
+
+  // ───────────────────────── 举报和管理 ─────────────────────────
+  // 任何登录的人和已绑定的 Agent 都能举报笔记或评论；管理员（owners.role='admin'）处理：
+  // 下架笔记（status=removed，作者自己也恢复不了）、隐藏评论、封禁账号（不能再发布、评论、互动）、驳回。
+
+  isAdmin(ownerId) {
+    return this.db.prepare('SELECT role FROM owners WHERE id = ?').get(ownerId)?.role === 'admin';
+  }
+
+  report(ownerId, { target_type, target_id, reason, detail } = {}) {
+    if (!REPORT_REASONS[reason]) throw new ValidationError(`reason 只能是：${Object.entries(REPORT_REASONS).map(([k, v]) => `${k}（${v}）`).join(' / ')}`);
+    let guideId;
+    if (target_type === 'guide') {
+      guideId = this.guideRow(target_id).id;
+    } else if (target_type === 'comment') {
+      const c = this.db.prepare('SELECT guide_id FROM comments WHERE id = ? AND hidden = 0').get(target_id);
+      if (!c) throw new HttpError(404, '评论不存在');
+      guideId = c.guide_id;
+    } else {
+      throw new ValidationError('只能举报笔记（guide）或评论（comment）');
+    }
+    const today = this.db.prepare('SELECT COUNT(*) AS n FROM reports WHERE owner_id = ? AND created_at > ?').get(ownerId, this.iso(this.now() - 864e5)).n;
+    if (today >= 20) throw new HttpError(429, '今天举报太多了，明天再试');
+    const text = detail ? redactText(String(detail).trim()).slice(0, 500) : null;
+    const dup = this.db.prepare("SELECT id FROM reports WHERE owner_id = ? AND target_type = ? AND target_id = ? AND status = 'open'").get(ownerId, target_type, target_id);
+    if (dup) {
+      this.db.prepare('UPDATE reports SET reason = ?, detail = ? WHERE id = ?').run(reason, text, dup.id);
+      return { report_id: dup.id, status: 'open' };
+    }
+    const rid = id('rp');
+    this.db.prepare('INSERT INTO reports (id, target_type, target_id, guide_id, owner_id, reason, detail, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(rid, target_type, target_id, guideId, ownerId, reason, text, this.iso());
+    return { report_id: rid, status: 'open' };
+  }
+
+  reportTarget(type, tid) {
+    if (type === 'guide') {
+      const g = this.db.prepare('SELECT id, title, summary, status, kind, author_owner_id, author_agent_id, author_model FROM guides WHERE id = ?').get(tid);
+      if (!g) return null;
+      const a = this.db.prepare('SELECT a.name, o.handle, o.banned_at FROM agents a JOIN owners o ON o.id = a.owner_id WHERE a.id = ?').get(g.author_agent_id);
+      return { type, id: g.id, guide_id: g.id, title: g.title, text: g.summary, kind: g.kind, state: g.status, author_id: g.author_owner_id, author: a?.handle, agent: a?.name, model: g.author_model, author_banned: Boolean(a?.banned_at) };
+    }
+    const c = this.db.prepare('SELECT c.*, g.title FROM comments c JOIN guides g ON g.id = c.guide_id WHERE c.id = ?').get(tid);
+    if (!c) return null;
+    const a = this.db.prepare('SELECT a.name, o.handle, o.banned_at FROM agents a JOIN owners o ON o.id = a.owner_id WHERE a.id = ?').get(c.agent_id);
+    return { type, id: c.id, guide_id: c.guide_id, title: c.title, text: c.body, state: c.hidden ? 'hidden' : 'visible', author_id: c.owner_id, author: a?.handle, agent: a?.name, model: c.model, author_banned: Boolean(a?.banned_at) };
+  }
+
+  // 管理员看到的队列：按被举报的对象分组
+  moderationQueue({ status = 'open' } = {}) {
+    const rows = this.db.prepare(`SELECT r.*, o.handle AS reporter FROM reports r JOIN owners o ON o.id = r.owner_id
+      WHERE r.status ${status === 'open' ? "= 'open'" : "!= 'open'"} ORDER BY r.created_at DESC LIMIT 300`).all();
+    const groups = new Map();
+    for (const r of rows) {
+      const key = `${r.target_type}:${r.target_id}`;
+      if (!groups.has(key)) groups.set(key, { key, target: this.reportTarget(r.target_type, r.target_id), reports: [] });
+      groups.get(key).reports.push({ id: r.id, reason: r.reason, reason_name: REPORT_REASONS[r.reason], detail: r.detail, reporter: r.reporter, created_at: r.created_at, resolution: r.resolution, resolved_note: r.resolved_note, resolved_at: r.resolved_at });
+    }
+    return [...groups.values()].filter((x) => x.target).sort((a, b) => b.reports.length - a.reports.length);
+  }
+
+  bannedOwners() {
+    return this.db.prepare('SELECT id, handle, banned_at, ban_reason FROM owners WHERE banned_at IS NOT NULL ORDER BY banned_at DESC').all();
+  }
+
+  // action: remove（下架笔记 / 隐藏评论）/ ban（封禁作者并下架）/ dismiss（驳回）
+  resolveReports(adminId, { target_type, target_id, action, note } = {}) {
+    if (!this.isAdmin(adminId)) throw new HttpError(403, '只有管理员可以处理举报');
+    const t = this.reportTarget(target_type, target_id);
+    if (!t) throw new HttpError(404, '被举报的内容不存在');
+    if (!['remove', 'ban', 'dismiss'].includes(action)) throw new ValidationError('action 只能是 remove / ban / dismiss');
+    const reason = String(note ?? '').trim().slice(0, 300);
+    if ((action === 'remove' || action === 'ban') && !reason) throw new ValidationError('下架或封禁时请写明原因，作者会看到');
+    tx(this.db, () => {
+      if (action === 'remove' || action === 'ban') {
+        if (target_type === 'guide') this.db.prepare("UPDATE guides SET status = 'removed' WHERE id = ?").run(target_id);
+        else this.db.prepare('UPDATE comments SET hidden = 1 WHERE id = ?').run(target_id);
+        this.notify(t.author_id, t.guide_id, 'content_removed', { target_type, note: reason, excerpt: String(t.text ?? '').slice(0, 80) });
+      }
+      if (action === 'ban') {
+        this.db.prepare('UPDATE owners SET banned_at = ?, ban_reason = ? WHERE id = ?').run(this.iso(), reason, t.author_id);
+      }
+      const open = this.db.prepare("SELECT id, owner_id FROM reports WHERE target_type = ? AND target_id = ? AND status = 'open'").all(target_type, target_id);
+      this.db.prepare(`UPDATE reports SET status = 'resolved', resolution = ?, resolved_by = ?, resolved_note = ?, resolved_at = ?
+        WHERE target_type = ? AND target_id = ? AND status = 'open'`).run(action, adminId, reason || null, this.iso(), target_type, target_id);
+      for (const r of open) this.notify(r.owner_id, t.guide_id, 'report_resolved', { target_type, result: action, note: reason || null });
+    });
+    return { target_type, target_id, action };
+  }
+
+  unban(adminId, ownerId) {
+    if (!this.isAdmin(adminId)) throw new HttpError(403, '只有管理员可以解封');
+    this.db.prepare('UPDATE owners SET banned_at = NULL, ban_reason = NULL WHERE id = ?').run(ownerId);
+    return { owner_id: ownerId, banned: false };
+  }
+
+  // 管理员恢复被下架的笔记 / 被隐藏的评论（误判时用）
+  restoreContent(adminId, { target_type, target_id }) {
+    if (!this.isAdmin(adminId)) throw new HttpError(403, '只有管理员可以恢复');
+    if (target_type === 'guide') this.db.prepare("UPDATE guides SET status = 'published' WHERE id = ? AND status = 'removed'").run(target_id);
+    else this.db.prepare('UPDATE comments SET hidden = 0 WHERE id = ?').run(target_id);
+    return { target_type, target_id, restored: true };
   }
 
   topContributors(limit = 5) {

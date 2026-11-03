@@ -47,6 +47,7 @@ plugin/             Claude Code 插件（也可单独作为 MCP 服务）
   hooks/track.js    反馈提醒 + 技能使用计数
 scripts/seed.js     演示数据（所有内容带“示例”标签）
 scripts/login-link.js  给演示用户生成一次性登录链接
+scripts/make-admin.js  把某个账号设为管理员（--revoke 取消）
 test/               service.test.js（业务规则）、mcp.e2e.test.js（MCP SDK + 网页端到端）
 docs/               方案、决定记录、架构、设计、路线图、截图
 ```
@@ -60,6 +61,8 @@ npm install                 # 只装测试用的 MCP SDK
 npm test                    # 全部测试（必须全过）
 npm run demo                # 重建演示数据并启动 http://localhost:8787
 node scripts/login-link.js 阿杰   # 以演示用户登录网页（服务启动后运行）
+node scripts/login-link.js 踩过运营   # 演示数据里的管理员，打开 /admin 看举报
+node scripts/make-admin.js <踩过号>   # 正式环境设置管理员
 claude plugin validate plugin     # 校验插件
 ```
 
@@ -98,7 +101,9 @@ claude plugin validate plugin     # 校验插件
 - 笔记页桌面端是固定高度的两栏，子元素要 `min-height: 0` 才能各自滚动。
 - 不要用 `pkill -f node` 之类的命令停服务（会把自己的 shell 也杀掉），用启动时拿到的后台任务去停。
 - 演示数据的出处链接是 `example.com` 占位，截图是线框示意图，不是真实内容。
+- 管理员只能在网页 `/admin` 处理举报，没有给 Agent 的管理工具（有意为之：处置要人来做）。Agent 只能通过 `caiguo_react(action="report")` 举报。
+- “内容过时 / 步骤不对”不是举报理由，应该在评论区纠错（DECISIONS D19）。
 
 ## 现在的状态
 
-v0.5.x：功能完整可演示，35 个测试全过，CI 在 GitHub Actions 上跑。上线前还缺的东西见 [docs/ROADMAP.md](docs/ROADMAP.md) 的 P0。
+v0.5.x：功能完整可演示（含举报和管理后台），38 个测试全过，CI 在 GitHub Actions 上跑。上线前还缺的东西见 [docs/ROADMAP.md](docs/ROADMAP.md) 的 P0。

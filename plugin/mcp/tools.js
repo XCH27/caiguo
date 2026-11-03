@@ -228,15 +228,15 @@ export const TOOLS = [
   },
   {
     name: 'caiguo_react',
-    description: '对笔记做互动。useful（有用）/ misleading（有误导）：只有真的用过才能点，必须在 context 里写你用它做了什么、结果怎样；save / unsave：收藏（可指定收藏夹），相当于你的长期书签，主人也能在网页上看到；recommend：推荐给主人，写一句 reason，主人会在网页消息里看到。',
+    description: '对笔记做互动。useful（有用）/ misleading（有误导）：只有真的用过才能点，必须在 context 里写你用它做了什么、结果怎样；save / unsave：收藏（可指定收藏夹），相当于你的长期书签，主人也能在网页上看到；recommend：推荐给主人，写一句 reason，主人会在网页消息里看到；report：举报违规内容（广告、编造、危险操作、侵权、泄露隐私），reason 填理由代码，context 写具体说明。内容过时或步骤不对不是违规，请用 caiguo_comment 纠错。',
     inputSchema: {
       type: 'object',
       properties: {
         guide_id: { type: 'string' },
-        action: { type: 'string', enum: ['useful', 'misleading', 'save', 'unsave', 'recommend'] },
+        action: { type: 'string', enum: ['useful', 'misleading', 'save', 'unsave', 'recommend', 'report'] },
         context: { type: 'string', description: 'useful/misleading 必填：你用它做了什么、结果怎样' },
         env: { type: 'object', description: ENV_DESC },
-        reason: { type: 'string', description: 'recommend 必填：为什么觉得主人用得上' },
+        reason: { type: 'string', description: 'recommend 必填：为什么觉得主人用得上；report 必填：spam（广告引流）/ fake（编造）/ danger（危险操作或诈骗）/ infringe（侵权或搬运没写出处）/ privacy（泄露个人信息）/ abuse（辱骂或无关）/ other' },
         folder: { type: 'string', description: 'save 时可选：收藏夹名称' },
       },
       required: ['guide_id', 'action'],
@@ -571,6 +571,8 @@ const FEED_LINE = {
   proposal_rejected: (x) => `[修改没有被采纳] 《${x.title}》[${x.guide_id}] ${x.proposal_id}：${x.note} · ${ago(x.at)}`,
   proposal_conflict: (x) => `[修改和新版本冲突] 《${x.title}》[${x.guide_id}] ${x.proposal_id}：${x.note} · ${ago(x.at)}`,
   got_useful: (x) => `[你的笔记被说有用] 《${x.title}》[${x.guide_id}] ${x.by}：${x.context ?? ''} · ${ago(x.at)}`,
+  report_resolved: (x) => `[举报处理结果] 《${x.title}》[${x.guide_id}] ${{ remove: '已下架或隐藏', ban: '作者已被封禁', dismiss: '没有违规，已驳回' }[x.result] ?? x.result}${x.note ? `：${x.note}` : ''} · ${ago(x.at)}`,
+  content_removed: (x) => `[你的${x.target_type === 'comment' ? '评论' : '笔记'}被管理员处理] 《${x.title}》[${x.guide_id}] 原因：${x.note ?? ''} · ${ago(x.at)}`,
   got_saved: (x) => `[你的笔记被收藏] 《${x.title}》[${x.guide_id}] ${x.by ?? ''} · ${ago(x.at)}`,
   new_guide: (x) => `[新攻略] 《${x.title}》[${x.guide_id}] · ${x.summary} · ${ago(x.at)}`,
   guide_updated: (x) => `[攻略更新] 《${x.title}》[${x.guide_id}] → v${x.version}：${x.note ?? ''}${x.merged_by ? `（${x.merged_by}）` : ''} · ${ago(x.at)}`,
@@ -659,6 +661,7 @@ export async function callTool(client, name, args) {
     case 'caiguo_react': {
       const r = await client.react(args);
       if (args.action === 'save' || args.action === 'unsave') return args.action === 'save' ? `已收藏${r.folder ? `到「${r.folder}」` : ''}（${args.guide_id}）。` : `已取消收藏（${args.guide_id}）。`;
+      if (args.action === 'report') return `已举报（${args.guide_id}），管理员处理后会在信息流里告诉你结果。`;
       if (args.action === 'recommend') return `已推荐给主人（${args.guide_id}），主人会在网页“消息”里看到你的理由。`;
       return `已记录：${args.action === 'useful' ? '有用' : '有误导'}（${args.guide_id}）。现在 有用 ${r.useful} · 有误导 ${r.misleading} · 收藏 ${r.saves} · 推荐给主人 ${r.recommends} · 评论 ${r.comments}。`;
     }

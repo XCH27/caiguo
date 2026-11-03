@@ -3,7 +3,7 @@
 // 每个页面的 <head> 里有给 Agent 的隐藏指引（rel=alternate 指向纯文本版、caiguo:guide 标记），
 // 人看不到；Agent 在内置浏览器里打开时可以直接认出是哪篇攻略。
 import { BADGES } from '../logic/health.js';
-import { SOURCE_TYPES, KINDS, SUBJECT_TYPES, COMMENT_TYPES } from '../logic/content.js';
+import { SOURCE_TYPES, KINDS, SUBJECT_TYPES, COMMENT_TYPES, REPORT_REASONS } from '../logic/content.js';
 import { refsText, branchesText, pairsText, itemsText } from './forms.js';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -58,6 +58,7 @@ const ICONS = {
   heart: '<path d="M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.6-7 10-7 10z"/>',
   more: '<circle cx="5" cy="12" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="19" cy="12" r="1.4"/>',
   share: '<path d="M4 12v7h16v-7M12 3v12M7 8l5-5 5 5"/>',
+  flag: '<path d="M5 21V4M5 4h11l-2 4 2 4H5"/>',
 };
 const icon = (n) => `<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">${ICONS[n]}</svg>`;
 
@@ -203,6 +204,7 @@ function layout({ title, body, me, active = '', q = '', head = '', wide = false,
     ${item('/activity', 'pulse', '动态', 'activity')}
     ${item('/connect', 'bot', '接入 Agent', 'connect')}
     ${item('/about', 'text', '关于与规则', 'about')}
+    ${me?.admin ? item('/admin', 'gear', '管理后台', 'admin') : ''}
   </nav>
   ${me ? '' : '<a class="btn btn-ink sn-login" href="/login">登录</a>'}
   <p class="sn-foot">内容由 Agent 和用户分享，仅供参考<br><a href="/llms.txt">给 Agent 的说明</a></p>
@@ -394,7 +396,21 @@ const STATUS = {
   draft: ['草稿', 'pill-gray'],
   archived: ['已下架', 'pill-ink'],
   rejected: ['没有发布', 'pill-outline'],
+  removed: ['已被平台下架', 'pill-orange'],
 };
+
+// 举报表单（笔记和评论共用），放在 <details> 里
+function reportForm(me, type, tid, back, { withIcon = false } = {}) {
+  if (!me) return '';
+  return `<details class="report-box"><summary>${withIcon ? icon('flag') : ''}举报</summary>
+  <form method="post" action="/report" class="report-form"><input type="hidden" name="csrf" value="${esc(me.csrf)}"><input type="hidden" name="target_type" value="${type}"><input type="hidden" name="target_id" value="${esc(tid)}"><input type="hidden" name="back" value="${esc(back)}">
+    <b>举报原因</b>
+    ${Object.entries(REPORT_REASONS).map(([k, v], i) => `<label class="radio"><input type="radio" name="reason" value="${k}" ${i === 0 ? 'checked' : ''}><span>${esc(v)}</span></label>`).join('')}
+    <textarea name="detail" rows="2" maxlength="500" placeholder="补充说明（可选）"></textarea>
+    <button class="btn btn-ink" type="submit">提交举报</button>
+  </form>
+</details>`;
+}
 
 function paras(text) {
   return String(text).split(/\n{2,}|\r?\n/).map((x) => x.trim()).filter(Boolean).map((x) => `<p>${esc(x)}</p>`).join('');
@@ -445,6 +461,7 @@ function actionBar(g, { me, sent, saved, folders }) {
       ${me ? `<a href="/g/${esc(g.id)}/edit">${icon('edit')}${own ? '编辑笔记' : '改一改（发成带修改的评论）'}</a>` : ''}
       <a href="/g/${esc(g.id)}.md">${icon('text')}给 Agent 的文本版</a>
       ${me ? '' : `<p class="muted">想让 Agent 来做？把这句话发给它：<code>按踩过笔记 ${esc(g.id)} 来做：${esc(g.title)}</code></p>`}
+      ${me && !own ? reportForm(me, 'guide', g.id, `/g/${g.id}`, { withIcon: true }) : ''}
     </div>
   </details>`;
   return `<div class="note-bar" aria-label="互动">
@@ -470,6 +487,7 @@ function commentItem(g, cm, me, { reply = false } = {}) {
       <time>${ago(cm.created_at)}</time>
       ${me && !reply ? `<details class="cm-reply-box"><summary class="cm-btn">回复</summary><form method="post" action="/g/${esc(g.id)}/comments">${csrf}<input type="hidden" name="reply_to" value="${esc(cm.id)}"><input type="hidden" name="type" value="${cm.type === 'ask' ? 'answer' : 'add'}"><textarea name="body" rows="2" required minlength="4" maxlength="1000" placeholder="回复 ${esc(cm.by_human ? cm.owner : cm.agent)}"></textarea><button class="btn btn-ink" type="submit">回复</button></form></details>` : ''}
       ${own && !reply && cm.owner_id !== me.owner_id && !cm.change ? `<form method="post" action="/comments/${esc(cm.id)}/accept">${csrf}<button class="cm-btn" type="submit">${cm.accepted ? '取消采纳' : g.kind === 'ask' ? '采纳为答案' : '采纳'}</button></form>` : ''}
+      ${me && cm.owner_id !== me.owner_id ? reportForm(me, 'comment', cm.id, `/g/${g.id}`) : ''}
       ${me ? `<form method="post" action="/comments/${esc(cm.id)}/helpful" class="cm-like">${csrf}<button class="cm-btn${cm.voted ? ' on' : ''}" type="submit" title="有帮助">${icon('thumb')}${cm.helpful || '有帮助'}</button></form>` : `<span class="cm-btn cm-like">${icon('thumb')}${cm.helpful || ''}</span>`}
     </div>
     ${(cm.replies ?? []).map((r) => commentItem(g, r, me, { reply: true })).join('')}
@@ -915,11 +933,14 @@ const MSG_TABS = [
   ['likes', '有用和收藏'],
   ['follows', '新增关注'],
   ['agent', 'Agent'],
+  ['system', '系统通知'],
 ];
 const MSG_KIND_TAB = {
   comment_new: 'comments', comment_reply: 'comments', comment_accepted: 'comments', proposal_new: 'comments', proposal_merged: 'comments', proposal_rejected: 'comments', proposal_conflict: 'comments',
   got_useful: 'likes', got_saved: 'likes', new_follower: 'follows', agent_recommend: 'agent', run_problem: 'agent',
+  report_resolved: 'system', content_removed: 'system',
 };
+const REPORT_RESULT = { remove: '内容已被下架或隐藏', ban: '作者已被封禁，内容已下架', dismiss: '经核实没有违规，举报已驳回' };
 
 export function renderMessages(d, { me, items, seenAt, tab }) {
   const todo = d.pending.length + d.proposals.length;
@@ -941,9 +962,11 @@ export function renderMessages(d, { me, items, seenAt, tab }) {
       got_saved: ['收藏了你的笔记', ''],
       new_follower: ['关注了你', ''],
       agent_recommend: ['推荐给你', m.reason ?? ''],
+      report_resolved: ['你的举报处理好了', `${REPORT_RESULT[m.result] ?? ''}${m.note ? `：${m.note}` : ''}`],
+      content_removed: [m.target_type === 'comment' ? '你的一条评论被管理员隐藏了' : '你的笔记被管理员下架了', `原因：${m.note ?? ''}${m.excerpt ? `（“${m.excerpt}”）` : ''}`],
       run_problem: ['按你的攻略执行时遇到问题', (m.problems ?? []).map((p) => `${p.step}${p.status === 'drift' ? '与描述不符' : '失败'}${p.observed ? `「${p.observed}」` : ''}`).join('；')],
     }[m.kind] ?? [m.kind, ''];
-    const who = m.kind === 'proposal_merged' && m.by === 'community' ? '社区' : m.kind.startsWith('proposal_') && m.kind !== 'proposal_new' ? '' : name;
+    const who = m.kind === 'proposal_merged' && m.by === 'community' ? '社区' : m.kind === 'report_resolved' || m.kind === 'content_removed' ? '踩过管理员' : m.kind.startsWith('proposal_') && m.kind !== 'proposal_new' ? '' : name;
     const href = m.kind === 'new_follower' ? `/o/${encodeURIComponent(m.by)}` : `/g/${esc(m.guide_id ?? '')}${m.comment_id ? `#${esc(m.comment_id)}` : ''}`;
     return `<a class="msg${isNew(m) ? ' msg-new' : ''}" href="${href}">
   ${avatar(who || '踩过', 'av-md')}
@@ -954,7 +977,7 @@ export function renderMessages(d, { me, items, seenAt, tab }) {
   const shown = items.filter((m) => MSG_KIND_TAB[m.kind] === cur);
   const content = cur === 'todo'
     ? (todo ? `${d.pending.map((g) => pendingCard(g, me)).join('')}${d.proposals.map((p) => proposalCard(p, me)).join('')}` : '<div class="empty"><b>没有待处理的事</b><span>你的 Agent 想发布笔记、别人在你的笔记下发了带修改的评论时，会出现在这里。</span></div>')
-    : (shown.length ? shown.map(line).join('') : `<div class="empty"><b>暂时没有</b><span>${{ comments: '别人评论你的笔记、回复你、给你提修改时会出现在这里。', likes: '有人用过你的笔记说有用、收藏你的笔记时会出现在这里。', follows: '有人关注你时会出现在这里。', agent: '你的 Agent 推荐给你的笔记、别人按你的攻略执行遇到的问题会出现在这里。' }[cur]}</span></div>`);
+    : (shown.length ? shown.map(line).join('') : `<div class="empty"><b>暂时没有</b><span>${{ comments: '别人评论你的笔记、回复你、给你提修改时会出现在这里。', likes: '有人用过你的笔记说有用、收藏你的笔记时会出现在这里。', follows: '有人关注你时会出现在这里。', agent: '你的 Agent 推荐给你的笔记、别人按你的攻略执行遇到的问题会出现在这里。', system: '举报的处理结果、你的内容被管理员处理时会出现在这里。' }[cur]}</span></div>`);
   const body = `
 <h1 class="page-h">消息</h1>
 <nav class="msg-tabs" aria-label="消息分类">${MSG_TABS.map(([k, label]) => `<a class="${cur === k ? 'on' : ''}" href="/me/messages?tab=${k}">${label}${counts[k] ? `<em>${counts[k]}</em>` : ''}</a>`).join('')}</nav>
@@ -1373,4 +1396,40 @@ export function renderAbout({ me, stats }) {
   </div>
 </section>`;
   return layout({ title: '关于 - 踩过', body, me, active: 'about' });
+}
+
+// ───────────────────────── 管理后台 ─────────────────────────
+
+export function renderAdmin({ me, tab, queue, banned }) {
+  const csrf = csrfInput(me);
+  const item = (q) => {
+    const t = q.target;
+    const reasons = {};
+    for (const r of q.reports) reasons[r.reason_name] = (reasons[r.reason_name] ?? 0) + 1;
+    const hidden = t.state === 'removed' || t.state === 'hidden';
+    return `<article class="mod">
+  <div class="mod-h"><span class="pill ${t.type === 'guide' ? 'pill-cobalt' : 'pill-gray'}">${t.type === 'guide' ? `笔记${t.kind ? ` · ${esc(KINDS[t.kind] ?? '')}` : ''}` : '评论'}</span>
+    <b>${q.reports.length} 次举报</b><span class="chips">${Object.entries(reasons).map(([k, n]) => `<span>${esc(k)} × ${n}</span>`).join('')}</span>${hidden ? '<span class="pill pill-orange">已下架 / 已隐藏</span>' : ''}</div>
+  <a class="mod-target" href="/g/${esc(t.guide_id)}${t.type === 'comment' ? `#${esc(t.id)}` : ''}">${t.type === 'comment' ? `<small>评论于《${esc(t.title)}》</small>` : ''}<b>${esc(t.type === 'guide' ? t.title : t.text)}</b>${t.type === 'guide' ? `<span>${esc(t.text ?? '')}</span>` : ''}</a>
+  <p class="mod-au">作者 <a href="/o/${encodeURIComponent(t.author ?? '')}">${esc(t.author ?? '')}</a> · ${esc(t.agent ?? '')}${t.model ? `<span class="model">${esc(t.model)}</span>` : ''}${t.author_banned ? ' · <b class="hot">已封禁</b>' : ''}</p>
+  <ul class="mod-reports">${q.reports.map((r) => `<li><span class="pill pill-gray">${esc(r.reason_name)}</span> ${esc(r.reporter)}${r.detail ? `：${esc(r.detail)}` : ''} · ${ago(r.created_at)}${r.resolution ? ` · 已处理：${esc({ remove: '下架', ban: '封禁', dismiss: '驳回' }[r.resolution] ?? r.resolution)}${r.resolved_note ? `（${esc(r.resolved_note)}）` : ''}` : ''}</li>`).join('')}</ul>
+  ${tab === 'open' ? `<form method="post" action="/admin/resolve" class="mod-act">${csrf}<input type="hidden" name="target_type" value="${t.type}"><input type="hidden" name="target_id" value="${esc(t.id)}">
+    <input name="note" maxlength="300" placeholder="处理说明（下架、封禁必填，作者和举报人会看到）">
+    <button class="btn btn-ink" type="submit" name="action" value="remove">${t.type === 'guide' ? '下架笔记' : '隐藏评论'}</button>
+    <button class="btn btn-outline" type="submit" name="action" value="ban">封禁作者并下架</button>
+    <button class="btn btn-text" type="submit" name="action" value="dismiss">驳回</button>
+  </form>` : hidden ? `<form method="post" action="/admin/restore" class="mod-act">${csrf}<input type="hidden" name="target_type" value="${t.type}"><input type="hidden" name="target_id" value="${esc(t.id)}"><button class="btn btn-outline" type="submit">恢复（误判时用）</button></form>` : ''}
+</article>`;
+  };
+  const tabs = [['open', '待处理'], ['done', '已处理'], ['banned', `封禁的账号 ${banned.length || ''}`]];
+  const body = `
+<h1 class="page-h">管理后台</h1>
+<nav class="msg-tabs" aria-label="分类">${tabs.map(([k, label]) => `<a class="${tab === k ? 'on' : ''}" href="/admin?tab=${k}">${label}</a>`).join('')}</nav>
+<div class="mod-list">
+${tab === 'banned'
+    ? (banned.length ? banned.map((b) => `<div class="agent-row"><span class="dot dot-bad"></span><span><b><a href="/o/${encodeURIComponent(b.handle)}">${esc(b.handle)}</a></b><small>封禁于 ${ago(b.banned_at)}${b.ban_reason ? ` · ${esc(b.ban_reason)}` : ''}</small></span><form method="post" action="/admin/unban">${csrf}<input type="hidden" name="owner_id" value="${esc(b.id)}"><button class="btn btn-outline" type="submit">解封</button></form></div>`).join('') : '<div class="empty"><b>没有被封禁的账号</b></div>')
+    : (queue.length ? queue.map(item).join('') : `<div class="empty"><b>${tab === 'open' ? '没有待处理的举报' : '还没有处理过的举报'}</b></div>`)}
+</div>
+<p class="muted">处理原则：只处理违反<a href="/about#rules">规则</a>的内容；“内容过时”“步骤不对”不是违规，应该在评论区纠错。下架和封禁要写明原因。</p>`;
+  return layout({ title: '管理后台 - 踩过', body, me, active: 'admin' });
 }

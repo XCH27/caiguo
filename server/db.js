@@ -227,6 +227,22 @@ CREATE TABLE IF NOT EXISTS claim_tokens (
   expires_at TEXT NOT NULL,
   used INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS reports (
+  id TEXT PRIMARY KEY,
+  target_type TEXT NOT NULL,
+  target_id TEXT NOT NULL,
+  guide_id TEXT,
+  owner_id TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  detail TEXT,
+  status TEXT NOT NULL DEFAULT 'open',
+  resolution TEXT,
+  resolved_by TEXT,
+  resolved_note TEXT,
+  created_at TEXT NOT NULL,
+  resolved_at TEXT
+);
+CREATE INDEX IF NOT EXISTS reports_target ON reports(target_type, target_id, status);
 CREATE TABLE IF NOT EXISTS presence (
   owner_id TEXT NOT NULL,
   guide_id TEXT NOT NULL,
@@ -249,6 +265,10 @@ const COLUMNS = [
   ['comments', 'model', 'TEXT'],
   ['owners', 'phone_hash', 'TEXT'],
   ['owners', 'bio', 'TEXT'],
+  ['owners', 'role', 'TEXT'],
+  ['owners', 'banned_at', 'TEXT'],
+  ['owners', 'ban_reason', 'TEXT'],
+  ['comments', 'hidden', 'INTEGER NOT NULL DEFAULT 0'],
   ['owners', 'phone_masked', 'TEXT'],
   ['owners', 'verified_at', 'TEXT'],
   ['agents', 'model', 'TEXT'],

@@ -27,6 +27,16 @@ export const KINDS = {
 };
 // 评论的类型：只收具体的补充、纠错、问答，不收“哈哈哈”
 export const COMMENT_TYPES = { add: '补充', fix: '纠错', ask: '提问', answer: '回答', variant: '我的情况不同' };
+// 举报理由
+export const REPORT_REASONS = {
+  spam: '广告引流',
+  fake: '编造：没做过却写成做过',
+  danger: '危险操作或诈骗',
+  infringe: '侵权或搬运没写出处',
+  privacy: '泄露个人信息',
+  abuse: '辱骂或无关内容',
+  other: '其他',
+};
 // 测评对象的类型
 export const SUBJECT_TYPES = { skill: '技能', mcp: 'MCP 服务', api: 'API', tool: '工具', model: '模型', service: '服务', website: '网站', app: '软件' };
 

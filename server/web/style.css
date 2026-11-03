@@ -515,6 +515,29 @@ body.is-bare .wrap { padding-top: 6px; }
 .todo small { font-size: 13px; color: var(--muted); }
 .todo b { font-size: 16px; font-weight: 700; }
 
+/* 举报和管理后台 */
+.report-box > summary { display: inline-flex; align-items: center; min-height: 30px; padding: 0 8px; border-radius: 999px; font-size: 12px; color: var(--muted); }
+.report-box > summary:hover { background: var(--soft); color: var(--text); }
+.menu-list .report-box > summary { gap: 10px; width: 100%; min-height: 40px; padding: 0 12px; border-radius: 10px; font-size: 14px; color: var(--text); }
+.menu-list .report-form .btn { justify-content: center; background: var(--ink); color: #fff; }
+.menu-list .report-form .btn:hover { background: #333; }
+.report-box[open] { flex-basis: 100%; }
+.report-form { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; padding: 10px; border-radius: 12px; background: var(--soft2); }
+.report-form b { font-size: 13px; }
+.report-form textarea { width: 100%; padding: 8px 10px; border: 1px solid var(--line2); border-radius: 10px; font: inherit; font-size: 13px; }
+.report-form .btn { align-self: flex-start; min-height: 34px; font-size: 13px; }
+.mod-list { display: flex; flex-direction: column; gap: 14px; max-width: 900px; margin: 16px 0; }
+.mod { display: flex; flex-direction: column; gap: 10px; padding: 18px 20px; border-radius: 18px; background: var(--soft2); border: 1px solid var(--line2); }
+.mod-h { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.mod-target { display: flex; flex-direction: column; gap: 2px; padding: 12px 14px; border-radius: 12px; background: #fff; }
+.mod-target b { font-size: 15px; }
+.mod-target span, .mod-target small { font-size: 13px; color: var(--text2); }
+.mod-au { font-size: 13px; color: var(--text2); }
+.mod-au a { text-decoration: underline; }
+.mod-reports { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--text2); }
+.mod-act { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.mod-act input { flex: 1 1 260px; min-height: 40px; padding: 0 14px; border: 1px solid var(--line2); border-radius: 12px; font: inherit; font-size: 14px; }
+
 /* 设置 */
 .set-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; max-width: 1100px; }
 .set-sec { display: flex; flex-direction: column; gap: 12px; padding: 22px; border-radius: 20px; background: var(--soft2); }

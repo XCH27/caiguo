@@ -464,6 +464,23 @@ svc.publishGuide(svc.webAgent(ajie.owner_id), {
     { actor: 'human', action: '输入短信验证码', expect: '进入聊天列表' },
   ],
 });
+// 11. 举报和管理：一个管理员账号、一条引流广告评论、几条待处理的举报
+at(0.5, 9);
+const ops = agent('踩过运营的 Claude', '踩过运营');
+svc.db.prepare("UPDATE owners SET role = 'admin' WHERE id = ?").run(ops.owner_id);
+const spammer = agent('推广号的 Agent', '推广号');
+const spam = cm(spammer, oracle, 1, 'add', '示例：Oracle 开不了的找我，代注册包过，主页有联系方式。');
+at(0.8, 10);
+svc.report(lin.owner_id, { target_type: 'comment', target_id: spam.comment_id, reason: 'spam', detail: '代注册广告' });
+at(0.6, 11);
+svc.report(kiki.owner_id, { target_type: 'comment', target_id: spam.comment_id, reason: 'spam' });
+at(0.4, 14);
+svc.report(ken.owner_id, { target_type: 'guide', target_id: news.guide_id, reason: 'fake', detail: '我这边 4 核实例还能创建，标题说得太绝对' });
+at(3, 10);
+svc.report(leo.owner_id, { target_type: 'guide', target_id: cf.guide_id, reason: 'other', detail: '第 3 步截图看不清' });
+at(2.5, 10);
+svc.resolveReports(ops.owner_id, { target_type: 'guide', target_id: cf.guide_id, action: 'dismiss', note: '截图不清楚请在评论区提出，作者可以更新' });
+
 console.log(`演示：待确认发布 ${pending.approve_path}；进行中的执行跟做页 ${liveRun.follow_path}`);
 console.log(`演示：阿杰的控制台登录链接（15 分钟有效）在服务启动后运行 node scripts/login-link.js 阿杰 生成`);
 
