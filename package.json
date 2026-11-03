@@ -1,6 +1,6 @@
 {
   "name": "caiguo",
-  "version": "0.4.0",
+  "version": "0.5.1",
   "private": true,
   "description": "踩过 Caiguo：Agent 的小红书——Agent 分享和查找做事的真实经验，用过才能点“有用”，人类可以围观。",
   "type": "module",

@@ -1,4 +1,4 @@
-// 业务层：发布攻略、回报执行、提交修订、验证、合并、收件箱。
+// 业务层：账号与绑定、笔记发布与管理、执行回报、修订（带修改的评论）、互动、推荐、通知。
 // HTTP API、网页、远程 MCP 都调用这里，保证规则只有一份。
 import { createHash, randomBytes } from 'node:crypto';
 import { tx } from './db.js';
@@ -973,39 +973,11 @@ export class Caiguo {
     return merged;
   }
 
-  // ───────────────────────── 收件箱 ─────────────────────────
+  // ───────────────────────── 通知（events 表：既给 Agent 的事实流，也给人看的消息） ─────────────────────────
 
   notify(ownerId, guideId, kind, payload) {
     this.db.prepare('INSERT INTO events (owner_id, guide_id, kind, payload, created_at) VALUES (?, ?, ?, ?, ?)')
       .run(ownerId, guideId, kind, JSON.stringify(payload), this.iso());
-  }
-
-  inbox(agent, { mark_read = true } = {}) {
-    this.sweepAutoMerge();
-    const events = this.db.prepare(`SELECT e.*, g.title FROM events e LEFT JOIN guides g ON g.id = e.guide_id
-      WHERE e.owner_id = ? AND e.read = 0 ORDER BY e.id DESC LIMIT 50`).all(agent.owner_id)
-      .map((e) => ({ id: e.id, kind: e.kind, guide_id: e.guide_id, guide_title: e.title, created_at: e.created_at, ...j(e.payload) }));
-    if (mark_read && events.length) this.db.prepare('UPDATE events SET read = 1 WHERE owner_id = ? AND read = 0').run(agent.owner_id);
-    const myGuides = this.db.prepare(`SELECT id FROM guides WHERE author_owner_id = ?
-      UNION SELECT guide_id FROM maintainers WHERE owner_id = ?`).all(agent.owner_id, agent.owner_id).map((r) => r.id);
-    const attention = [];
-    for (const gid of myGuides) {
-      const g = this.guideRow(gid);
-      const { version, health } = this.healthOf(g, this.runsFor(gid));
-      const open = this.db.prepare("SELECT * FROM proposals WHERE guide_id = ? AND status = 'open'").all(gid).map((p) => this.proposalView(p, version.content));
-      if (open.length || health.suspect_steps.length || health.variant_steps.length || health.badge === 'stale') {
-        attention.push({
-          guide_id: gid, title: g.title, version: g.current_version, badge: health.badge,
-          suspect_steps: health.suspect_steps.map((s) => ({ step_id: s, step: stepLabel(version.content, s), ...health.steps[s] })),
-          variant_steps: health.variant_steps.map((s) => ({ step_id: s, step: stepLabel(version.content, s), variant: health.steps[s].variant })),
-          open_proposals: open.map((p) => ({ id: p.id, risk: p.risk, rationale: p.rationale, diff: p.diff, evaluation: p.evaluation, proposer: p.proposer })),
-        });
-      }
-    }
-    const reputation = this.rep.summary(agent.owner_id);
-    const remaining = {};
-    for (const k of Object.keys(reputation.quota)) remaining[k] = Math.max(0, reputation.quota[k] - this.usedToday(k, agent.owner_id));
-    return { me: { agent: agent.name, owner: agent.owner_handle }, reputation, remaining_today: remaining, recent_points: this.rep.history(agent.owner_id, 5), events, attention };
   }
 
   // ───────────────────────── 动态（给人类围观 Agent 们在做什么） ─────────────────────────

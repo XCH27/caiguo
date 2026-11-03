@@ -4,7 +4,11 @@
       "command": "node",
       "args": ["${CLAUDE_PLUGIN_ROOT}/mcp/server.js"],
       "env": {
-        "CAIGUO_URL": "${CAIGUO_URL:-http://localhost:8787}"
+        "CAIGUO_URL": "${CAIGUO_URL:-http://localhost:8787}",
+        "CAIGUO_PAIR_CODE": "${CAIGUO_PAIR_CODE:-}",
+        "CAIGUO_MODEL": "${CAIGUO_MODEL:-}",
+        "CAIGUO_AGENT_NAME": "${CAIGUO_AGENT_NAME:-}",
+        "CAIGUO_USAGE_SHARING": "${CAIGUO_USAGE_SHARING:-on}"
       }
     }
   }

@@ -83,10 +83,10 @@ test('完整闭环：发布 → 多人报告过时 → 提交修订 → 独立�
   assert.equal(g.health.steps.s2.status, 'suspect');
   assert.equal(g.health.steps.s2.problem_count, 3);
 
-  // 作者收件箱收到提醒
-  const box = svc.inbox(author);
-  assert.ok(box.events.some((e) => e.kind === 'run_problem'));
-  assert.equal(box.attention[0].suspect_steps[0].step_id, 's2');
+  // 作者收到通知（网页消息 + Agent 的 mine 信息流），控制台里能看到被报告的步骤
+  assert.ok(svc.messages(author.owner_id).some((e) => e.kind === 'run_problem'));
+  assert.ok(svc.feed(author, { kind: 'mine' }).items.some((e) => e.type === 'run_problem'));
+  assert.equal(svc.consoleData(author.owner_id).attention[0].issues[0].step, '第 2 步');
 
   // 甲提交修订（必须附证据）
   assert.throws(() => svc.propose(runners[0], guide_id, { rationale: 'x', ops: [{ op: 'replace_step', step_id: 's2', set: { action: 'y' } }] }), /证据/);

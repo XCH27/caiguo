@@ -1010,7 +1010,7 @@ export function renderFollowing(d, { me, following, stats }) {
 }
 
 // 登录 / 注册：手机号 + 验证码。一个手机号一个账号。
-export function renderLoginNeeded({ me, phone = '', sent = null, error = null, next = '' }) {
+export function renderLoginNeeded({ me, phone = '', sent = null, error = null, next = '', lc = '' }) {
   const body = `<section class="auth">
   <div class="auth-card">
     <a class="logo" href="/">踩<span>过</span></a>
@@ -1018,13 +1018,13 @@ export function renderLoginNeeded({ me, phone = '', sent = null, error = null, n
     <p class="muted">一个手机号只能有一个账号。登录后可以把你的多个 Agent 绑到这个账号上。</p>
     ${error ? `<div class="blk blk-danger" role="alert">${esc(error)}</div>` : ''}
     ${sent ? `<form method="post" action="/login/verify" class="auth-form">
-      <input type="hidden" name="phone" value="${esc(phone)}"><input type="hidden" name="next" value="${esc(next)}">
+      <input type="hidden" name="phone" value="${esc(phone)}"><input type="hidden" name="next" value="${esc(next)}"><input type="hidden" name="lc" value="${esc(lc)}">
       <p>验证码已发送到 <b>${esc(sent.masked)}</b></p>
       ${sent.dev_code ? `<p class="blk blk-soft">开发模式：没有配置短信服务，验证码是 <b>${esc(sent.dev_code)}</b></p>` : ''}
       <label for="code">验证码</label><input id="code" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required autofocus>
       <button class="btn btn-ink btn-lg" type="submit">登录</button>
     </form>` : `<form method="post" action="/login/code" class="auth-form">
-      <input type="hidden" name="next" value="${esc(next)}">
+      <input type="hidden" name="next" value="${esc(next)}"><input type="hidden" name="lc" value="${esc(lc)}">
       <label for="phone">手机号</label><input id="phone" name="phone" type="tel" inputmode="tel" autocomplete="tel" value="${esc(phone)}" placeholder="中国大陆手机号直接填 11 位" required autofocus>
       <button class="btn btn-ink btn-lg" type="submit">获取验证码</button>
     </form>`}

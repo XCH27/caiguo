@@ -4,12 +4,12 @@
 //   给程序/插件的接口（/api/*、远程 MCP /mcp）
 // 只用 node:http，零依赖。
 import { readFileSync } from 'node:fs';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { HttpError } from './service.js';
 import { createMcpHandler } from '../plugin/mcp/protocol.js';
-import { TOOLS, INSTRUCTIONS, callTool, formatGuide, formatSearch, formatFeed } from '../plugin/mcp/tools.js';
+import { TOOLS, INSTRUCTIONS, VERSION, callTool, formatGuide, formatSearch, formatFeed } from '../plugin/mcp/tools.js';
 import * as V from './web/views.js';
 import { llmsTxt } from './agent-text.js';
 import { parseMultipart, guideFromForm, guideToModel, publishInput, editInput } from './web/forms.js';
@@ -24,6 +24,21 @@ export function createApp(svc, { publicUrl } = {}) {
   const secure = Boolean(publicUrl && publicUrl.startsWith('https://'));
 
   const page = (req, res, render, status = 200) => html(res, render(meInfo(req)), status);
+  // 登录前还没有会话，用“双重提交”防跨站伪造：cookie 和表单里各放一份同样的随机值
+  const LOGIN_COOKIE = 'cg_lc';
+  const loginPage = (req, res, opts = {}, status = 200) => {
+    let lc = cookie(req, LOGIN_COOKIE);
+    const headers = {};
+    if (!lc || !/^[a-f0-9]{32}$/.test(lc)) {
+      lc = randomBytes(16).toString('hex');
+      headers['set-cookie'] = `${LOGIN_COOKIE}=${lc}; Path=/login; HttpOnly; SameSite=Lax; Max-Age=1800${secure ? '; Secure' : ''}`;
+    }
+    return html(res, V.renderLoginNeeded({ me: null, ...opts, lc }), status, headers);
+  };
+  const checkLogin = (req, f) => {
+    const lc = cookie(req, LOGIN_COOKIE);
+    if (!lc || f.lc !== lc) throw new HttpError(403, '页面已过期，请刷新后重新输入');
+  };
   const sessionCookie = (session) => `${COOKIE}=${session}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000${secure ? '; Secure' : ''}`;
 
   const routes = [
@@ -97,7 +112,7 @@ export function createApp(svc, { publicUrl } = {}) {
     }],
     ['GET', /^\/g\/([\w-]+)\/edit$/, (req, res, m) => {
       const me = meInfo(req);
-      if (!me) return html(res, V.renderLoginNeeded({ me: null }));
+      if (!me) return loginPage(req, res);
       const g = svc.getGuide(m[1], { ownerView: me.owner_id });
       if (g.status !== 'published') return redirect(res, `/me/guides/${m[1]}/edit`);
       const own = g.author.owner_id === me.owner_id || g.maintainers.some((x) => x.handle === me.handle);
@@ -111,29 +126,31 @@ export function createApp(svc, { publicUrl } = {}) {
     }],
     ['GET', /^\/new$/, (req, res, m, url) => {
       const me = meInfo(req);
-      if (!me) return html(res, V.renderLoginNeeded({ me: null }));
+      if (!me) return loginPage(req, res);
       return html(res, V.renderEditor({ model: guideFromForm({ kind: url.searchParams.get('kind') || 'guide' }), mode: 'new', action: '/new', me }));
     }],
     ['POST', /^\/new$/, (req, res) => editorPost(req, res, { mode: 'new', action: '/new' })],
-    ['GET', /^\/login$/, (req, res, m, url) => page(req, res, (me) => V.renderLoginNeeded({ me, next: safeBack(url.searchParams.get('next')) ?? '' }))],
+    ['GET', /^\/login$/, (req, res, m, url) => loginPage(req, res, { next: safeBack(url.searchParams.get('next')) ?? '' })],
     ['POST', /^\/login\/code$/, async (req, res) => {
       const f = await form(req);
       try {
+        checkLogin(req, f);
         const sent = svc.sendLoginCode(f.phone, { ip: req.socket.remoteAddress });
-        return html(res, V.renderLoginNeeded({ me: null, phone: f.phone, sent, next: safeBack(f.next) ?? '' }));
+        return loginPage(req, res, { phone: f.phone, sent, next: safeBack(f.next) ?? '' });
       } catch (e) {
-        if (e.status && e.status < 500) return html(res, V.renderLoginNeeded({ me: null, phone: f.phone, error: e.message, next: safeBack(f.next) ?? '' }), e.status);
+        if (e.status && e.status < 500) return loginPage(req, res, { phone: f.phone, error: e.message, next: safeBack(f.next) ?? '' }, e.status);
         throw e;
       }
     }],
     ['POST', /^\/login\/verify$/, async (req, res) => {
       const f = await form(req);
       try {
+        checkLogin(req, f);
         const r = svc.loginWithCode(f.phone, f.code);
         res.writeHead(303, { location: safeBack(f.next) ?? (r.created ? '/me/settings' : '/me'), 'set-cookie': sessionCookie(r.session) });
         return res.end();
       } catch (e) {
-        if (e.status && e.status < 500) return html(res, V.renderLoginNeeded({ me: null, phone: f.phone, sent: { masked: f.phone }, error: e.message, next: safeBack(f.next) ?? '' }), e.status);
+        if (e.status && e.status < 500) return loginPage(req, res, { phone: f.phone, sent: { masked: f.phone }, error: e.message, next: safeBack(f.next) ?? '' }, e.status);
         throw e;
       }
     }],
@@ -178,7 +195,7 @@ export function createApp(svc, { publicUrl } = {}) {
     }],
     ['GET', /^\/me(?:\/(saved|history|runs|guides|messages|settings|following|useful))?$/, (req, res, m, url) => {
       const me = meInfo(req);
-      if (!me) return html(res, V.renderLoginNeeded({ me: null }));
+      if (!me) return loginPage(req, res);
       const d = svc.consoleData(me.owner_id);
       const o = me.owner_id;
       switch (m[1]) {
@@ -254,7 +271,7 @@ export function createApp(svc, { publicUrl } = {}) {
     }],
     ['GET', /^\/me\/guides\/([\w-]+)\/edit$/, (req, res, m) => {
       const me = meInfo(req);
-      if (!me) return html(res, V.renderLoginNeeded({ me: null }));
+      if (!me) return loginPage(req, res);
       const g = svc.ownGuide(me.owner_id, m[1]);
       if (g.status === 'published') return redirect(res, `/g/${m[1]}/edit`);
       if (g.status === 'archived') throw new HttpError(409, '已下架的攻略要先恢复公开才能编辑');
@@ -342,7 +359,6 @@ export function createApp(svc, { publicUrl } = {}) {
     ['POST', /^\/api\/guides\/([\w-]+)\/proposals$/, async (req, res, m) => json(res, svc.propose(auth(req), m[1], await body(req)), 201)],
     ['POST', /^\/api\/proposals\/([\w-]+)\/verifications$/, async (req, res, m) => json(res, svc.verifyProposal(auth(req), m[1], await body(req)), 201)],
     ['POST', /^\/api\/proposals\/([\w-]+)\/review$/, async (req, res, m) => json(res, svc.reviewProposal(auth(req), m[1], await body(req)))],
-    ['GET', /^\/api\/inbox$/, (req, res) => json(res, svc.inbox(auth(req)))],
     ['GET', /^\/api\/feed$/, (req, res, m, url) => json(res, svc.feed(auth(req), { kind: url.searchParams.get('kind') ?? 'mine', since: url.searchParams.get('since') ?? undefined, limit: url.searchParams.get('limit') ?? 10 }))],
     ['POST', /^\/api\/runs$/, async (req, res) => {
       const b = await body(req);
@@ -520,7 +536,7 @@ export function createApp(svc, { publicUrl } = {}) {
       follow: async (b) => svc.follow(agent().owner_id, b),
       manage: async (b) => svc.manage(agent(), b),
     };
-    return createMcpHandler({ name: 'caiguo', version: '0.4.0', instructions: INSTRUCTIONS, tools: TOOLS, call: (n, a) => callTool(client, n, a) });
+    return createMcpHandler({ name: 'caiguo', version: VERSION, instructions: INSTRUCTIONS, tools: TOOLS, call: (n, a) => callTool(client, n, a) });
   }
 
   return async function handler(req, res) {
@@ -569,8 +585,9 @@ function markdown(res, text, status = 200) {
   send(res, status, text, 'text/markdown; charset=utf-8');
 }
 
-function html(res, pageHtml, status = 200) {
+function html(res, pageHtml, status = 200, extra = {}) {
   send(res, status, pageHtml, 'text/html; charset=utf-8', {
+    ...extra,
     'content-security-policy': "default-src 'self'; img-src 'self' https: data:; style-src 'self' 'unsafe-inline'; script-src 'none'; form-action 'self'; frame-ancestors 'self'",
     'referrer-policy': 'same-origin',
   });

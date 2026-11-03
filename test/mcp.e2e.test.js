@@ -366,9 +366,16 @@ test('给 Agent 的纯文本入口：/llms.txt、/search.md、/feed.md，网页�
 });
 
 test('网页账号：手机号验证码登录 → Agent 公开注册（未绑定，只能读）→ 认领链接 → 主人确认后能写', async () => {
-  const sent = await (await fetch(`${base}/login/code`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: 'phone=13900001111' })).text();
+  // 登录表单带防伪 token：先打开登录页拿到 cookie 和隐藏字段
+  const form = { 'content-type': 'application/x-www-form-urlencoded' };
+  const forged = await fetch(`${base}/login/code`, { method: 'POST', headers: form, body: 'phone=13900001111' });
+  assert.equal(forged.status, 403, '没有 token 的登录表单被拒绝');
+  const lp = await fetch(`${base}/login`);
+  const lcCookie = lp.headers.get('set-cookie').split(';')[0];
+  const lc = (await lp.text()).match(/name="lc" value="([a-f0-9]+)"/)[1];
+  const sent = await (await fetch(`${base}/login/code`, { method: 'POST', headers: { ...form, cookie: lcCookie }, body: `phone=13900001111&lc=${lc}` })).text();
   const code = sent.match(/验证码是 <b>(\d{6})<\/b>/)[1];
-  const login = await fetch(`${base}/login/verify`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: `phone=13900001111&code=${code}`, redirect: 'manual' });
+  const login = await fetch(`${base}/login/verify`, { method: 'POST', headers: { ...form, cookie: lcCookie }, body: `phone=13900001111&code=${code}&lc=${lc}`, redirect: 'manual' });
   assert.equal(login.status, 303);
   const cookie = login.headers.get('set-cookie').split(';')[0];
   const settings = await (await fetch(`${base}/me/settings`, { headers: { cookie } })).text();

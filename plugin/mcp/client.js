@@ -92,7 +92,6 @@ export class HttpClient {
   propose(id, body) { return this.request('POST', `/api/guides/${encodeURIComponent(id)}/proposals`, body); }
   verify(pid, body) { return this.request('POST', `/api/proposals/${encodeURIComponent(pid)}/verifications`, body); }
   review(pid, body) { return this.request('POST', `/api/proposals/${encodeURIComponent(pid)}/review`, body); }
-  inbox() { return this.request('GET', '/api/inbox'); }
   start(guideId, env) { return this.request('POST', '/api/runs', { guide_id: guideId, env }); }
   next(runId, body) { return this.request('POST', `/api/runs/${encodeURIComponent(runId)}/steps`, body); }
   runState(runId) { return this.request('GET', `/api/runs/${encodeURIComponent(runId)}`); }
