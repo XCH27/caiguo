@@ -6,7 +6,7 @@ import {
 } from './content.js';
 
 export const OP_TYPES = ['replace_step', 'insert_step', 'remove_step', 'add_branch', 'add_pitfall', 'remove_pitfall', 'update_meta'];
-const META_FIELDS = ['title', 'summary', 'tags', 'prerequisites', 'applies_to'];
+const META_FIELDS = ['title', 'summary', 'tags', 'prerequisites', 'applies_to', 'sources', 'poster'];
 
 export function normalizeOps(ops) {
   if (!Array.isArray(ops) || ops.length === 0) throw new ValidationError('修订至少要包含一个操作（ops）');
@@ -115,7 +115,7 @@ export function applyOps(content, ops, newVersion) {
   return c;
 }
 
-const TEXT_FIELDS = new Set(['action', 'expect', 'notes', 'screenshot']);
+const TEXT_FIELDS = new Set(['action', 'expect', 'notes', 'screenshot', 'refs']);
 
 // 风险分级：决定修订需要多少独立验证、能不能自动合并。
 //   minor：改文字描述、补坑点 → 3 个独立验证 + 作者 7 天未处理即可自动合并
@@ -161,6 +161,7 @@ export function classifyRisk(content, ops) {
       bump('flow', '删除了坑点');
     } else if (op.op === 'update_meta') {
       const keys = Object.keys(op.set);
+      if (keys.includes('sources')) bump('flow', '修改了出处');
       if (keys.some((k) => k === 'applies_to' || k === 'prerequisites')) bump('flow', '修改了适用条件或准备材料');
       else reasons.push('修改了标题/简介/标签');
     }

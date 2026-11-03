@@ -7,13 +7,15 @@ import { classifyRisk, normalizeOps } from '../server/logic/patch.js';
 import { normalizeNewGuide } from '../server/logic/content.js';
 
 const DAY = 864e5;
+const runOk = (svc, who, gid, extra = {}) => svc.reportRun(who, gid, { outcome: 'success', step_results: [], ...extra });
 
 function setup() {
   let clock = Date.parse('2026-10-01T00:00:00Z');
   const svc = new Caiguo(openDb(':memory:'), { now: () => clock });
   const tick = (days) => { clock += days * DAY; };
-  const mk = (name) => {
+  const mk = (name, { approval = false } = {}) => {
     const r = svc.registerAgent({ name, owner_handle: name });
+    if (!approval) svc.updateSettings(r.owner_id, { require_publish_approval: false });
     return svc.authenticate(r.api_key);
   };
   return { svc, tick, mk };
@@ -126,7 +128,7 @@ test('条件差异：失败集中在某个环境条件时，提示加分支而�
   const bad = (n) => svc.reportRun(mk(n), guide_id, { outcome: 'failed', env: { card: '银联单币' }, step_results: [{ step_id: 's3', status: 'failed', observed: '卡被拒' }] });
   ok('a'); bad('b');
   const r = bad('c');
-  assert.match(r.hints[0], /card=银联单币/);
+  assert.match(r.hints.join('\n'), /均为 card=银联单币/);
   const g = svc.getGuide(guide_id);
   assert.equal(g.health.steps.s3.status, 'variant');
   assert.notEqual(g.health.badge, 'suspect');
@@ -242,4 +244,115 @@ test('使用统计：技能调用次数、阅读、回头客', () => {
   assert.equal(g.usage.agent_reads_30d, 1);
   assert.equal(g.usage.repeat_users, 1);
   assert.equal(svc.search('', { kind: 'skill' })[0].uses_30d, 5);
+});
+
+
+test('出处：每一步可以引用出处和时间点；只整理别人内容的攻略必须给出处', () => {
+  const { svc, mk } = setup();
+  const a = mk('看视频的');
+  assert.throws(() => svc.publishGuide(a, { ...GUIDE, origin: 'external' }), /注明原始链接/);
+  assert.throws(() => svc.publishGuide(a, { ...GUIDE, sources: [{ type: 'video', url: 'https://example.com/v' }], steps: [{ action: 'x', refs: [{ source: 2 }] }] }), /第 2 个出处/);
+  const { guide_id } = svc.publishGuide(a, {
+    ...GUIDE, origin: 'firsthand',
+    sources: [{ type: 'video', platform: 'B站', title: '教程', author: 'UP', url: 'https://example.com/v' }, { type: 'doc', title: '官方文档', url: 'https://example.com/doc' }],
+    steps: [{ action: '第一步', refs: [{ source: 2 }] }, { action: '选区域', refs: [{ source: 1, at: '08:15' }] }],
+  });
+  const g = svc.getGuide(guide_id);
+  assert.equal(g.content.origin, 'firsthand');
+  assert.equal(g.content.sources.length, 2);
+  assert.deepEqual(g.content.steps[1].refs, [{ source: 1, at: '08:15' }]);
+  assert.equal(svc.search('云服务')[0].sources.length, 2);
+});
+
+test('发布需要主人确认：确认前不可见，确认后才扣押金', () => {
+  const { svc, mk } = setup();
+  const a = mk('要确认的', { approval: true });
+  const r = svc.publishGuide(a, GUIDE);
+  assert.equal(r.status, 'pending');
+  assert.equal(svc.search('').length, 0);
+  assert.throws(() => svc.getGuide(r.guide_id), /不存在/);
+  assert.equal(svc.rep.points(a.owner_id), 10);
+  const key = new URL('http://x' + r.approve_path).searchParams.get('k');
+  assert.throws(() => svc.reviewPublish(r.guide_id, { key: 'wrong', action: 'approve' }), /无效/);
+  svc.reviewPublish(r.guide_id, { key, action: 'approve' });
+  assert.equal(svc.search('').length, 1);
+  assert.equal(svc.rep.points(a.owner_id), 7);
+  assert.throws(() => svc.reviewPublish(r.guide_id, { key, action: 'approve' }), /已经处理过/);
+});
+
+test('导航式执行：开始 → 逐步回报 → 本人步骤在跟做页完成 → 结束', () => {
+  const { svc, mk } = setup();
+  const author = mk('作者');
+  const { guide_id } = svc.publishGuide(author, GUIDE);
+  const b = mk('执行者');
+  const s0 = svc.startRun(b, guide_id, { env: { region: 'CN' } });
+  assert.equal(s0.next_step_id, 's1');
+  assert.match(s0.follow_path, /^\/f\/r_/);
+  svc.stepResult(b, s0.run_id, { step_id: 's1', status: 'ok' });
+  let st = svc.stepResult(b, s0.run_id, { step_id: 's2', status: 'drift', observed: '按钮改名' });
+  assert.equal(st.next_step_id, 's3');
+  // 执行中的漂移报告立刻对作者和攻略可见，但不计入成功率
+  assert.equal(svc.getGuide(guide_id).health.steps.s2.problem_count, 1);
+  assert.equal(svc.getGuide(guide_id).health.runs_30d, 1);
+  const key = new URL('http://x' + s0.follow_path).searchParams.get('k');
+  assert.throws(() => svc.humanDone(s0.run_id, 'bad', 's3'), /无效/);
+  st = svc.humanDone(s0.run_id, key, 's3');
+  assert.equal(st.next_step_id, 's4');
+  assert.ok(svc.feed(b, { kind: 'mine' }).items.some((i) => i.type === 'human_step'));
+  svc.stepResult(b, s0.run_id, { step_id: 's4', status: 'ok' });
+  svc.finishRun(b, s0.run_id, { outcome: 'success', rating: 'helpful' });
+  const g = svc.getGuide(guide_id);
+  assert.equal(g.health.runs_30d, 2);
+  assert.equal(g.health.badge, 'fresh');
+  assert.ok(svc.rep.points(author.owner_id) > 7);
+  assert.throws(() => svc.finishRun(b, s0.run_id, { outcome: 'success' }), /已经结束/);
+});
+
+test('共享上下文：主人在网页上看的、发给 Agent 的，Agent 都能在 feed 里看到', () => {
+  const { svc, mk } = setup();
+  const a = mk('主人A');
+  const { guide_id } = svc.publishGuide(a, GUIDE);
+  const other = mk('别人');
+  svc.getGuide(guide_id, { presenceOwner: a.owner_id });
+  svc.sendToAgent(a.owner_id, guide_id, '用这篇帮我注册');
+  const mine = svc.feed(a, { kind: 'mine' });
+  assert.ok(mine.items.some((i) => i.type === 'owner_viewing' && i.guide_id === guide_id));
+  assert.ok(mine.items.some((i) => i.type === 'human_sent' && i.note === '用这篇帮我注册'));
+  assert.equal(svc.feed(other, { kind: 'mine' }).items.length, 0); // 别人看不到
+  svc.updateSettings(a.owner_id, { share_presence: false });
+  svc.db.exec('DELETE FROM presence');
+  svc.getGuide(guide_id, { presenceOwner: a.owner_id });
+  assert.ok(!svc.feed(a, { kind: 'mine' }).items.some((i) => i.type === 'owner_viewing'));
+});
+
+test('事实流：new / updated / reports / revisions 带游标，只返回事实', () => {
+  const { svc, tick, mk } = setup();
+  const a = mk('作者');
+  const { guide_id } = svc.publishGuide(a, GUIDE);
+  const x = mk('x');
+  svc.reportRun(x, guide_id, { outcome: 'partial', step_results: [{ step_id: 's2', status: 'drift', observed: '改版' }] });
+  svc.propose(x, guide_id, { rationale: '改版', ops: [{ op: 'replace_step', step_id: 's2', set: { action: '新' } }], evidence: { outcome: 'success' } });
+  const n = svc.feed(x, { kind: 'new' });
+  assert.equal(n.items[0].guide_id, guide_id);
+  assert.equal(svc.feed(x, { kind: 'reports' }).items[0].observed, '改版');
+  assert.equal(svc.feed(x, { kind: 'revisions' }).items[0].confirmations, 1);
+  tick(1);
+  assert.equal(svc.feed(x, { kind: 'new', since: n.next_since }).items.length, 0);
+});
+
+test('一次性登录链接：只能用一次，过期失效；停用的 Agent 不能再调用', () => {
+  const { svc, tick, mk } = setup();
+  const a = mk('主人');
+  const link = svc.createLoginLink(a);
+  const token = link.path.split('/').pop();
+  const { session } = svc.consumeLogin(token);
+  assert.equal(svc.sessionOwner(session).owner_id, a.owner_id);
+  assert.throws(() => svc.consumeLogin(token), /无效或已过期/);
+  const late = svc.createLoginLink(a).path.split('/').pop();
+  tick(1);
+  assert.throws(() => svc.consumeLogin(late), /无效或已过期/);
+  const key2 = svc.registerAgent({ name: '第二个', owner_id: a.owner_id }).api_key;
+  const a2 = svc.authenticate(key2);
+  svc.revokeAgent(a.owner_id, a2.id);
+  assert.throws(() => svc.authenticate(key2), /停用/);
 });

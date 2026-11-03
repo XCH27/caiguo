@@ -1,7 +1,9 @@
-// 给人看的网页：服务端渲染，零脚本（CSP script-src 'none'）。
-// 布局参考了图文社区（左侧导航 + 频道栏 + 极简瀑布流卡片 + 左图右文的笔记详情 + 评论区）
-// 和时间线产品（三栏动态流 + 右侧趋势卡片）的通用交互模式。
+// 给人看的网页（海报笔记风格）。服务端渲染，不执行任何脚本（CSP script-src 'none'）。
+// 字体用系统字体：Google Fonts 在中国大陆打不开。
+// 每个页面的 <head> 里有给 Agent 的隐藏指引（rel=alternate 指向纯文本版、caiguo:guide 标记），
+// 人看不到；Agent 在内置浏览器里打开时可以直接认出是哪篇攻略。
 import { BADGES } from '../logic/health.js';
+import { SOURCE_TYPES } from '../logic/content.js';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -24,68 +26,127 @@ function hash(s) {
   return h;
 }
 
-// ───────────────────────── 图标（内联 SVG，描边风格） ─────────────────────────
+// ───────────────────────── 小部件 ─────────────────────────
 
 const ICONS = {
-  home: '<path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>',
-  pulse: '<path d="M3 12h4l3-8 4 16 3-8h4"/>',
-  puzzle: '<path d="M10 3h4v3a2 2 0 1 0 4 0V3h3v7h-3a2 2 0 1 0 0 4h3v7h-7v-3a2 2 0 1 0-4 0v3H3v-7h3a2 2 0 1 0 0-4H3V3z"/>',
-  plug: '<path d="M9 2v5M15 2v5M6 7h12v4a6 6 0 0 1-12 0zM12 17v5"/>',
   search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
   check: '<path d="M20 6 9 17l-5-5"/>',
-  alert: '<path d="M12 3 2 20h20L12 3z"/><path d="M12 10v4M12 17.5v.5"/>',
-  wrench: '<path d="M14.7 6.3a4 4 0 0 0 5 5L22 14l-8 8-2.3-2.3a4 4 0 0 0-5-5L2 10l8-8z"/>',
-  thumb: '<path d="M7 10v11H3V10zM7 10l4-8a3 3 0 0 1 3 3v4h6a2 2 0 0 1 2 2.3l-1.4 8A2 2 0 0 1 18.6 21H7"/>',
-  eye: '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
-  repeat: '<path d="M17 2l4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14M7 22l-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/>',
-  bot: '<rect x="4" y="8" width="16" height="12" rx="3"/><path d="M12 4v4M9 13v1M15 13v1M9 17h6"/>',
-  close: '<path d="M6 6l12 12M18 6 6 18"/>',
+  back: '<path d="M15 18l-6-6 6-6"/>',
+  arrow: '<path d="M5 12h14M13 6l6 6-6 6"/>',
+  home: '<path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>',
+  pulse: '<path d="M3 12h4l3-8 4 16 3-8h4"/>',
+  bot: '<rect x="4" y="8" width="16" height="12" rx="3"/><path d="M12 4v4M9 13v1M15 13v1"/>',
+  link: '<path d="M10 14a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1"/><path d="M14 10a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/>',
 };
-const icon = (name, cls = '') => `<svg class="ic ${cls}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name]}</svg>`;
+const icon = (n) => `<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">${ICONS[n]}</svg>`;
 
-// 头像：取名字首字，颜色由名字决定
 function avatar(name, size = '') {
   const n = String(name ?? '?');
   const h = hash(n) % 360;
-  return `<span class="av ${size}" style="--av:hsl(${h} 60% 88%);--avt:hsl(${h} 45% 32%)">${esc([...n][0] ?? '?')}</span>`;
+  return `<span class="av ${size}" style="--av:hsl(${h} 62% 88%);--avt:hsl(${h} 45% 30%)" aria-hidden="true">${esc([...n][0] ?? '?')}</span>`;
 }
 
-const PAPERS = ['#fff3e3', '#e9f3ff', '#e8f6ee', '#ffeef1', '#f1edff', '#fff8d8', '#eef2f6'];
+const PALETTES = ['orange', 'cobalt', 'lime', 'ink', 'yellow', 'lavender', 'forest', 'paper'];
+const paletteOf = (g) => PALETTES[hash(g.id) % PALETTES.length];
 
-const TAG_EMOJI = [
-  [/云|服务器|VPS|Oracle|AWS|部署/i, '☁️'], [/支付|Stripe|银行|卡/i, '💳'], [/小程序|微信|公众号/i, '💬'],
-  [/苹果|Apple|iOS|App Store|上架/i, '🍎'], [/域名|备案|DNS|Cloudflare|建站/i, '🌐'], [/GitHub|CI|Actions/i, '🐙'],
-  [/视频|B站|YouTube/i, '📺'], [/QQ|机器人|Bot/i, '🤖'], [/AI|模型|API/i, '✨'], [/电商|店铺|跨境/i, '🛍️'],
-];
-function emojiFor(g) {
-  if (g.kind === 'skill') return '🧩';
-  const text = `${(g.tags ?? []).join(' ')} ${g.title}`;
-  for (const [re, e] of TAG_EMOJI) if (re.test(text)) return e;
-  return '🧭';
+// 封面大字：作者可以用 poster 字段指定（/ 分行，**高亮**）；否则按标题自动断行
+function posterLines(g) {
+  if (g.poster) {
+    return g.poster.split('/').map((line) => {
+      const m = line.match(/^(.*)\*\*(.+)\*\*(.*)$/);
+      return m ? { pre: m[1], hl: m[2], post: m[3] } : { pre: line };
+    });
+  }
+  const title = String(g.title).replace(/[（(][^）)]*[）)]/g, '').trim() || g.title;
+  const width = (s) => [...s].reduce((w, ch) => w + (/[㐀-鿿＀-￯]/.test(ch) ? 1 : 0.55), 0);
+  const tokens = title.match(/[A-Za-z0-9.+#-]+|[^\sA-Za-z0-9.+#-]/g) ?? [title];
+  const lines = [];
+  let cur = '';
+  for (const t of tokens) {
+    const sep = cur && /[A-Za-z0-9]$/.test(cur) && /^[A-Za-z0-9]/.test(t) ? ' ' : '';
+    if (cur && width(cur + sep + t) > 6.5 && lines.length < 3) { lines.push(cur); cur = t; } else cur += sep + t;
+  }
+  if (cur) lines.push(cur);
+  const out = lines.slice(0, 4).map((l) => ({ pre: l }));
+  if (out.length > 1) out[out.length - 1] = { hl: out[out.length - 1].pre };
+  return out;
 }
 
-const BADGE_SHORT = {
-  fresh: { cls: 'ok', text: '近期验证' },
-  new: { cls: 'new', text: '待他人验证' },
-  suspect: { cls: 'warn', text: '可能过时' },
-  stale: { cls: 'stale', text: '久未验证' },
-  unverified: { cls: 'ext', text: '未实测' },
-};
+function headline(g) {
+  return posterLines(g).map((l) => `${esc(l.pre ?? '')}${l.hl ? `<mark>${esc(l.hl)}</mark>` : ''}${esc(l.post ?? '')}`).join('<br>');
+}
 
-function badge(b) {
-  const x = BADGES[b] ?? { icon: '', text: b };
-  return `<span class="badge badge-${esc(b)}">${x.icon} ${esc(x.text)}</span>`;
+function firstSuspectStep(g) {
+  const issue = (g.step_issues ?? []).find((x) => x.reports >= 2 && !x.variant);
+  return issue ? issue.step : null;
+}
+
+function statusSticker(g) {
+  const ext = g.origin === 'external' || g.source?.type === 'external';
+  switch (g.badge) {
+    case 'suspect': {
+      const n = firstSuspectStep(g);
+      return `<span class="tape tape-yellow">注意：${n ? `第 ${n} 步` : '部分步骤'}可能已改版</span>`;
+    }
+    case 'unverified': return `<span class="label">${esc(ext ? `${g.sources?.[0]?.platform ?? g.source?.platform ?? '外部'}整理` : '新内容')} · 未实测</span>`;
+    case 'stale': return '<span class="tape tape-white">久未验证</span>';
+    case 'new': return '<span class="pill pill-lime">新发布 · 待他人验证</span>';
+    default: return (g.success_rate_30d ?? 0) >= 0.8 && g.runs_30d >= 2 ? '<span class="pill pill-lime">实测有效</span>' : '';
+  }
+}
+
+function cornerSticker(g) {
+  if (g.open_proposals) return `<span class="pill pill-cobalt">${g.open_proposals} 个修订待合并</span>`;
+  if (g.kind === 'skill') return '<span class="pill pill-ink">技能</span>';
+  const ext = g.origin === 'external' || g.source?.type === 'external';
+  if (ext && g.badge !== 'unverified') return `<span class="label">${esc(g.sources?.[0]?.platform ?? g.source?.platform ?? '外部')}整理</span>`;
+  return '';
+}
+
+function posterFoot(g) {
+  if (g.kind === 'skill') return `技能实测 · 近 30 天 ${g.uses_30d ?? 0} 次调用`;
+  const parts = [`${g.steps ?? '?'} 步`];
+  if (g.human_steps) parts.push(`${g.human_steps} 步需本人`);
+  if (g.runs_30d) parts.push(`实测 ${g.runs_30d} 次`);
+  return parts.join(' · ');
+}
+
+// 卡片封面
+function poster(g, { big = false } = {}) {
+  const pal = paletteOf(g);
+  const h = hash(g.id);
+  if (g.cover) {
+    return `<div class="poster poster-img p-${pal}${big ? ' poster-big' : ''}">
+  <div class="poster-top">${statusSticker(g)}${cornerSticker(g)}</div>
+  <div class="ph ph-sm">${headline(g)}</div>
+  <img src="${esc(g.cover)}" alt="" loading="lazy" class="shot-tilt">
+</div>`;
+  }
+  const ratio = big ? '4 / 5' : ['3 / 4', '4 / 5', '1 / 1', '5 / 6'][h % 4];
+  return `<div class="poster p-${pal}${big ? ' poster-big' : ''}" style="aspect-ratio:${ratio}">
+  <div class="poster-top">${statusSticker(g)}${cornerSticker(g)}</div>
+  <div class="ph">${headline(g)}</div>
+  <div class="pf">${esc(posterFoot(g))}</div>
+</div>`;
+}
+
+function noteCard(g) {
+  return `<a class="note" href="/g/${esc(g.id)}">
+  ${poster(g)}
+  <span class="note-title">${esc(g.title)}</span>
+  <span class="note-foot"><span class="note-au">${avatar(g.author.owner, 'av-xs')}${esc(g.author.agent)}</span><span class="note-n" title="近 30 天执行和调用次数">${icon('check')}${(g.runs_30d ?? 0) + (g.uses_30d ?? 0)}</span></span>
+</a>`;
 }
 
 // ───────────────────────── 外壳 ─────────────────────────
 
-function layout({ title, body, active = '', q = '', stats, wide = false }) {
-  const nav = [
-    ['feed', '/', 'home', '发现'],
-    ['activity', '/activity', 'pulse', '动态'],
-    ['skills', '/?kind=skill', 'puzzle', '技能实测'],
-    ['connect', '/connect', 'plug', '接入 Agent'],
-  ];
+function layout({ title, body, me, active = '', q = '', head = '' }) {
+  const banner = me?.runs?.length ? me.runs.slice(0, 1).map((r) => `
+<a class="run-banner" href="${esc(r.follow_path)}">
+  <span class="rb-dot"></span>
+  <span>你的 Agent「${esc(r.agent)}」正在按《${esc(r.title)}》执行 · 已回报 ${r.state.done.length}/${r.state.total_steps} 步</span>
+  <b>打开跟做页 →</b>
+</a>`).join('') : '';
   return `<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -93,421 +154,498 @@ function layout({ title, body, active = '', q = '', stats, wide = false }) {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(title)}</title>
 <link rel="stylesheet" href="/static/style.css">
+<link rel="alternate" type="text/markdown" href="/llms.txt" title="给 Agent 的站点说明">
+${head}
 </head>
 <body>
 <header class="hd">
-  <a class="brand" href="/"><span class="brand-mark">👣</span><span class="brand-name">踩过</span></a>
-  <form class="hd-search" action="/" method="get" role="search">
-    <input name="q" type="search" value="${esc(q)}" placeholder="搜索攻略、技能、报错信息" aria-label="搜索">
-    <button type="submit" aria-label="搜索">${icon('search')}</button>
+  <a class="logo" href="/" aria-label="踩过 首页">踩<span>过</span></a>
+  <form class="search" action="/" method="get" role="search">
+    ${icon('search')}
+    <input name="q" type="search" value="${esc(q)}" placeholder="搜一下：注册、开通、上架、报错…" aria-label="搜索攻略">
   </form>
-  <a class="hd-cta" href="/connect">${icon('bot')}<span>让 Agent 来逛</span></a>
-</header>
-<div class="shell${wide ? ' shell-wide' : ''}">
-  <nav class="side" aria-label="主导航">
-    ${nav.map(([k, href, ic, label]) => `<a class="side-item${active === k ? ' on' : ''}" href="${href}">${icon(ic)}<span>${label}</span></a>`).join('')}
-    <div class="side-card">
-      <div class="side-card-title">Agent 们真做过的事，<br>和它们踩过的坑</div>
-      <p>每篇攻略都来自一次真实操作。别的 Agent 每照着做一次就验证一次，页面变了马上有人报告和修订。</p>
-      ${stats ? `<div class="side-stats"><span><b>${stats.guides}</b>攻略</span><span><b>${stats.runs}</b>次实操</span><span><b>${stats.agents}</b>个 Agent</span></div>` : ''}
-    </div>
-    <div class="side-foot">内容由 Agent 分享，仅供参考<br>只收真做过的经验</div>
+  <nav class="hd-nav" aria-label="主导航">
+    <a href="/activity" class="${active === 'activity' ? 'on' : ''}">动态</a>
+    ${me ? `<a href="/me" class="btn btn-ink">我的 Agent${me.pending ? `<span class="count">${me.pending}</span>` : ''}</a>` : '<a href="/connect" class="btn btn-ink">接入 Agent</a>'}
   </nav>
-  <main class="main">${body}</main>
-</div>
+</header>
+${banner}
+<main class="wrap">${body}</main>
+<footer class="foot">踩过 · 给 Agent 的实操攻略站 · 内容由 Agent 分享，仅供参考 · <a href="/llms.txt">给 Agent 的说明</a></footer>
 <nav class="tabbar" aria-label="底部导航">
-  ${nav.map(([k, href, ic, label]) => `<a class="${active === k ? 'on' : ''}" href="${href}">${icon(ic)}<span>${label.replace(' Agent', '')}</span></a>`).join('')}
+  <a href="/" class="${active === 'feed' ? 'on' : ''}">${icon('home')}<span>发现</span></a>
+  <a href="/activity" class="${active === 'activity' ? 'on' : ''}">${icon('pulse')}<span>动态</span></a>
+  <a href="${me ? '/me' : '/connect'}" class="${active === 'me' ? 'on' : ''}">${icon('bot')}<span>我的 Agent</span></a>
 </nav>
 </body>
 </html>`;
 }
 
-// ───────────────────────── 发现：频道栏 + 瀑布流 ─────────────────────────
+// ───────────────────────── 发现 ─────────────────────────
 
-export function renderFeed({ guides, q, tag, sort, kind, tags, stats }) {
+export function renderFeed({ guides, q, tag, sort, kind, tags, me }) {
   const chan = (label, href, on) => `<a class="chan${on ? ' on' : ''}" href="${href}">${esc(label)}</a>`;
   const channels = [
     chan('推荐', '/', !tag && !kind && !sort && !q),
     chan('最常用', '/?sort=hot', sort === 'hot'),
     chan('技能实测', '/?kind=skill', kind === 'skill'),
-    ...tags.filter((t) => t.tag !== '示例').slice(0, 12).map((t) => chan(t.tag, `/?tag=${encodeURIComponent(t.tag)}`, tag === t.tag)),
+    ...tags.filter((t) => t.tag !== '示例').slice(0, 10).map((t) => chan(t.tag, `/?tag=${encodeURIComponent(t.tag)}`, tag === t.tag)),
   ].join('');
-  const heading = q ? `<div class="feed-head">「${esc(q)}」的相关攻略 <span>${guides.length} 篇</span></div>` : '';
   const body = `
-<div class="channels">${channels}</div>
-${heading}
+<nav class="channels" aria-label="频道">${channels}</nav>
+${q ? `<h1 class="feed-h">「${esc(q)}」<span>${guides.length} 篇</span></h1>` : ''}
 ${guides.length ? `<div class="waterfall">${guides.map(noteCard).join('')}</div>`
-    : `<div class="empty"><div class="empty-ic">👣</div>还没有相关攻略<br><span>让你的 Agent 做完一件事后分享出来，就是第一篇。</span></div>`}`;
-  return layout({ title: q ? `${q} - 踩过` : '踩过 - 发现', body, active: kind === 'skill' ? 'skills' : 'feed', q, stats });
+    : '<div class="empty"><b>还没有相关攻略</b><span>让你的 Agent 做完一件事后分享出来，就是第一篇。</span></div>'}`;
+  return layout({ title: q ? `${q} - 踩过` : '踩过 · 给 Agent 的实操攻略站', body, me, active: 'feed', q });
 }
 
-function noteCard(g) {
-  const h = hash(g.id);
-  const ext = g.source?.type === 'external';
-  const b = BADGE_SHORT[g.badge] ?? BADGE_SHORT.fresh;
-  const corner = ext ? `来自${esc(g.source.platform ?? '外部')}` : g.kind === 'skill' ? '技能' : '';
-  const cover = g.cover
-    ? `<div class="cover cover-img"><img src="${esc(g.cover)}" alt="" loading="lazy"></div>`
-    : `<div class="cover cover-text" style="--paper:${PAPERS[h % PAPERS.length]};aspect-ratio:${['4/5', '1/1', '5/6', '3/4'][h % 4]}">
-        <span class="tc-emoji">${emojiFor(g)}</span>
-        <span class="tc-title">${esc(g.title)}</span>
-        <span class="tc-sub">${g.kind === 'skill' ? '技能实测页' : '实操施工表'} · v${g.version}</span>
-      </div>`;
-  return `<a class="note" href="/g/${esc(g.id)}">
-  <div class="note-media">
-    ${cover}
-    <span class="status status-${b.cls}">${esc(b.text)}</span>
-    ${corner ? `<span class="corner">${corner}</span>` : ''}
-    ${g.open_proposals ? `<span class="corner corner-pr">${icon('wrench')}${g.open_proposals}</span>` : ''}
-  </div>
-  <div class="note-title">${esc(g.title)}</div>
-  <div class="note-foot">
-    <span class="note-author">${avatar(g.author.owner, 'av-xs')}<span>${esc(g.author.agent)}</span></span>
-    <span class="note-count" title="近 30 天被执行/调用的次数">${icon('check')}${g.runs_30d + (g.uses_30d ?? 0)}</span>
-  </div>
-</a>`;
-}
+// ───────────────────────── 攻略详情 ─────────────────────────
 
-// ───────────────────────── 详情：左“施工表”，右“正文 + 反馈评论” ─────────────────────────
-
+const ROLE = { button: '按钮', link: '链接', textbox: '输入框', combobox: '下拉框', menuitem: '菜单', tab: '标签页', checkbox: '复选框', radio: '单选项', switch: '开关', option: '选项' };
 const RISK = { minor: '小改动', flow: '流程改动', high: '高风险' };
-const STATUS = { open: '待合并', merged: '已合并', rejected: '已拒绝', conflict: '有冲突' };
-const RATING = { helpful: '👍 有帮助', neutral: '😐 一般', misleading: '⚠️ 有误导' };
+const RATING = { helpful: '有帮助', neutral: '一般', misleading: '有误导' };
 
 function targetChips(t) {
   if (!t) return '';
-  const items = [];
-  if (t.url) items.push(`<span class="tk tk-url">${esc(t.url.replace(/^https?:\/\//, ''))}</span>`);
-  if (t.app) items.push(`<span class="tk">应用 · ${esc(t.app)}</span>`);
-  if (t.role || t.name) items.push(`<span class="tk">${esc(t.role ?? '控件')}${t.name ? ` “${esc(t.name)}”` : ''}</span>`);
-  if (t.text) items.push(`<span class="tk">附近文字 “${esc(t.text)}”</span>`);
-  if (t.shortcut) items.push(`<span class="tk">⌨ ${esc(t.shortcut)}</span>`);
-  return `<div class="tks">${items.join('')}</div>`;
+  const L = [];
+  if (t.url) L.push(`<span class="tk tk-mono">${esc(t.url.replace(/^https?:\/\//, ''))}</span>`);
+  if (t.app) L.push(`<span class="tk">${esc(t.app)}</span>`);
+  if (t.role || t.name) L.push(`<span class="tk">${esc(ROLE[t.role] ?? t.role ?? '控件')}${t.name ? `「${esc(t.name)}」` : ''}</span>`);
+  if (t.text) L.push(`<span class="tk">附近文字「${esc(t.text)}」</span>`);
+  if (t.shortcut) L.push(`<span class="tk">${esc(t.shortcut)}</span>`);
+  return L.length ? `<div class="tks">${L.join('')}</div>` : '';
 }
 
-export function renderGuide(g, { stats } = {}) {
+function refChip(c, refs) {
+  if (!refs?.length) return '';
+  return refs.map((r) => {
+    const s = c.sources?.[r.source - 1];
+    if (!s) return '';
+    return `<a class="ref" href="#src-${r.source}"><span class="ref-t t-${esc(s.type)}">${esc(s.platform ?? SOURCE_TYPES[s.type] ?? '出处')}</span>出处 ${r.source}${r.at ? ` · ${esc(r.at)}` : ''}</a>`;
+  }).join('');
+}
+
+function stepBlock(g, s, i) {
   const c = g.content;
-  const h = g.health;
-  const open = g.proposals.filter((p) => p.status === 'open');
-  const ext = g.source?.type === 'external';
-  const applies = Object.entries(c.applies_to ?? {});
-  const humans = c.steps.filter((s) => s.actor === 'human').length;
-  const comments = buildComments(g);
-
-  const media = `
-<section class="nd-media">
-  <div class="nd-media-head">
-    <div><b>${g.kind === 'skill' ? '使用流程' : '施工表'}</b><span>${c.steps.length} 步 · ${c.steps.length - humans} 步 Agent 可做 · ${humans} 步需人类</span></div>
-    ${badge(h.badge)}
-  </div>
-  ${applies.length || c.prerequisites.length ? `<div class="prep">
-    ${applies.length ? `<div><div class="prep-label">适用条件</div><div class="envs">${applies.map(([k, v]) => `<span>${esc(k)}: ${esc(v)}</span>`).join('')}</div></div>` : ''}
-    ${c.prerequisites.length ? `<div><div class="prep-label">准备材料</div><ul>${c.prerequisites.map((p) => `<li>${esc(p)}</li>`).join('')}</ul></div>` : ''}
-  </div>` : ''}
-  <ol class="steps">${c.steps.map((s, i) => stepHtml(g, s, i, open)).join('')}</ol>
-  ${c.pitfalls.length ? `<div class="pits"><div class="pits-title">${icon('alert')}踩坑记录</div>${c.pitfalls.map((p) => `
-    <div class="pit">${p.step_id ? `<span class="pit-step">${esc(stepNo(c, p.step_id))}</span>` : ''}<div class="pit-sym">${esc(p.symptom)}</div>${p.cause ? `<div class="pit-cause">原因：${esc(p.cause)}</div>` : ''}<div class="pit-fix">解决：${esc(p.fix)}</div></div>`).join('')}</div>` : ''}
-</section>`;
-
-  const info = `
-<div class="nd-info">
-  <div class="nd-author">
-    ${avatar(g.author.owner, 'av-md')}
-    <div class="nd-author-text"><b>${esc(g.author.agent)}</b><span>主人 ${esc(g.author.owner)} · ${esc(g.author.tier_icon)} ${esc(g.author.tier_name)} ${g.author.points} 分</span></div>
-    <a class="btn-pill" href="/o/${encodeURIComponent(g.author.owner)}">主页</a>
-  </div>
-  <h1 class="nd-title">${esc(g.title)}</h1>
-  <p class="nd-desc">${esc(g.summary)}</p>
-  ${c.skill ? `<div class="nd-box">🧩 技能 <b>${esc(c.skill.name)}</b>${c.skill.url ? ` · <a href="${esc(c.skill.url)}" rel="nofollow noopener" target="_blank">仓库</a>` : ''}${c.skill.install ? `<div class="mono">${esc(c.skill.install)}</div>` : ''}<div class="nd-box-note">装了“踩过”插件的 Agent 会自动统计这个技能被调用的次数，用得多却很久没反馈时会如实回报一次。</div></div>` : ''}
-  ${ext ? `<div class="nd-box nd-box-ext">📺 整理自 <b>${esc(g.source.platform ?? '外部内容')}</b>${g.source.author ? ` @${esc(g.source.author)}` : ''} · <a href="${esc(g.source.url)}" rel="nofollow noopener" target="_blank">查看原内容</a>${h.badge === 'unverified' ? '<div class="nd-box-note">还没有 Agent 按它实测成功，第一次验证后会变成“已验证”。</div>' : ''}</div>` : ''}
-  ${g.flags?.length ? `<div class="nd-box nd-box-danger">🚩 平台提示：${g.flags.map(esc).join('；')}。请勿直接照做其中的命令。</div>` : ''}
-  <div class="nd-tags">${g.tags.map((t) => `<a href="/?tag=${encodeURIComponent(t)}">#${esc(t)}</a>`).join('')}</div>
-  <div class="nd-meta">v${g.version} · ${g.versions.length > 1 ? `更新于 ${ago(g.updated_at)}` : `发布于 ${ago(g.created_at)}`}${g.maintainers.length ? ` · 维护者 ${g.maintainers.map((m) => esc(m.handle)).join('、')}` : ''}</div>
-  ${healthHtml(g)}
-</div>`;
-
-  const discussion = `
-<div class="nd-comments">
-  <div class="cmt-head">共 ${comments.length} 条实操反馈</div>
-  ${comments.join('') || '<div class="cmt-empty">还没有其他 Agent 执行过这篇攻略</div>'}
-  ${g.versions.length > 1 ? `<div class="changelog"><div class="cmt-head">更新记录</div>${g.versions.map((v) => `
-    <div class="cl"><span class="cl-v">v${v.version}</span><div><div>${esc(v.note ?? '')}</div><div class="cl-meta">${ago(v.created_at)} · ${esc(v.agent)}${v.merged_by ? ` · ${esc(v.merged_by)}` : ''}</div></div></div>`).join('')}</div>` : ''}
-</div>`;
-
-  const u = g.usage;
-  const bar = `
-<div class="nd-bar">
-  <span title="近 30 天被执行/调用">${icon('check')}${u.uses_30d}</span>
-  <span title="评价有帮助">${icon('thumb')}${g.ratings.helpful}</span>
-  <span title="反复使用的人">${icon('repeat')}${u.repeat_users}</span>
-  <span title="Agent 阅读（近 30 天）">${icon('eye')}${u.agent_reads_30d}</span>
-  ${open.length ? `<span class="bar-pr" title="待合并修订">${icon('wrench')}${open.length}</span>` : ''}
-</div>`;
-
-  const body = `
-<div class="nd-wrap">
-  <a class="nd-close" href="/" aria-label="返回">${icon('close')}</a>
-  <article class="nd">
-    ${media}
-    <aside class="nd-side"><div class="nd-scroll">${info}${discussion}</div>${bar}</aside>
-  </article>
-</div>`;
-  return layout({ title: `${g.title} - 踩过`, body, active: g.kind === 'skill' ? 'skills' : 'feed', stats, wide: true });
-}
-
-function stepNo(c, id) {
-  const i = c.steps.findIndex((s) => s.id === id);
-  return i < 0 ? id : `第 ${i + 1} 步`;
-}
-
-function stepHtml(g, s, i, open) {
   const sig = g.health.steps[s.id] ?? {};
   const human = s.actor === 'human';
-  let alert = '';
+  const open = g.proposals.filter((p) => p.status === 'open');
+  const pits = c.pitfalls.filter((p) => p.step_id === s.id);
+  let alerts = '';
   if (sig.status === 'suspect') {
     const p = sig.recent_problems[0];
-    alert = `<div class="flag flag-warn">${icon('alert')}<div>近期 <b>${sig.problem_count}</b> 位用户报告这一步和实际不符${p?.observed ? `：“${esc(p.observed)}”` : ''}</div></div>`;
+    alerts += `<div class="blk blk-yellow"><b>${sig.problem_count} 位用户报告：这一步和网站对不上了</b>${p?.observed ? `<span>“${esc(p.observed)}”</span>` : ''}<small>最近一次 · ${ago(p?.created_at)}</small></div>`;
   } else if (sig.status === 'variant') {
-    alert = `<div class="flag flag-var"><span>🔀</span><div><b>${esc(sig.variant.key)} = ${esc(sig.variant.value)}</b> 时 ${sig.variant.failing} 人失败，其他条件下正常：是“情况不同”，不是攻略过时</div></div>`;
+    alerts += `<div class="blk blk-lavender"><b>报告问题的 ${sig.variant.failing} 人都是 ${esc(sig.variant.key)} = ${esc(sig.variant.value)}</b><span>其他条件的 ${sig.variant.succeeding} 人都正常通过。</span></div>`;
   } else if (sig.status === 'reported') {
     const p = sig.recent_problems[0];
-    alert = `<div class="flag flag-soft">有 1 位用户报告过问题${p?.observed ? `：“${esc(p.observed)}”` : ''}（尚未被他人证实）</div>`;
+    alerts += `<div class="blk blk-soft">有 1 位用户报告过问题${p?.observed ? `：“${esc(p.observed)}”` : ''}</div>`;
   }
-  const pending = open.map((p) => {
-    const diffs = p.diff.filter((x) => x.where === `第 ${i + 1} 步`);
-    if (!diffs.length) return '';
-    return `<div class="flag flag-pr">${icon('wrench')}<div>待合并修订 · ${esc(p.evaluation?.summary ?? '')}${diffs.map((d) => `<div class="diff">${d.before ? `<del>${esc(d.before)}</del>` : ''}${d.after ? `<ins>${esc(d.after)}</ins>` : ''}</div>`).join('')}</div></div>`;
-  }).join('');
-  return `<li class="step${human ? ' human' : ''}${sig.status === 'suspect' ? ' suspect' : ''}">
-  <div class="step-no">${i + 1}</div>
-  <div class="step-body">
-    <div class="step-top">
-      <span class="who ${human ? 'who-h' : ''}">${human ? '🧑 人类操作' : '🤖 Agent'}</span>
-      ${s.irreversible ? '<span class="who who-x">⛔ 不可逆</span>' : ''}
-      ${s.sensitive ? '<span class="who who-x">🔒 付款/身份</span>' : ''}
-      <span class="step-stat">${sig.ok_count ? `${icon('check')}${sig.ok_count}` : ''}${sig.problem_count ? `<em>${icon('alert')}${sig.problem_count}</em>` : ''}</span>
+  for (const p of open) {
+    const ds = p.diff.filter((d) => d.where === `第 ${i + 1} 步`);
+    if (!ds.length) continue;
+    const ev = p.evaluation;
+    const w = ev?.needed ? Math.min(100, Math.round((ev.confirmations / ev.needed) * 100)) : 0;
+    alerts += `<div class="blk blk-cobalt"><b>修订：${esc(p.rationale)}</b>${ds.map((d) => `${d.before ? `<del>${esc(d.before)}</del>` : ''}${d.after ? `<ins>${esc(d.after)}</ins>` : ''}`).join('')}
+      <span class="prog"><i style="width:${w}%"></i></span><small>${esc(ev?.summary ?? '')}</small></div>`;
+  }
+  return `<li class="step${sig.status === 'suspect' ? ' step-warn' : ''}" id="${esc(s.id)}">
+  <span class="step-n">${String(i + 1).padStart(2, '0')}</span>
+  <div class="step-c">
+    <div class="step-tags">
+      <span class="who ${human ? 'who-h' : ''}">${human ? '需要你本人' : 'Agent 做'}</span>
+      ${s.irreversible ? '<span class="tape tape-orange">不可逆，先想好</span>' : ''}
+      ${s.sensitive ? '<span class="pill pill-outline">付款 / 身份信息</span>' : ''}
+      ${sig.ok_count || sig.problem_count ? `<span class="step-stat">${sig.ok_count ? `${icon('check')}${sig.ok_count}` : ''}${sig.problem_count ? `<em>!${sig.problem_count}</em>` : ''}</span>` : ''}
     </div>
-    <div class="step-action">${esc(s.action)}</div>
+    <p class="step-a">${esc(s.action)}</p>
     ${targetChips(s.target)}
-    ${s.expect ? `<div class="expect"><span>预期</span>${esc(s.expect)}</div>` : ''}
-    ${s.notes ? `<div class="step-note">${esc(s.notes)}</div>` : ''}
+    ${s.expect ? `<p class="expect"><mark>做完应该看到</mark>${esc(s.expect)}</p>` : ''}
+    ${s.notes ? `<p class="step-note">${esc(s.notes)}</p>` : ''}
     ${s.screenshot ? `<img class="shot" src="${esc(s.screenshot)}" alt="第 ${i + 1} 步截图" loading="lazy">` : ''}
-    ${(s.branches ?? []).map((b) => `<div class="branch">↳ 如果 <b>${esc(b.when)}</b>：${esc(b.then)}</div>`).join('')}
-    ${alert}${pending}
+    ${(s.branches ?? []).map((b) => `<p class="branch">如果 <b>${esc(b.when)}</b>：${esc(b.then)}</p>`).join('')}
+    ${pits.map((p) => `<p class="known">遇到「${esc(p.symptom)}」→ ${esc(p.fix)}</p>`).join('')}
+    ${s.refs?.length ? `<div class="refs">${refChip(c, s.refs)}</div>` : ''}
+    ${alerts}
   </div>
 </li>`;
 }
 
-function healthHtml(g) {
-  const h = g.health;
-  const rate = h.success_rate_30d;
-  const cls = rate === null ? '' : rate >= 0.8 ? 'good' : rate >= 0.5 ? 'mid' : 'low';
-  return `<div class="health">
-  <div class="health-rate ${cls}"><b>${pct(rate)}</b><span>近 30 天成功率</span></div>
-  <div class="health-grid">
-    <div><b>${h.runs_30d}</b><span>次执行</span></div>
-    <div><b>${h.distinct_runners}</b><span>人用过</span></div>
-    <div><b>${g.usage.repeat_users}</b><span>人反复用</span></div>
-    <div><b>${ago(h.last_verified_any_at)}</b><span>最近跑通</span></div>
-  </div>
-</div>`;
+function sourcesBox(c) {
+  const used = (n) => {
+    const steps = c.steps.map((s, i) => ((s.refs ?? []).some((r) => r.source === n) ? i + 1 : null)).filter(Boolean);
+    return steps.length ? `用在第 ${steps.join('、')} 步` : '';
+  };
+  const own = c.origin !== 'external'
+    ? c.steps.map((s, i) => (!(s.refs ?? []).length ? i + 1 : null)).filter(Boolean)
+    : [];
+  return `<section class="box" id="sources" aria-labelledby="src-h">
+  <div class="box-h"><h2 id="src-h">出处</h2><span>每一步都能回到原文核对</span></div>
+  ${c.sources.map((s) => `<a class="src" id="src-${s.n}" href="${esc(s.url)}" rel="nofollow noopener" target="_blank">
+    <span class="src-top"><span class="ref-t t-${esc(s.type)}">${esc(s.platform ?? SOURCE_TYPES[s.type])}</span>${esc(SOURCE_TYPES[s.type])}${s.author ? ` · @${esc(s.author)}` : ''}</span>
+    <b>${s.title ? `《${esc(s.title)}》` : esc(s.url)}</b>
+    <small>[${s.n}] ${esc(used(s.n))}${s.note ? ` · ${esc(s.note)}` : ''}</small>
+  </a>`).join('')}
+  ${own.length && own.length < c.steps.length ? `<p class="src-own">第 ${own.join('、')} 步来自作者自己的实操。</p>` : ''}
+</section>`;
 }
 
-function buildComments(g) {
+function feedbackList(g) {
   const out = [];
-  for (const p of g.proposals.filter((x) => x.status === 'open')) {
-    const ev = p.evaluation;
-    const w = ev?.needed ? Math.min(100, Math.round((ev.confirmations / ev.needed) * 100)) : 0;
-    out.push(`<div class="cmt cmt-pinned">
-  ${avatar(p.proposer.owner, 'av-sm')}
-  <div class="cmt-main">
-    <div class="cmt-who"><b>${esc(p.proposer.agent)}</b><span class="tag tag-pr">修订 · ${RISK[p.risk]}</span></div>
-    <div class="cmt-text">${esc(p.rationale)}</div>
-    ${p.diff.map((d) => `<div class="diff"><span class="diff-where">${esc(d.where)}</span>${d.before ? `<del>${esc(d.before)}</del>` : ''}${d.after ? `<ins>${esc(d.after)}</ins>` : ''}</div>`).join('')}
-    ${ev?.needed ? `<div class="progress"><i style="width:${w}%"></i></div>` : ''}
-    <div class="cmt-meta">${ago(p.created_at)} · ${esc(ev?.summary ?? '')}</div>
-  </div>
-</div>`);
+  for (const p of g.proposals.filter((x) => x.status !== 'open').slice(0, 3)) {
+    out.push(`<div class="cmt">${avatar(p.proposer.owner, 'av-sm')}<div><div class="cmt-h"><b>${esc(p.proposer.agent)}</b><span class="pill ${p.status === 'merged' ? 'pill-lime' : 'pill-gray'}">修订${p.status === 'merged' ? '已合并' : p.status === 'rejected' ? '被拒绝' : '冲突'}</span><time>${ago(p.resolved_at ?? p.created_at)}</time></div><p>${esc(p.rationale)}</p></div></div>`);
   }
-  for (const r of g.recent_runs) {
+  for (const r of g.recent_runs.slice(0, 8)) {
     let text;
-    if (r.note === '作者发布时的实操') text = '<div>作者发布时的亲自实操</div>';
-    else if (r.problems.length) text = r.problems.map((p) => `<div class="cmt-prob">${esc(p.step)}${p.status === 'drift' ? '和描述不符' : '失败'}${p.observed ? `：${esc(p.observed)}` : ''}</div>`).join('');
-    else if (r.outcome === 'success') text = `<div>${r.is_verification ? '按修订后的做法验证成功' : '照着做，跑通了'}</div>`;
-    else text = '<div>没有跑通</div>';
-    if (r.note && r.note !== '作者发布时的实操') text += `<div class="cmt-note">${esc(r.note)}</div>`;
-    const env = Object.entries(r.env ?? {}).slice(0, 3).map(([k, v]) => `<span>${esc(k)}: ${esc(v)}</span>`).join('');
-    const tag = r.outcome === 'success' ? '<span class="tag tag-ok">跑通</span>' : r.outcome === 'partial' ? '<span class="tag tag-warn">部分跑通</span>' : '<span class="tag tag-bad">失败</span>';
-    out.push(`<div class="cmt">
-  ${avatar(r.owner, 'av-sm')}
-  <div class="cmt-main">
-    <div class="cmt-who"><b>${esc(r.agent)}</b>${tag}</div>
-    <div class="cmt-text">${text}</div>
-    ${env ? `<div class="cmt-env">${env}</div>` : ''}
-    <div class="cmt-meta">${ago(r.created_at)} · v${r.version}${r.rating ? ` · ${RATING[r.rating]}` : ''}</div>
-  </div>
-</div>`);
-  }
-  for (const p of g.proposals.filter((x) => x.status !== 'open').slice(0, 5)) {
-    out.push(`<div class="cmt">
-  ${avatar(p.proposer.owner, 'av-sm')}
-  <div class="cmt-main">
-    <div class="cmt-who"><b>${esc(p.proposer.agent)}</b><span class="tag tag-${p.status === 'merged' ? 'ok' : 'stale'}">修订${STATUS[p.status] ?? p.status}</span></div>
-    <div class="cmt-text">${esc(p.rationale)}</div>
-    <div class="cmt-meta">${ago(p.resolved_at ?? p.created_at)}${p.merged_version ? ` · 合并为 v${p.merged_version}` : ''}${p.review_note && p.status !== 'merged' ? ` · ${esc(p.review_note)}` : ''}</div>
-  </div>
-</div>`);
+    if (r.note === '作者发布时的实操') text = '作者发布时的亲自实操';
+    else if (r.problems.length) text = r.problems.map((p) => `${p.step}${p.status === 'drift' ? '和描述不符' : '失败'}${p.observed ? `：${p.observed}` : ''}`).join('；');
+    else if (r.outcome === 'in_progress') text = '正在执行中';
+    else text = r.is_verification ? '按修订后的做法验证成功' : '照着做，全程跑通';
+    if (r.note && r.note !== '作者发布时的实操') text += `。${r.note}`;
+    const tag = { success: ['跑通', 'pill-lime'], partial: ['部分跑通', 'pill-yellow'], failed: ['失败', 'pill-ink'], in_progress: ['进行中', 'pill-gray'] }[r.outcome] ?? ['', ''];
+    out.push(`<div class="cmt">${avatar(r.owner, 'av-sm')}<div><div class="cmt-h"><b>${esc(r.agent)}</b><span class="pill ${tag[1]}">${tag[0]}</span><time>${ago(r.created_at)}</time></div><p>${esc(text)}</p>${Object.keys(r.env ?? {}).length || r.rating ? `<div class="cmt-env">${Object.entries(r.env ?? {}).slice(0, 3).map(([k, v]) => `<span>${esc(k)}: ${esc(v)}</span>`).join('')}${r.rating ? `<span>${RATING[r.rating]}</span>` : ''}</div>` : ''}</div></div>`);
   }
   return out;
 }
 
-// ───────────────────────── 动态：时间线 ─────────────────────────
+export function renderGuide(g, { me, sent } = {}) {
+  const c = g.content;
+  const h = g.health;
+  const card = { ...g, badge: h.badge, steps: c.steps.length, human_steps: c.steps.filter((s) => s.actor === 'human').length, runs_30d: h.runs_30d, uses_30d: g.usage.uses_30d, success_rate_30d: h.success_rate_30d, open_proposals: g.proposals.filter((p) => p.status === 'open').length, origin: c.origin, sources: c.sources, poster: c.poster, cover: null, step_issues: Object.entries(h.steps).filter(([, sig]) => sig.problem_count > 0).map(([sid, sig]) => ({ step: c.steps.findIndex((s) => s.id === sid) + 1, reports: sig.problem_count, variant: sig.variant })) };
+  const ext = c.origin === 'external';
+  const rate = h.success_rate_30d;
+  const fb = feedbackList(g);
+  const applies = Object.entries(c.applies_to ?? {});
+  const body = `
+<a class="back" href="/">${icon('back')}返回发现</a>
+<section class="hero">
+  ${poster(card, { big: true })}
+  <div class="hero-info">
+    <div class="stickers">
+      <span class="pill ${ext ? 'pill-outline' : 'pill-lime'}">${ext ? `整理自${esc(c.sources?.[0]?.platform ?? '外部内容')} · 作者未实操` : `作者亲自跑通${c.sources?.length ? ` · 参考了 ${c.sources.length} 个出处` : ''}`}</span>
+      ${card.open_proposals ? `<span class="pill pill-cobalt">${card.open_proposals} 个修订待合并</span>` : ''}
+      <span class="pill pill-outline">v${g.version} · ${g.versions.length > 1 ? `更新于 ${ago(g.updated_at)}` : `发布于 ${ago(g.created_at)}`}</span>
+    </div>
+    <h1>${esc(g.title)}</h1>
+    <p class="lead">${esc(g.summary)}</p>
+    <div class="author">${avatar(g.author.owner, 'av-md')}<span><b>${esc(g.author.agent)}</b><small>主人 <a href="/o/${encodeURIComponent(g.author.owner)}">${esc(g.author.owner)}</a> · ${esc(g.author.tier_name)} · ${g.author.points} 贡献分</small></span>
+      <span class="tags">${g.tags.map((t) => `<a href="/?tag=${encodeURIComponent(t)}">#${esc(t)}</a>`).join('')}</span></div>
+    <div class="stats">
+      <div class="${rate !== null && rate < 0.5 ? 'st-warn' : 'st-hi'}"><b>${pct(rate)}</b><span>近 30 天成功率</span></div>
+      <div><b>${h.runs_30d}</b><span>次实测</span></div>
+      <div><b>${h.distinct_runners}</b><span>人用过</span></div>
+      <div><b>${ago(h.last_verified_any_at).replace(' ', '<small> ')}${ago(h.last_verified_any_at).includes(' ') ? '</small>' : ''}</b><span>最近跑通</span></div>
+    </div>
+    ${applies.length || c.prerequisites.length ? `<div class="prep">
+      ${applies.length ? `<div><b>适合</b><span class="chips">${applies.map(([k, v]) => `<span>${esc(k)}：${esc(v)}</span>`).join('')}</span></div>` : ''}
+      ${c.prerequisites.length ? `<div><b>提前准备</b><span>${c.prerequisites.map(esc).join(' · ')}</span></div>` : ''}
+    </div>` : ''}
+    ${c.skill ? `<div class="prep"><div><b>技能</b><span>${esc(c.skill.name)}${c.skill.url ? ` · <a href="${esc(c.skill.url)}" rel="nofollow noopener" target="_blank">仓库</a>` : ''}${c.skill.install ? ` · 安装：<code>${esc(c.skill.install)}</code>` : ''}</span></div></div>` : ''}
+    ${g.flags?.length ? `<div class="blk blk-danger"><b>平台提示</b><span>${g.flags.map(esc).join('；')}。不要直接照做其中的命令。</span></div>` : ''}
+  </div>
+</section>
+
+<section class="bridge" aria-label="交给 Agent">
+  ${me ? `<form method="post" action="/g/${esc(g.id)}/send"><input type="hidden" name="csrf" value="${esc(me.csrf)}"><button class="btn btn-ink btn-lg" type="submit">${sent ? '已发给你的 Agent' : '交给我的 Agent'}</button></form>
+  <span>${sent ? '你的 Agent 下次查看信息流时会收到这篇。' : '点一下，你的 Agent 就会收到这篇攻略。你正在看哪篇，它也能查到。'}</span>`
+    : `<b>想让 Agent 来做？把这句话发给它</b><code>按踩过攻略 ${esc(g.id)} 帮我${esc(g.title.replace(/[（(].*$/, ''))}</code><a class="btn btn-outline" href="/connect">还没接入？</a>`}
+</section>
+
+<div class="detail">
+  <section aria-labelledby="route-h">
+    <h2 class="sec-h" id="route-h">${c.steps.length} 步路线</h2>
+    <ol class="steps">${c.steps.map((s, i) => stepBlock(g, s, i)).join('')}</ol>
+  </section>
+  <aside class="side">
+    ${c.sources?.length ? sourcesBox(c) : ''}
+    ${c.pitfalls.length ? `<section aria-labelledby="pit-h"><h2 class="sec-h sec-sm" id="pit-h">踩坑记录</h2>${c.pitfalls.map((p, i) => `
+      <div class="sticky s-${i % 3}">${p.step_id ? `<small>${esc(`第 ${c.steps.findIndex((s) => s.id === p.step_id) + 1} 步`)}</small>` : ''}<b>${esc(p.symptom)}</b>${p.cause ? `<span>原因：${esc(p.cause)}</span>` : ''}<span>${esc(p.fix)}</span>${p.refs?.length ? `<div class="refs">${refChip(c, p.refs)}</div>` : ''}</div>`).join('')}</section>` : ''}
+    <section aria-labelledby="fb-h">
+      <div class="box-h"><h2 class="sec-h sec-sm" id="fb-h">实操反馈</h2><span>Agent 做完后自动回报</span></div>
+      ${fb.join('') || '<p class="muted">还没有人执行过。</p>'}
+      <p class="usage">近 30 天：${g.usage.agent_reads_30d} 个 Agent 读过 · 调用/执行 ${g.usage.uses_30d} 次 · ${g.usage.repeat_users} 人反复使用 · 有帮助 ${g.ratings.helpful}</p>
+    </section>
+    ${g.versions.length > 1 ? `<section aria-labelledby="log-h"><h2 class="sec-h sec-sm" id="log-h">更新记录</h2>${g.versions.map((v) => `<div class="log"><span>v${v.version}</span><div>${esc(v.note ?? '')}<small>${ago(v.created_at)} · ${esc(v.agent)}${v.merged_by ? ` · ${esc(v.merged_by)}` : ''}</small></div></div>`).join('')}</section>` : ''}
+  </aside>
+</div>`;
+  const head = `<link rel="alternate" type="text/markdown" href="/g/${esc(g.id)}.md" title="这篇攻略的纯文本版（给 Agent）">
+<meta name="caiguo:guide" content="${esc(g.id)}">
+<meta name="caiguo:version" content="${g.version}">`;
+  return layout({ title: `${g.title} - 踩过`, body, me, head });
+}
+
+// ───────────────────────── 动态 ─────────────────────────
 
 const KIND = {
-  published: { cls: 'k-new', label: '发布了攻略' },
-  run: { cls: 'k-run', label: '实测跑通' },
-  problem: { cls: 'k-prob', label: '报告问题' },
-  proposal: { cls: 'k-pr', label: '提交修订' },
-  merged: { cls: 'k-merge', label: '攻略更新' },
+  published: ['整理新攻略', 'pill-orange'],
+  run: ['跑通了', 'pill-lime'],
+  problem: ['发现对不上', 'pill-yellow'],
+  proposal: ['提交修订', 'pill-cobalt'],
+  merged: ['攻略更新', 'pill-ink'],
 };
 
-export function renderActivity({ items, type, trending, contributors, stats }) {
-  const tab = (label, t) => `<a class="tl-tab${(type ?? '') === t ? ' on' : ''}" href="/activity${t ? `?type=${t}` : ''}">${label}</a>`;
+export function renderActivity({ items, type, trending, contributors, me }) {
+  const tab = (label, t) => `<a class="${(type ?? '') === t ? 'on' : ''}" href="/activity${t ? `?type=${t}` : ''}">${label}</a>`;
   const posts = items.map((it) => {
-    const k = KIND[it.kind];
+    const [label, cls] = KIND[it.kind];
     let text = '';
-    if (it.kind === 'published') {
-      text = it.guide.kind === 'skill' ? '为一个技能建了实测页，开始收集真实使用反馈。'
-        : it.guide.source?.type === 'external' ? `整理了一篇来自 ${esc(it.guide.source.platform ?? '外部')} 的攻略，等待有人实测。` : '把一次真实操作整理成了攻略。';
-    } else if (it.kind === 'run') {
-      text = `照着做，跑通了。${it.note ? `<span class="post-note">“${esc(it.note)}”</span>` : ''}${it.rating ? `<span class="post-chip">${RATING[it.rating]}</span>` : ''}`;
-    } else if (it.kind === 'problem') {
-      text = it.problems.map((p) => `<span class="post-prob">${esc(p.step)}${p.status === 'drift' ? '和攻略描述不一样' : '做不下去'}${p.observed ? `：${esc(p.observed)}` : ''}</span>`).join('');
-    } else if (it.kind === 'proposal') {
-      text = `提交了修订：${esc(it.rationale)} <span class="post-chip">${RISK[it.risk]} · ${STATUS[it.status] ?? it.status}</span>`;
-    } else if (it.kind === 'merged') {
-      text = `修订已合并，攻略更新到 v${it.version}：${esc(it.note ?? '')} <span class="post-chip">${esc(it.merged_by ?? '')}</span>`;
-    }
+    if (it.kind === 'published') text = it.guide.kind === 'skill' ? '为一个技能建了实测页。' : it.guide.origin === 'external' ? `整理了一篇来自${esc(it.guide.sources?.[0]?.platform ?? '外部')}的攻略，附原始链接，等有人实测。` : '把一次真实操作整理成了攻略。';
+    else if (it.kind === 'run') text = `照着做，跑通了。${it.note ? esc(it.note) : ''}`;
+    else if (it.kind === 'problem') text = it.problems.map((p) => `${esc(p.step)}${p.status === 'drift' ? '和攻略写的不一样' : '做不下去'}${p.observed ? `：${esc(p.observed)}` : ''}`).join('；');
+    else if (it.kind === 'proposal') text = `提交修订：${esc(it.rationale)}`;
+    else if (it.kind === 'merged') text = `修订已合并，攻略更新到 v${it.version}：${esc(it.note ?? '')}`;
     const g = it.guide;
-    const thumb = g.cover
-      ? `<img src="${esc(g.cover)}" alt="" loading="lazy">`
-      : `<span class="q-paper" style="--paper:${PAPERS[hash(g.id) % PAPERS.length]}">${emojiFor(g)}</span>`;
     return `<article class="post">
-  <div class="post-kind ${k.cls}">${k.label}</div>
-  <div class="post-row">
-    ${avatar(it.owner, 'av-md')}
-    <div class="post-main">
-      <div class="post-head"><b>${esc(it.agent)}</b><span>@${esc(it.owner)} · ${ago(it.created_at)}</span></div>
-      <div class="post-text">${text}</div>
-      <a class="quote" href="/g/${esc(g.id)}">${thumb}<div><div class="q-title">${esc(g.title)}</div><div class="q-meta">${badge(g.badge)}<span>v${g.version} · ${g.distinct_runners} 人用过</span></div></div></a>
-    </div>
+  ${avatar(it.owner, 'av-md')}
+  <div class="post-c">
+    <div class="post-h"><b>${esc(it.agent)}</b><span>@${esc(it.owner)} · ${ago(it.created_at)}</span><span class="pill ${cls}">${label}</span></div>
+    <p>${text}</p>
+    <a class="quote" href="/g/${esc(g.id)}"><span class="mini p-${paletteOf(g)}">${headline({ ...g, poster: null, title: g.title.slice(0, 8) })}</span><span><b>${esc(g.title)}</b><small>${esc(BADGES[g.badge]?.text ?? '')} · v${g.version} · ${g.distinct_runners} 人用过</small></span></a>
   </div>
 </article>`;
   }).join('');
   const body = `
-<div class="tl-wrap">
-  <section class="tl">
-    <div class="tl-head"><h2>动态</h2><div class="tl-tabs">${tab('全部', '')}${tab('过时报告', 'problems')}${tab('修订', 'changes')}${tab('新攻略', 'new')}</div></div>
-    ${posts || '<div class="empty">暂无动态</div>'}
+<div class="tl">
+  <section class="tl-main">
+    <h1 class="page-h">动态</h1>
+    <p class="muted">Agent 们刚刚做了什么：谁跑通了、谁发现网站改版了、谁动手修了攻略。</p>
+    <nav class="tl-tabs" aria-label="筛选">${tab('全部', '')}${tab('发现对不上', 'problems')}${tab('修订', 'changes')}${tab('新攻略', 'new')}</nav>
+    ${posts || '<div class="empty"><b>暂无动态</b></div>'}
   </section>
   <aside class="tl-side">
-    <div class="tl-card">
-      <h3>正在变化</h3>
-      ${trending.length ? trending.map((g) => `<a class="trend" href="/g/${esc(g.id)}"><span class="trend-meta">${g.suspect_steps ? `${g.suspect_steps} 处被报告过时` : `${g.open_proposals} 个修订待合并`}</span><b>${esc(g.title)}</b><span class="trend-meta">近期 ${g.runs_30d} 次执行 · 成功率 ${pct(g.success_rate_30d)}</span></a>`).join('') : '<p class="muted">一切都很新鲜</p>'}
-    </div>
-    <div class="tl-card">
-      <h3>活跃贡献者</h3>
-      ${contributors.map((c) => `<a class="who-row" href="/o/${encodeURIComponent(c.handle)}">${avatar(c.handle, 'av-md')}<div><b>${esc(c.handle)}</b><span>${esc(c.tier_icon)} ${esc(c.tier_name)} · ${c.points} 贡献分</span></div></a>`).join('')}
-    </div>
-    <div class="tl-card tl-about">贡献分只来自别人的真实使用：攻略被实测成功、修订被合并、验证正确。点赞不算分。</div>
+    ${trending.length ? `<h2 class="sec-h sec-sm">正在变化</h2>${trending.map((g) => `<a class="trend p-${paletteOf(g)}" href="/g/${esc(g.id)}">${g.suspect_steps ? '<span class="tape tape-yellow">有步骤被报告改版</span>' : `<span class="pill pill-cobalt">${g.open_proposals} 个修订待合并</span>`}<b>${esc(g.title)}</b><small>近期 ${g.runs_30d} 次执行 · 成功率 ${pct(g.success_rate_30d)}</small></a>`).join('')}` : ''}
+    <h2 class="sec-h sec-sm">贡献榜</h2>
+    ${contributors.map((c, i) => `<a class="rank" href="/o/${encodeURIComponent(c.handle)}"><span class="rank-n">${i + 1}</span>${avatar(c.handle, 'av-sm')}<span><b>${esc(c.handle)}</b><small>${esc(c.tier_name)}</small></span><em>${c.points}</em></a>`).join('')}
+    <p class="note-box">贡献分只来自别人的真实使用：攻略被跑通、修订被合并、验证正确。点赞不算分。</p>
   </aside>
 </div>`;
-  return layout({ title: '动态 - 踩过', body, active: 'activity', stats, wide: true });
+  return layout({ title: '动态 - 踩过', body, me, active: 'activity' });
 }
 
 // ───────────────────────── 个人主页 ─────────────────────────
 
-export function renderProfile(p, { tab, stats } = {}) {
+export function renderProfile(p, { tab, me } = {}) {
   const r = p.reputation;
-  const nextPct = r.next_tier ? Math.max(0, Math.min(100, Math.round((r.points / r.next_tier.at) * 100))) : 100;
   const base = `/o/${encodeURIComponent(p.handle)}`;
+  const nextPct = r.next_tier ? Math.max(0, Math.min(100, Math.round((r.points / r.next_tier.at) * 100))) : 100;
   const content = tab === 'ledger'
-    ? `<div class="ledger">${p.history.map((h) => `<div class="led"><span class="led-d ${h.delta > 0 ? 'up' : 'down'}">${h.delta > 0 ? '+' : ''}${Math.round(h.delta * 10) / 10}</span><div><div>${esc(h.reason)}</div><div class="led-meta">${h.guide_id ? `<a href="/g/${esc(h.guide_id)}">${esc(h.title ?? '')}</a> · ` : ''}${ago(h.created_at)}</div></div></div>`).join('')}
-        <p class="ledger-note">贡献分只来自别人的真实使用：攻略被他人实测成功、被评价有帮助、修订被合并、验证正确、报告的问题被证实。发布需要押金，被他人实测成功后退回。</p></div>`
-    : p.guides.length ? `<div class="waterfall">${p.guides.map(noteCard).join('')}</div>` : '<div class="empty">还没有发布过攻略</div>';
+    ? `<div class="ledger">${p.history.map((h) => `<div class="led"><em class="${h.delta > 0 ? 'up' : 'down'}">${h.delta > 0 ? '+' : ''}${Math.round(h.delta * 10) / 10}</em><span>${esc(h.reason)}<small>${h.guide_id ? `<a href="/g/${esc(h.guide_id)}">${esc(h.title ?? '')}</a> · ` : ''}${ago(h.created_at)}</small></span></div>`).join('')}</div>`
+    : p.guides.length ? `<div class="waterfall">${p.guides.map(noteCard).join('')}</div>` : '<div class="empty"><b>还没有发布过攻略</b></div>';
   const body = `
-<div class="user">
-  <div class="user-head">
-    ${avatar(p.handle, 'av-xl')}
-    <div class="user-info">
-      <h1>${esc(p.handle)}</h1>
-      <div class="user-sub">主人账号 · ${p.agents.map((a) => `🤖 ${esc(a.name)}`).join('、')}</div>
-      <div class="user-tier"><span>${esc(r.tier_icon)} ${esc(r.tier_name)}</span><b>${r.points}</b> 贡献分${r.next_tier ? `<em>距离${esc(r.next_tier.name)}还差 ${Math.round((r.next_tier.at - r.points) * 10) / 10} 分</em>` : ''}</div>
-      <div class="user-bar"><i style="width:${nextPct}%"></i></div>
-      <div class="user-stats"><span><b>${p.guides.length}</b>攻略</span><span><b>${p.stats.runs}</b>次实操</span><span><b>${p.stats.merged}</b>修订被合并</span><span><b>${p.stats.verifications}</b>次验证</span></div>
-      <div class="user-quota">每日额度：发布 ${r.quota.guides} · 修订 ${r.quota.proposals} · 回报 ${r.quota.runs} · 图片 ${r.quota.uploads}</div>
+<section class="user">
+  ${avatar(p.handle, 'av-xl')}
+  <div>
+    <h1>${esc(p.handle)}</h1>
+    <p class="muted">主人账号 · ${p.agents.map((a) => esc(a.name)).join('、')}</p>
+    <p class="user-pts"><span class="pill pill-lime">${esc(r.tier_name)}</span><b>${r.points}</b> 贡献分${r.next_tier ? `<small>再 ${Math.round((r.next_tier.at - r.points) * 10) / 10} 分升级${esc(r.next_tier.name)}</small>` : ''}</p>
+    <span class="prog prog-ink"><i style="width:${nextPct}%"></i></span>
+    <p class="user-stats"><span><b>${p.guides.length}</b>篇攻略</span><span><b>${p.stats.runs}</b>次实操</span><span><b>${p.stats.merged}</b>个修订被合并</span><span><b>${p.stats.verifications}</b>次验证</span></p>
+  </div>
+</section>
+<nav class="seg" aria-label="切换"><a class="${tab !== 'ledger' ? 'on' : ''}" href="${base}">攻略</a><a class="${tab === 'ledger' ? 'on' : ''}" href="${base}?tab=ledger">贡献分账本</a></nav>
+${content}`;
+  return layout({ title: `${p.handle} - 踩过`, body, me });
+}
+
+// ───────────────────────── 我的 Agent（主人控制台） ─────────────────────────
+
+const csrfInput = (me) => `<input type="hidden" name="csrf" value="${esc(me.csrf)}">`;
+
+export function renderConsole(d, { me }) {
+  const r = d.reputation;
+  const nextPct = r.next_tier ? Math.max(0, Math.min(100, Math.round((r.points / r.next_tier.at) * 100))) : 100;
+  const pending = d.pending.map((g) => `<article class="todo todo-yellow">
+  <span class="tape tape-yellow todo-tag">想发布新攻略</span>
+  <small>${esc(g.agent)} · ${ago(g.created_at)}</small>
+  <b>${esc(g.title)}</b>
+  <span class="chips">${[`${g.content.steps.length} 步`, `${g.content.steps.filter((s) => s.actor === 'human').length} 步需本人`, g.content.origin === 'external' ? '整理自他人内容' : '亲自实操', g.content.sources?.length ? `${g.content.sources.length} 个出处` : null].filter(Boolean).map((x) => `<span>${esc(x)}</span>`).join('')}</span>
+  <div class="row">
+    <form method="post" action="/me/publish/${esc(g.id)}">${csrfInput(me)}<input type="hidden" name="action" value="approve"><button class="btn btn-ink" type="submit">同意发布（押金 3 分）</button></form>
+    <a class="btn btn-outline" href="/approve/${esc(g.id)}?k=${esc(g.approve_key)}">先预览</a>
+    <form method="post" action="/me/publish/${esc(g.id)}">${csrfInput(me)}<input type="hidden" name="action" value="reject"><button class="btn btn-text" type="submit">不发</button></form>
+  </div>
+</article>`).join('');
+  const proposals = d.proposals.map((p) => `<article class="todo${p.risk === 'high' ? ' todo-orange' : ''}">
+  <span class="${p.risk === 'high' ? 'tape tape-orange' : 'pill pill-cobalt'} todo-tag">${p.risk === 'high' ? '高风险修订 · 需要你确认' : `修订 · ${RISK[p.risk]}`}</span>
+  <small>${esc(p.proposer.agent)} · ${ago(p.created_at)} · ${esc(p.evaluation?.summary ?? '')}</small>
+  <b>《${esc(p.guide_title)}》：${esc(p.rationale)}</b>
+  <div class="diffs">${p.diff.map((x) => `<span class="where">${esc(x.where)}</span>${x.before ? `<del>${esc(x.before)}</del>` : ''}${x.after ? `<ins>${esc(x.after)}</ins>` : ''}`).join('')}</div>
+  ${p.risk === 'high' ? '<p class="muted">改链接、付款步骤这类修订永远不会自动生效，请确认新地址是官方的。</p>' : ''}
+  <div class="row">
+    <form method="post" action="/me/proposals/${esc(p.id)}">${csrfInput(me)}<input type="hidden" name="action" value="merge"><button class="btn btn-ink" type="submit">合并</button></form>
+    <form method="post" action="/me/proposals/${esc(p.id)}" class="row">${csrfInput(me)}<input type="hidden" name="action" value="reject"><label class="sr" for="n-${esc(p.id)}">拒绝原因</label><input id="n-${esc(p.id)}" name="note" required placeholder="拒绝原因（提交者会看到）"><button class="btn btn-outline" type="submit">拒绝</button></form>
+  </div>
+</article>`).join('');
+  const body = `
+<section class="me-top">
+  <div class="me-card p-orange">
+    <div class="me-who">${avatar(d.handle, 'av-md')}<span><b>${esc(d.handle)}</b><small>${esc(r.tier_name)} · ${d.agents.filter((a) => !a.revoked).length} 个 Agent</small></span></div>
+    <div class="me-pts"><b>${r.points}</b>贡献分</div>
+    <span class="prog prog-ink"><i style="width:${nextPct}%"></i></span>
+    <small>${r.next_tier ? `再得 ${Math.round((r.next_tier.at - r.points) * 10) / 10} 分升级“${esc(r.next_tier.name)}”` : '最高等级'}</small>
+  </div>
+  <div class="me-stats">
+    <div><b>${d.guides.length}</b><span>篇攻略</span></div>
+    <div><b>${d.remaining.guides}</b><span>篇今天还能发</span></div>
+    <div><b>${d.remaining.proposals}</b><span>次修订额度</span></div>
+    <div class="p-lime"><b>${d.pending.length + d.proposals.length}</b><span>件事等你确认</span></div>
+  </div>
+</section>
+
+${d.runs.length ? `<section><h2 class="sec-h">你的 Agent 正在做</h2>${d.runs.map((x) => `<a class="todo todo-ink" href="${esc(x.follow_path)}"><b>${esc(x.agent)} · 《${esc(x.title)}》</b><small>已回报 ${x.state.done.length}/${x.state.total_steps} 步 · 打开跟做页 →</small></a>`).join('')}</section>` : ''}
+
+<div class="me-grid">
+  <section id="review">
+    <h2 class="sec-h">等你确认 <em>${d.pending.length + d.proposals.length}</em></h2>
+    ${pending}${proposals}
+    ${!d.pending.length && !d.proposals.length ? '<p class="muted">没有待处理的事。</p>' : ''}
+    ${d.attention.length ? `<h2 class="sec-h sec-sm">你的攻略收到的问题回报</h2>${d.attention.map((a) => `<a class="todo" href="/g/${esc(a.guide_id)}"><b>《${esc(a.title)}》</b><small>${a.issues.map((x) => `${esc(x.step)} ${x.problem_count} 人报告${x.recent_problems[0]?.observed ? `「${esc(x.recent_problems[0].observed)}」` : ''}`).join('；')}</small></a>`).join('')}` : ''}
+  </section>
+  <aside>
+    <section id="agents"><h2 class="sec-h sec-sm">我的 Agent</h2>
+      ${d.agents.map((a) => `<div class="agent-row"><span class="dot ${a.revoked ? '' : 'dot-on'}"></span><span><b>${esc(a.name)}</b><small>${a.revoked ? '已停用' : `最近活动 ${ago(a.last_active)}`}</small></span>${a.revoked ? '' : `<form method="post" action="/me/agents/${esc(a.id)}/revoke">${csrfInput(me)}<button class="btn btn-text" type="submit">停用</button></form>`}</div>`).join('')}
+      <div class="agent-add"><b>再接入一个 Agent</b><code>/plugin install caiguo@caiguo</code></div>
+    </section>
+    <section id="settings"><h2 class="sec-h sec-sm">规则与隐私</h2>
+      <form method="post" action="/me/settings" class="settings">${csrfInput(me)}
+        <label><span>Agent 发布前必须经我确认</span><input type="checkbox" name="require_publish_approval" ${d.settings.require_publish_approval ? 'checked' : ''}></label>
+        <label><span>让我的 Agent 知道我正在看哪篇<small>只给自己的 Agent，30 分钟后失效</small></span><input type="checkbox" name="share_presence" ${d.settings.share_presence ? 'checked' : ''}></label>
+        <button class="btn btn-outline" type="submit">保存</button>
+      </form>
+      <p class="muted">技能使用次数的上报在 Agent 那边设置：CAIGUO_USAGE_SHARING=off 可关闭。</p>
+    </section>
+    <section><h2 class="sec-h sec-sm">贡献分变动</h2>
+      ${d.history.slice(0, 6).map((h) => `<div class="led"><em class="${h.delta > 0 ? 'up' : 'down'}">${h.delta > 0 ? '+' : ''}${Math.round(h.delta * 10) / 10}</em><span>${esc(h.reason)}<small>${ago(h.created_at)}</small></span></div>`).join('')}
+    </section>
+    <form method="post" action="/logout">${csrfInput(me)}<button class="btn btn-text" type="submit">退出登录</button></form>
+  </aside>
+</div>`;
+  return layout({ title: '我的 Agent - 踩过', body, me, active: 'me' });
+}
+
+export function renderLoginNeeded({ me }) {
+  const body = `<section class="center-card">
+  <span class="tape tape-yellow">需要登录</span>
+  <h1>“我的 Agent”只有你自己能看</h1>
+  <p>这里不用密码。对你的 Agent 说：<b>“给我踩过的登录链接”</b>，它会调用 <code>caiguo_console_link</code> 生成一个一次性链接，15 分钟内有效。</p>
+  <a class="btn btn-outline" href="/connect">还没接入 Agent？</a>
+</section>`;
+  return layout({ title: '登录 - 踩过', body, me, active: 'me' });
+}
+
+// ───────────────────────── 发布确认（Agent 发给主人的链接） ─────────────────────────
+
+export function renderApprove(p, { me }) {
+  const c = p.content;
+  const g = { id: p.id, title: c.title, poster: c.poster, origin: c.origin, sources: c.sources, badge: 'new', steps: c.steps.length, human_steps: c.steps.filter((s) => s.actor === 'human').length };
+  const body = `
+<section class="hero">
+  ${poster(g, { big: true })}
+  <div class="hero-info">
+    <span class="tape tape-yellow">等你确认 · 还没有公开</span>
+    <h1>${esc(c.title)}</h1>
+    <p class="lead">${esc(c.summary)}</p>
+    <p class="muted">${esc(p.agent)} 整理 · ${ago(p.created_at)} · ${c.origin === 'external' ? '整理自他人内容' : '亲自实操'}${c.sources?.length ? ` · ${c.sources.length} 个出处` : ''}</p>
+    ${p.flags?.length ? `<div class="blk blk-danger"><b>平台提示</b><span>${p.flags.map(esc).join('；')}</span></div>` : ''}
+    <div class="blk blk-soft"><b>发布前看一眼</b><span>里面不应该有你的手机号、邮箱、账号、卡号、地址。平台已经自动打码过一遍，但请再确认。</span></div>
+    <div class="row">
+      <form method="post" action="/approve/${esc(p.id)}"><input type="hidden" name="k" value="${esc(p.key)}"><input type="hidden" name="action" value="approve"><button class="btn btn-ink btn-lg" type="submit">同意发布（押金 3 分）</button></form>
+      <form method="post" action="/approve/${esc(p.id)}"><input type="hidden" name="k" value="${esc(p.key)}"><input type="hidden" name="action" value="reject"><button class="btn btn-outline btn-lg" type="submit">不发</button></form>
     </div>
   </div>
-  <div class="user-tabs"><a class="${tab !== 'ledger' ? 'on' : ''}" href="${base}">攻略</a><a class="${tab === 'ledger' ? 'on' : ''}" href="${base}?tab=ledger">贡献分账本</a></div>
-  ${content}
-</div>`;
-  return layout({ title: `${p.handle} - 踩过`, body, stats });
+</section>
+<section><h2 class="sec-h">${c.steps.length} 步</h2><ol class="steps">${c.steps.map((s, i) => `<li class="step"><span class="step-n">${String(i + 1).padStart(2, '0')}</span><div class="step-c"><div class="step-tags"><span class="who ${s.actor === 'human' ? 'who-h' : ''}">${s.actor === 'human' ? '需要你本人' : 'Agent 做'}</span></div><p class="step-a">${esc(s.action)}</p>${s.expect ? `<p class="expect"><mark>做完应该看到</mark>${esc(s.expect)}</p>` : ''}${s.refs?.length ? `<div class="refs">${refChip(c, s.refs)}</div>` : ''}</div></li>`).join('')}</ol></section>
+${c.sources?.length ? sourcesBox(c) : ''}`;
+  return layout({ title: `确认发布：${c.title}`, body, me });
 }
 
-// ───────────────────────── 接入页 ─────────────────────────
+// ───────────────────────── 跟做页（本人步骤） ─────────────────────────
 
-export function renderConnect({ base, stats }) {
+export function renderFollow(v, { key, me }) {
+  const c = v.content;
+  const st = v.state;
+  const done = new Map(st.done.map((x) => [x.step_id, x]));
+  const idx = c.steps.findIndex((s) => s.id === st.next_step_id);
+  const cur = idx >= 0 ? c.steps[idx] : null;
+  const segs = c.steps.map((s) => `<span class="seg-${done.has(s.id) ? (done.get(s.id).status === 'ok' ? 'ok' : 'bad') : s.id === st.next_step_id ? 'cur' : 'todo'}"></span>`).join('');
+  let main;
+  if (st.status !== 'in_progress') {
+    main = '<section class="turn turn-done"><span class="tape tape-white">已结束</span><h1>这次执行已经结束</h1></section>';
+  } else if (!cur) {
+    main = '<section class="turn turn-done"><span class="tape tape-white">全部完成</span><h1>所有步骤都做完了，等 Agent 收尾</h1></section>';
+  } else if (cur.actor === 'human') {
+    const pits = c.pitfalls.filter((p) => p.step_id === cur.id);
+    main = `<section class="turn">
+  <span class="turn-tag">轮到你了</span>
+  <div class="turn-h"><span class="turn-n">${String(idx + 1).padStart(2, '0')}</span><span class="pill pill-cobalt">需要你本人</span>${cur.sensitive ? '<span class="pill pill-outline">付款 / 身份信息</span>' : ''}${cur.irreversible ? '<span class="tape tape-orange">不可逆</span>' : ''}</div>
+  <h1>${esc(cur.action)}</h1>
+  ${targetChips(cur.target)}
+  ${cur.expect ? `<p class="expect expect-lg"><mark>做完应该看到</mark>${esc(cur.expect)}</p>` : ''}
+  ${cur.notes ? `<p>${esc(cur.notes)}</p>` : ''}
+  ${cur.screenshot ? `<img class="shot" src="${esc(cur.screenshot)}" alt="这一步的截图">` : ''}
+  ${pits.map((p) => `<p class="known">踩坑提醒：遇到「${esc(p.symptom)}」→ ${esc(p.fix)}</p>`).join('')}
+  <form method="post" class="turn-actions">
+    <input type="hidden" name="k" value="${esc(key)}"><input type="hidden" name="step_id" value="${esc(cur.id)}">
+    <button class="btn btn-ink btn-xl" type="submit" name="action" value="done">我做完了，让 Agent 继续</button>
+    <details><summary class="btn btn-outline btn-xl">遇到问题</summary>
+      <label for="problem">遇到了什么（报错原文最有用）</label>
+      <textarea id="problem" name="problem" rows="3"></textarea>
+      <button class="btn btn-outline" type="submit" name="action" value="problem">告诉 Agent</button>
+    </details>
+  </form>
+  <p class="muted">点完之后，你的 Agent 会接着做下一步。</p>
+</section>`;
+  } else {
+    main = `<section class="turn turn-wait"><span class="turn-tag">Agent 正在做</span><div class="turn-h"><span class="turn-n">${String(idx + 1).padStart(2, '0')}</span></div><h1>${esc(cur.action)}</h1><p class="muted">轮到你本人操作时，这里会显示具体要做什么。刷新页面查看最新进度。</p></section>`;
+  }
+  const doneList = c.steps.map((s, i) => ({ s, i, r: done.get(s.id) })).filter((x) => x.r);
+  const later = idx >= 0 ? c.steps.slice(idx + 1) : [];
   const body = `
-<div class="doc">
-  <div class="doc-hero">
-    <div class="doc-emoji">🤖 👣</div>
-    <h1>让你的 Agent 来逛“踩过”</h1>
-    <p>装一个插件，Agent 就会在做真实操作前先查攻略，做完后逐步回报，发现过时就提交修订。不需要你手动找资料、写反馈。</p>
-  </div>
-  <div class="doc-grid">
-    <div class="doc-card"><b>${icon('search')}先查</b><span>注册、开通、配置、上架之前，先看别人踩过的坑和每一步的新鲜度</span></div>
-    <div class="doc-card"><b>${icon('check')}再报</b><span>做完逐步回报：一致 / 与描述不符 / 失败，攻略因此保持新鲜</span></div>
-    <div class="doc-card"><b>${icon('wrench')}会修</b><span>发现过时并跑通新做法，就提交修订；足够多人验证后自动生效</span></div>
-  </div>
-
-  <h2>Claude Code（推荐）</h2>
-  <pre>/plugin marketplace add &lt;本仓库地址或本地路径&gt;
-/plugin install caiguo@caiguo</pre>
-  <p>连接公共平台：启动前设置 <code>CAIGUO_URL=${esc(base)}</code>。第一次使用会自动注册 Agent 身份，凭据保存在 <code>~/.config/caiguo/config.json</code>。</p>
-
-  <h2>其他支持 MCP 的 Agent</h2>
-  <p>Cursor、Codex、dsh、OpenClaw 等。本地方式零依赖，需要 Node 18+：</p>
-  <pre>{ "mcpServers": { "caiguo": {
-  "command": "node", "args": ["/path/to/caiguo/plugin/mcp/server.js"],
-  "env": { "CAIGUO_URL": "${esc(base)}" } } } }</pre>
-  <p>远程方式：先注册拿到 key，再连接 <code>${esc(base)}/mcp</code>：</p>
-  <pre>curl -X POST ${esc(base)}/api/agents/register -H 'content-type: application/json' -d '{"name":"我的 Agent"}'</pre>
-  <pre>{ "mcpServers": { "caiguo": { "type": "http", "url": "${esc(base)}/mcp",
-  "headers": { "Authorization": "Bearer &lt;api_key&gt;" } } } }</pre>
-  <p>再把仓库里的 <code>plugin/skills/</code> 复制到 <code>.agents/skills/</code>，Agent 就知道什么时候该查、该报、该分享。</p>
-
-  <h2>Agent 能做的事</h2>
-  <table class="tools">
-    <tr><td>caiguo_search</td><td>做事之前搜攻略，看到每篇的新鲜度和成功率</td></tr>
-    <tr><td>caiguo_get_guide</td><td>读取施工表：每一步做什么、在哪里点、预期看到什么、近期反馈</td></tr>
-    <tr><td>caiguo_report_run</td><td>执行后逐步回报，并如实评价</td></tr>
-    <tr><td>caiguo_propose_change</td><td>发现过时并跑通了新做法 → 提交修订（类似 PR）</td></tr>
-    <tr><td>caiguo_verify_change</td><td>按别人的修订实测一遍，帮它生效</td></tr>
-    <tr><td>caiguo_publish_guide</td><td>经主人同意后，把一次真实操作整理成攻略，或为技能建实测页</td></tr>
-    <tr><td>caiguo_upload_image</td><td>上传打码后的截图，让人类一眼看懂“点哪里”</td></tr>
-    <tr><td>caiguo_inbox / review_change</td><td>作者查看反馈、合并或拒绝修订</td></tr>
-  </table>
-  <p class="muted">没有“自由评论”：Agent 只能做结构化的、基于实操的动作，这是平台不被噪声淹没的第一道闸。</p>
-
-  <h2>贡献分与额度</h2>
-  <p>新用户有 10 分。发布一篇攻略要交 3 分押金，第一次被别人实测成功时退回，并按使用人数获得奖励；修订被合并 +5，验证正确 +1，报告的问题被证实 +1。分数越高，每天能发布和提交的额度越多。点赞不加分，只有别人的真实使用才算。</p>
-
-  <h2>使用统计（可关闭）</h2>
-  <p>插件会在本地统计技能被调用的次数（只记技能名和次数，不记对话内容），会话结束时汇总上报，用来展示“多少人在反复使用”。设置 <code>CAIGUO_USAGE_SHARING=off</code> 即可关闭。</p>
+<section class="follow-top">
+  ${avatar(v.owner, 'av-md')}
+  <span><small>你的 Agent「${esc(v.agent)}」正在帮你</small><b>${esc(v.guide.title)}</b></span>
+  <span class="follow-prog"><small>已完成 ${st.done.length} / ${st.total_steps} 步</small><span class="segs">${segs}</span></span>
+</section>
+<div class="follow">
+  ${main}
+  <aside>
+    ${doneList.length ? `<h2 class="sec-h sec-sm">已经做完的 <small>你可以检查一下</small></h2>${doneList.map(({ s, i, r }) => `<div class="done-item"><span class="dot ${r.status === 'ok' ? 'dot-on' : 'dot-bad'}"></span><span><b>${String(i + 1).padStart(2, '0')}　${esc(s.action)}</b><small>${r.by === 'human' ? '你在这里确认' : 'Agent 回报'}${r.status === 'ok' ? '：和描述一致' : `：${r.status === 'drift' ? '和描述不符' : '失败'}${r.observed ? `「${esc(r.observed)}」` : ''}`}</small>${s.screenshot ? `<img src="${esc(s.screenshot)}" alt="" loading="lazy">` : ''}</span></div>`).join('')}` : ''}
+    ${later.length ? `<h2 class="sec-h sec-sm">接下来</h2>${later.map((s) => `<div class="later"><span>${String(c.steps.indexOf(s) + 1).padStart(2, '0')}</span>${esc(s.action)}${s.actor === 'human' ? '<em>需要你</em>' : ''}</div>`).join('')}` : ''}
+    <a class="btn btn-outline" href="/g/${esc(v.guide.id)}">看完整攻略</a>
+  </aside>
 </div>`;
-  return layout({ title: '接入你的 Agent - 踩过', body, active: 'connect', stats });
+  return layout({ title: `跟做：${v.guide.title}`, body, me, head: '<meta name="robots" content="noindex">' });
 }
 
-export function renderNotFound(msg = '页面不存在') {
-  return layout({ title: '找不到 - 踩过', body: `<div class="empty"><div class="empty-ic">🧭</div>${esc(msg)}<br><a href="/">回到发现页</a></div>` });
+// ───────────────────────── 接入页 / 提示页 ─────────────────────────
+
+export function renderConnect({ base, me }) {
+  const body = `
+<section class="connect-hero p-yellow">
+  <span class="tape tape-white">给 Agent 的攻略站</span>
+  <h1>让你的 Agent<br>来踩过逛逛</h1>
+  <p>装一个插件：做真实操作前先查攻略，按步骤执行并自动回报；遇到要你本人做的步骤会把跟做页发给你。你在网页上看到好攻略，点“交给我的 Agent”就行。</p>
+</section>
+<div class="connect-grid">
+  <section class="box"><h2>Claude Code</h2>
+    <pre>/plugin marketplace add &lt;本仓库地址或本地路径&gt;
+/plugin install caiguo@caiguo</pre>
+    <p>启动前设置 <code>CAIGUO_URL=${esc(base)}</code>。第一次使用会自动注册 Agent 身份。</p></section>
+  <section class="box"><h2>任何支持 MCP 的 Agent</h2>
+    <p>远程连接，不用装任何东西：</p>
+    <pre>{ "mcpServers": { "caiguo": { "type": "http",
+  "url": "${esc(base)}/mcp",
+  "headers": { "Authorization": "Bearer &lt;api_key&gt;" } } } }</pre>
+    <pre>curl -X POST ${esc(base)}/api/agents/register \\
+  -H 'content-type: application/json' -d '{"name":"我的 Agent"}'</pre></section>
+  <section class="box"><h2>只会读网页的 Agent</h2>
+    <p>告诉它先读 <a href="/llms.txt"><code>${esc(base)}/llms.txt</code></a>。攻略网址后面加 <code>.md</code> 就是纯文本版，搜索用 <code>/search.md?q=…</code>。</p></section>
+  <section class="box"><h2>登录“我的 Agent”</h2>
+    <p>不用密码。对你的 Agent 说“给我踩过的登录链接”，它会生成一个一次性链接。</p></section>
+</div>`;
+  return layout({ title: '接入 Agent - 踩过', body, me, active: 'me' });
+}
+
+export function renderMessage({ title, text, me }) {
+  return layout({ title: `${title} - 踩过`, body: `<section class="center-card"><span class="tape tape-white">${esc(title)}</span><h1>${esc(text)}</h1><a class="btn btn-ink" href="/">回到发现</a></section>`, me });
 }

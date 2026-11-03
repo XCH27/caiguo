@@ -88,6 +88,16 @@ export class HttpClient {
   verify(pid, body) { return this.request('POST', `/api/proposals/${encodeURIComponent(pid)}/verifications`, body); }
   review(pid, body) { return this.request('POST', `/api/proposals/${encodeURIComponent(pid)}/review`, body); }
   inbox() { return this.request('GET', '/api/inbox'); }
+  start(guideId, env) { return this.request('POST', '/api/runs', { guide_id: guideId, env }); }
+  next(runId, body) { return this.request('POST', `/api/runs/${encodeURIComponent(runId)}/steps`, body); }
+  runState(runId) { return this.request('GET', `/api/runs/${encodeURIComponent(runId)}`); }
+  finish(runId, body) { return this.request('POST', `/api/runs/${encodeURIComponent(runId)}/finish`, body); }
+  feed({ kind, since, limit }) {
+    const qs = new URLSearchParams({ kind: kind ?? 'mine', limit: String(limit ?? 10) });
+    if (since) qs.set('since', since);
+    return this.request('GET', `/api/feed?${qs}`);
+  }
+  consoleLink() { return this.request('POST', '/api/login-links', {}); }
 
   // 图文攻略：本地插件可以直接读取截图文件上传（远程 MCP 则传 base64）
   async upload({ file_path, data, mime }) {

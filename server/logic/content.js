@@ -1,6 +1,8 @@
 // 攻略内容（“施工表”）的结构定义、校验与规范化。
 //
-// 一篇攻略 = 元信息 + 适用条件 + 准备材料 + 步骤 + 坑点 + 来源。
+// 一篇攻略 = 元信息 + 适用条件 + 准备材料 + 步骤 + 坑点 + 出处。
+// 出处（sources）：攻略参考了哪些视频、帖子、文章、论文、官方文档；每一步和坑点都可以用
+// refs 标注“出自第几个出处的哪个位置”（如视频 08:15），让读的人和 Agent 都能回到原文核对。
 // 步骤是给 Agent 照着做的最小单位，每一步有稳定的 id（s1、s2…），
 // 反馈和修订都精确指向某一步，就像 GitHub 的行内评论。
 
@@ -13,7 +15,8 @@ export class ValidationError extends Error {
 
 const LIMITS = { title: 80, summary: 400, text: 2000, steps: 80, pitfalls: 50, tags: 8, prereq: 20 };
 
-const STEP_FIELDS = ['actor', 'action', 'target', 'expect', 'irreversible', 'sensitive', 'notes', 'screenshot', 'branches'];
+const STEP_FIELDS = ['actor', 'action', 'target', 'expect', 'irreversible', 'sensitive', 'notes', 'screenshot', 'branches', 'refs'];
+export const SOURCE_TYPES = { video: '视频', post: '帖子', article: '文章', paper: '论文', doc: '官方文档', repo: '代码仓库', other: '其他' };
 const TARGET_FIELDS = ['url', 'app', 'role', 'name', 'text', 'selector', 'shortcut'];
 
 function str(v, field, max, required = false) {
@@ -86,6 +89,7 @@ export function normalizeStep(s, field, { partial = false } = {}) {
     if (!Array.isArray(s.branches) || s.branches.length > 10) throw new ValidationError(`${field}.branches 必须是数组（最多 10 项）`);
     out.branches = s.branches.map((b, i) => normalizeBranch(b, `${field}.branches[${i}]`));
   }
+  if (s.refs !== undefined) out.refs = normalizeRefs(s.refs, `${field}.refs`);
   // 付款、实名、验证码等敏感步骤默认交给人类
   if (out.sensitive && out.actor === undefined && !partial) out.actor = 'human';
   return out;
@@ -99,28 +103,63 @@ export function normalizeBranch(b, field) {
 export function normalizePitfall(p, field) {
   if (!p || typeof p !== 'object') throw new ValidationError(`${field} 必须是对象`);
   return {
-    step_id: str(p.step_id, `${field}.step_id`, 20),
+    step_id: p.step_id === undefined || p.step_id === null ? undefined : str(String(p.step_id), `${field}.step_id`, 20),
     symptom: str(p.symptom, `${field}.symptom`, 500, true),
     cause: str(p.cause, `${field}.cause`, 500),
     fix: str(p.fix, `${field}.fix`, 1000, true),
+    refs: p.refs === undefined ? undefined : normalizeRefs(p.refs, `${field}.refs`),
   };
 }
 
-export function normalizeSource(src) {
-  if (src === undefined || src === null) return { type: 'firsthand' };
-  if (typeof src !== 'object') throw new ValidationError('source 必须是对象');
-  const type = src.type ?? 'firsthand';
-  if (type !== 'firsthand' && type !== 'external') throw new ValidationError('source.type 只能是 firsthand（亲自实操）或 external（整理自外部内容）');
-  const out = { type };
-  out.url = str(src.url, 'source.url', 500);
-  out.platform = str(src.platform, 'source.platform', 40);
-  out.author = str(src.author, 'source.author', 80);
-  out.note = str(src.note, 'source.note', 500);
-  if (type === 'external' && !out.url) throw new ValidationError('整理自外部内容的攻略必须给出原始链接 source.url，并注明原作者');
-  if (out.url && !/^https?:\/\//i.test(out.url)) throw new ValidationError('source.url 必须以 http(s):// 开头');
-  for (const k of Object.keys(out)) if (out[k] === undefined) delete out[k];
-  return out;
+// 引用：[{ source: 出处序号(从 1 开始), at: "08:15" / "第 3 段" / "p.4" }]
+export function normalizeRefs(v, field) {
+  if (!Array.isArray(v) || v.length > 5) throw new ValidationError(`${field} 必须是数组（最多 5 项）`);
+  return v.map((r, i) => {
+    const n = Number(r?.source);
+    if (!Number.isInteger(n) || n < 1) throw new ValidationError(`${field}[${i}].source 必须是出处序号（从 1 开始）`);
+    return clean({ source: n, at: str(r.at, `${field}[${i}].at`, 40) });
+  });
 }
+
+export function normalizeSourceList(list, field = 'sources') {
+  if (list === undefined || list === null) return [];
+  if (!Array.isArray(list) || list.length > 20) throw new ValidationError(`${field} 必须是数组（最多 20 项）`);
+  return list.map((x, i) => {
+    if (!x || typeof x !== 'object') throw new ValidationError(`${field}[${i}] 必须是对象`);
+    const type = x.type ?? 'other';
+    if (!SOURCE_TYPES[type]) throw new ValidationError(`${field}[${i}].type 只能是：${Object.keys(SOURCE_TYPES).join(' / ')}`);
+    const url = str(x.url, `${field}[${i}].url`, 500, true);
+    if (!/^https?:\/\//i.test(url)) throw new ValidationError(`${field}[${i}].url 必须以 http(s):// 开头`);
+    return clean({
+      n: i + 1, type, url,
+      platform: str(x.platform, `${field}[${i}].platform`, 40),
+      title: str(x.title, `${field}[${i}].title`, 200),
+      author: str(x.author, `${field}[${i}].author`, 80),
+      note: str(x.note, `${field}[${i}].note`, 300),
+    });
+  });
+}
+
+// origin：firsthand = 作者亲自实操过（可以同时参考了出处）；external = 只是整理别人的内容，自己没做过。
+// 兼容旧格式 source: { type, url, platform, author }。
+export function normalizeOrigin(input) {
+  let origin = input.origin;
+  let sources = normalizeSourceList(input.sources);
+  const legacy = input.source;
+  if (legacy && typeof legacy === 'object') {
+    origin = origin ?? legacy.type;
+    if (legacy.url && !sources.some((x) => x.url === legacy.url)) {
+      sources = normalizeSourceList([{ type: /b站|youtube|bilibili|视频/i.test(legacy.platform ?? '') ? 'video' : 'post', url: legacy.url, platform: legacy.platform, author: legacy.author, note: legacy.note }, ...sources.map(({ n, ...x }) => x)]);
+    }
+  }
+  origin = origin ?? 'firsthand';
+  if (origin !== 'firsthand' && origin !== 'external') throw new ValidationError('origin 只能是 firsthand（亲自实操过）或 external（整理自别人的内容，自己没做过）');
+  if (origin === 'external' && sources.length === 0) throw new ValidationError('整理自别人内容的攻略必须在 sources 里注明原始链接和作者');
+  const first = sources[0];
+  const source = origin === 'external' ? clean({ type: 'external', url: first.url, platform: first.platform, author: first.author }) : { type: 'firsthand' };
+  return { origin, sources, source };
+}
+
 
 // 技能（Skill）的实测页：技能本身在 GitHub 等处，平台记录它在真实使用中的表现
 export function normalizeSkill(sk) {
@@ -143,6 +182,7 @@ export function normalizeNewGuide(input) {
 
   const kind = input.kind ?? 'guide';
   if (kind !== 'guide' && kind !== 'skill') throw new ValidationError('kind 只能是 guide（实操攻略）或 skill（技能的实测页）');
+  const { origin, sources, source } = normalizeOrigin(input);
   const content = {
     kind,
     title: str(input.title, 'title', LIMITS.title, true),
@@ -152,7 +192,10 @@ export function normalizeNewGuide(input) {
     prerequisites: strList(input.prerequisites, 'prerequisites', LIMITS.prereq, 300),
     steps: [],
     pitfalls: [],
-    source: normalizeSource(input.source),
+    origin,
+    sources,
+    source,
+    poster: str(input.poster, 'poster', 40),
     seq: { step: 0, pitfall: 0 },
   };
   if (kind === 'skill') content.skill = normalizeSkill(input.skill);
@@ -167,7 +210,18 @@ export function normalizeNewGuide(input) {
     content.pitfalls.push(clean({ id: `p${++content.seq.pitfall}`, ...n }));
   }
   content.steps = content.steps.map(clean);
-  return content;
+  checkRefs(content);
+  return clean(content);
+}
+
+// 引用的出处序号必须存在
+export function checkRefs(content) {
+  const max = content.sources?.length ?? 0;
+  const check = (refs, where) => {
+    for (const r of refs ?? []) if (r.source > max) throw new ValidationError(`${where} 引用了第 ${r.source} 个出处，但 sources 里只有 ${max} 个`);
+  };
+  content.steps.forEach((s, i) => check(s.refs, `第 ${i + 1} 步`));
+  content.pitfalls.forEach((p, i) => check(p.refs, `坑点 ${i + 1}`));
 }
 
 // 修订里的 update_meta 使用：只校验给出的字段
@@ -178,6 +232,8 @@ export function normalizeMeta(set) {
   if ('tags' in set) out.tags = strList(set.tags, 'tags', LIMITS.tags, 20);
   if ('prerequisites' in set) out.prerequisites = strList(set.prerequisites, 'prerequisites', LIMITS.prereq, 300);
   if ('applies_to' in set) out.applies_to = plainObject(set.applies_to, 'applies_to');
+  if ('sources' in set) out.sources = normalizeSourceList(set.sources);
+  if ('poster' in set) out.poster = str(set.poster, 'poster', 40);
   return out;
 }
 

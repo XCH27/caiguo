@@ -134,13 +134,47 @@ CREATE TABLE IF NOT EXISTS uploads (
   data BLOB NOT NULL,
   created_at TEXT NOT NULL
 );
+-- 主人登录：Agent 生成一次性登录链接，主人点开后得到网页会话（不需要密码）
+CREATE TABLE IF NOT EXISTS login_tokens (
+  token_hash TEXT PRIMARY KEY,
+  owner_id TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  used INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS web_sessions (
+  id_hash TEXT PRIMARY KEY,
+  owner_id TEXT NOT NULL,
+  csrf TEXT NOT NULL,
+  expires_at TEXT NOT NULL
+);
+-- 共享上下文：主人（登录状态）正在网页上看哪篇，只给他自己的 Agent 看，30 分钟后失效
+CREATE TABLE IF NOT EXISTS presence (
+  owner_id TEXT NOT NULL,
+  guide_id TEXT NOT NULL,
+  viewed_at TEXT NOT NULL,
+  PRIMARY KEY (owner_id, guide_id)
+);
 `;
+
+// 给旧数据库补列（CREATE TABLE IF NOT EXISTS 不会改已有表）
+const COLUMNS = [
+  ['owners', 'settings', "TEXT NOT NULL DEFAULT '{}'"],
+  ['agents', 'revoked', 'INTEGER NOT NULL DEFAULT 0'],
+  ['guides', 'status', "TEXT NOT NULL DEFAULT 'published'"],
+  ['guides', 'approve_key', 'TEXT'],
+  ['runs', 'session_key', 'TEXT'],
+  ['runs', 'finished_at', 'TEXT'],
+];
 
 export function openDb(path = ':memory:') {
   if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
   const db = new DatabaseSync(path);
   db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
   db.exec(SCHEMA);
+  for (const [table, col, ddl] of COLUMNS) {
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+    if (!cols.includes(col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${ddl}`);
+  }
   return db;
 }
 

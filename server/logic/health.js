@@ -10,16 +10,20 @@ const LOOKBACK_DAYS = 60;
 const PROBLEM = new Set(['failed', 'drift']);
 
 export function computeHealth({ guide, content, version, runs, now = Date.now() }) {
+  // 步骤信号用所有回报（包括还在执行中的），成功率等统计只用已结束的执行
   const counted = runs.filter((r) => r.version !== null && r.version !== undefined);
-  const current = counted.filter((r) => r.version === version);
+  const finished = counted.filter((r) => r.outcome !== 'in_progress');
+  const current = finished.filter((r) => r.version === version);
 
-  const successAny = counted.filter((r) => r.outcome === 'success');
+  const successAny = finished.filter((r) => r.outcome === 'success');
   const successCurrent = current.filter((r) => r.outcome === 'success');
   const lastVerifiedAt = maxTime(successCurrent) ?? null;
   const lastVerifiedAnyAt = maxTime(successAny) ?? null;
 
-  const recent = counted.filter((r) => now - t(r.created_at) <= 30 * DAY);
+  const recent = finished.filter((r) => now - t(r.created_at) <= 30 * DAY);
   const recentOk = recent.filter((r) => r.outcome === 'success').length;
+  const recentPartial = recent.filter((r) => r.outcome === 'partial').length;
+  const recentFailed = recent.filter((r) => r.outcome === 'failed').length;
 
   const steps = {};
   for (const step of content.steps) steps[step.id] = stepSignal(step, counted, version, now);
@@ -41,10 +45,12 @@ export function computeHealth({ guide, content, version, runs, now = Date.now() 
     last_verified_any_at: lastVerifiedAnyAt ? new Date(lastVerifiedAnyAt).toISOString() : null,
     runs_30d: recent.length,
     success_30d: recentOk,
+    partial_30d: recentPartial,
+    failed_30d: recentFailed,
     success_rate_30d: recent.length ? recentOk / recent.length : null,
-    total_runs: counted.length,
+    total_runs: finished.length,
     others_success: othersSuccess.length,
-    distinct_runners: new Set(counted.map((r) => r.owner_id)).size,
+    distinct_runners: new Set(finished.map((r) => r.owner_id)).size,
     suspect_steps: suspectSteps,
     variant_steps: variantSteps,
     steps,

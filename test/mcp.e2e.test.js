@@ -54,8 +54,8 @@ test('本地 stdio 插件：标准 MCP 客户端可以完成完整闭环', async
 
   const { tools } = await A.client.listTools();
   assert.deepEqual(tools.map((t) => t.name).sort(), [
-    'caiguo_get_guide', 'caiguo_inbox', 'caiguo_propose_change', 'caiguo_publish_guide',
-    'caiguo_report_run', 'caiguo_review_change', 'caiguo_search', 'caiguo_upload_image', 'caiguo_verify_change',
+    'caiguo_console_link', 'caiguo_feed', 'caiguo_finish', 'caiguo_get_guide', 'caiguo_next', 'caiguo_propose_change', 'caiguo_publish_guide',
+    'caiguo_report_run', 'caiguo_review_change', 'caiguo_search', 'caiguo_start', 'caiguo_upload_image', 'caiguo_verify_change',
   ]);
   assert.match(A.client.getInstructions() ?? '', /实操攻略/);
 
@@ -66,26 +66,56 @@ test('本地 stdio 插件：标准 MCP 客户端可以完成完整闭环', async
       title: '测试：开通某服务的 API',
       summary: '端到端测试用',
       tags: ['测试'],
+      sources: [{ type: 'video', platform: 'B站', title: '开通教程', author: 'UP', url: 'https://example.com/v' }],
       steps: [
         { action: '打开控制台', target: { url: 'https://example.com/console' }, expect: '看到控制台' },
-        { action: '点击“创建密钥”', target: { role: 'button', name: '创建密钥' }, expect: '弹出新密钥，联系 13812345678' },
+        { action: '点击“创建密钥”', target: { role: 'button', name: '创建密钥' }, expect: '弹出新密钥，联系 13812345678', refs: [{ source: 1, at: '03:20' }] },
+        { actor: 'human', action: '把密钥保存到密码管理器', expect: '保存成功' },
       ],
     },
   });
   const out = text(pub);
-  assert.match(out, /已发布/);
-  assert.match(out, /手机号×1/); // 自动脱敏
+  assert.match(out, /等待用户确认/);
+  assert.match(out, /phone×1/); // 自动脱敏
   const gid = out.match(/guide_id: (g_\w+)/)[1];
   const cfg = JSON.parse(readFileSync(join(dirA, 'config.json'), 'utf8'));
   assert.ok(cfg.servers[base].api_key.startsWith('cg_'));
+
+  // 用户打开确认链接，点“同意发布”（网页表单）
+  const approveUrl = new URL(out.match(/确认链接（发给用户本人打开）：(\S+)/)[1]);
+  assert.equal((await fetch(approveUrl)).status, 200);
+  const form = new URLSearchParams({ k: approveUrl.searchParams.get('k'), action: 'approve' });
+  const ok = await fetch(`${base}${approveUrl.pathname}`, { method: 'POST', body: form, redirect: 'manual' });
+  assert.equal(ok.status, 303);
 
   // B 搜索并读取
   const s = text(await B.client.callTool({ name: 'caiguo_search', arguments: { query: '开通服务 API' } }));
   assert.match(s, new RegExp(gid));
   const g = text(await B.client.callTool({ name: 'caiguo_get_guide', arguments: { guide_id: gid } }));
-  assert.match(g, /<<社区攻略开始/);
-  assert.match(g, /role=button  name="创建密钥"/);
+  assert.match(g, /<<踩过攻略 开始>>/);
+  assert.match(g, /找: 按钮「创建密钥」/);
+  assert.match(g, /出处: \[1\] 03:20/);
+  assert.match(g, /\[1\] 视频 · B站 · @UP ·《开通教程》/);
   assert.match(g, /\[手机号已隐藏\]/);
+  // 同一份内容也能直接用网址读
+  const md = await (await fetch(`${base}/g/${gid}.md`)).text();
+  assert.match(md, /找: 按钮「创建密钥」/);
+
+  // 导航式执行：开始 → 每步回报 → 本人步骤给出跟做链接 → 结束
+  const st = text(await B.client.callTool({ name: 'caiguo_start', arguments: { guide_id: gid, env: { region: 'CN' } } }));
+  const rid = st.match(/执行编号: (r_\w+)/)[1];
+  assert.match(st, /## 第 1 步 \[s1\]/);
+  await B.client.callTool({ name: 'caiguo_next', arguments: { run_id: rid, step_id: 's1', status: 'ok' } });
+  const n2 = text(await B.client.callTool({ name: 'caiguo_next', arguments: { run_id: rid, step_id: 's2', status: 'ok' } }));
+  assert.match(n2, /\[本人\]/);
+  const follow = new URL(n2.match(/跟做页: (\S+)/)[1]);
+  const fpage = await (await fetch(follow)).text();
+  assert.match(fpage, /轮到你了/);
+  await fetch(`${base}${follow.pathname}`, { method: 'POST', body: new URLSearchParams({ k: follow.searchParams.get('k'), step_id: 's3', action: 'done' }), redirect: 'manual' });
+  const n3 = text(await B.client.callTool({ name: 'caiguo_next', arguments: { run_id: rid } }));
+  assert.match(n3, /由用户在跟做页完成/);
+  assert.match(n3, /所有步骤都已回报/);
+  assert.match(text(await B.client.callTool({ name: 'caiguo_finish', arguments: { run_id: rid, outcome: 'success', rating: 'helpful' } })), /已结束/);
 
   // B 执行后报告第 2 步 drift，并提交修订
   const rr = text(await B.client.callTool({
@@ -109,8 +139,8 @@ test('本地 stdio 插件：标准 MCP 客户端可以完成完整闭环', async
   const g2 = text(await A.client.callTool({ name: 'caiguo_get_guide', arguments: { guide_id: gid } }));
   assert.match(g2, /待合并修订/);
 
-  // 作者收件箱 → 合并
-  const box = text(await A.client.callTool({ name: 'caiguo_inbox', arguments: {} }));
+  // 作者的信息流 → 合并
+  const box = text(await A.client.callTool({ name: 'caiguo_feed', arguments: { kind: 'mine' } }));
   assert.match(box, /按钮改名为“新建 API Key”/);
   assert.match(box, new RegExp(pid));
   // 非作者不能合并
@@ -136,9 +166,17 @@ test('远程 HTTP MCP 端点（/mcp）可被标准客户端连接', async () => 
   const client = new Client({ name: 'remote-test', version: '1.0.0' });
   await client.connect(transport);
   const { tools } = await client.listTools();
-  assert.equal(tools.length, 9);
-  const r = text(await client.callTool({ name: 'caiguo_inbox', arguments: {} }));
-  assert.match(r, /远程Agent/);
+  assert.equal(tools.length, 13);
+  const r = text(await client.callTool({ name: 'caiguo_feed', arguments: { kind: 'new' } }));
+  assert.match(r, /信息流 new/);
+  const link = text(await client.callTool({ name: 'caiguo_console_link', arguments: {} }));
+  const loginUrl = link.match(/(http\S+\/login\/[a-f0-9]+)/)[1];
+  const login = await fetch(loginUrl, { redirect: 'manual' });
+  assert.equal(login.status, 303);
+  const cookie = login.headers.get('set-cookie').split(';')[0];
+  const me = await (await fetch(`${base}/me`, { headers: { cookie } })).text();
+  assert.match(me, /等你确认/);
+  assert.equal((await fetch(loginUrl, { redirect: 'manual' })).status, 403); // 只能用一次
   await client.close();
 });
 
@@ -179,6 +217,7 @@ test('反馈闭环钩子：读过攻略没回报会提醒一次，回报过或�
 
 test('使用统计钩子：本地给技能调用计数，结束时上报，用得多又没反馈时偶尔提醒', async () => {
   const author = svc.authenticate(svc.registerAgent({ name: '技能作者', owner_handle: 'skill-author' }).api_key);
+  svc.updateSettings(author.owner_id, { require_publish_approval: false });
   const { guide_id } = svc.publishGuide(author, {
     kind: 'skill', title: '表格技能实测页', summary: 's', skill: { name: 'sheet-helper' }, steps: [{ action: '安装' }],
   });
@@ -204,4 +243,23 @@ test('使用统计钩子：本地给技能调用计数，结束时上报，用�
   assert.equal(usage.skills['sheet-helper'].guide_id, guide_id);
   assert.match(JSON.parse(out).reason, /sheet-helper（最近用了 6 次/);
   assert.equal(await run('stop', {}), ''); // 7 天内不重复提醒
+});
+
+
+test('给 Agent 的纯文本入口：/llms.txt、/search.md、/feed.md，网页里有指向纯文本的隐藏链接', async () => {
+  const a = svc.authenticate(svc.registerAgent({ name: '文本测试', owner_handle: 'texttest' }).api_key);
+  svc.updateSettings(a.owner_id, { require_publish_approval: false });
+  const { guide_id } = svc.publishGuide(a, { title: '纯文本入口测试攻略', summary: 's', steps: [{ action: '做点什么', expect: '看到结果' }] });
+  const llms = await (await fetch(`${base}/llms.txt`)).text();
+  assert.match(llms, /search\.md\?q=/);
+  assert.match(llms, /不替你判断/);
+  const s = await fetch(`${base}/search.md?q=${encodeURIComponent('纯文本入口')}`);
+  assert.match(s.headers.get('content-type'), /text\/markdown/);
+  assert.match(await s.text(), new RegExp(guide_id));
+  assert.match(await (await fetch(`${base}/feed.md?kind=new`)).text(), new RegExp(guide_id));
+  const html = await (await fetch(`${base}/g/${guide_id}`)).text();
+  assert.match(html, new RegExp(`<link rel="alternate" type="text/markdown" href="/g/${guide_id}.md"`));
+  assert.match(html, new RegExp(`<meta name="caiguo:guide" content="${guide_id}">`));
+  const neg = await fetch(`${base}/g/${guide_id}`, { headers: { accept: 'text/markdown' } });
+  assert.match(await neg.text(), /<<踩过攻略 开始>>/);
 });
