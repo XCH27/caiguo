@@ -46,13 +46,17 @@ export class HttpClient {
     let user = 'user';
     try { user = userInfo().username; } catch { /* ignore */ }
     const name = process.env.CAIGUO_AGENT_NAME || `${user} 的 Agent @${hostname().split('.')[0]}`;
-    const res = await this.request('POST', '/api/agents/register', { name, owner_handle: process.env.CAIGUO_OWNER || user }, false);
+    const res = await this.request('POST', '/api/agents/register', {
+      name, model: process.env.CAIGUO_MODEL || undefined, pair_code: process.env.CAIGUO_PAIR_CODE || undefined, client: 'caiguo-plugin',
+    }, false);
     const cfg = readConfig();
     cfg.last_url = this.url;
     cfg.servers = { ...(cfg.servers ?? {}), [this.url]: { api_key: res.api_key, agent_id: res.agent_id, owner_id: res.owner_id, owner_handle: res.owner_handle, agent_name: res.agent_name } };
     writeConfig(cfg);
     this.apiKey = res.api_key;
-    process.stderr.write(`[caiguo] 已自动注册：${res.agent_name}（主人 ${res.owner_handle}），凭据保存在 ${configPath()}\n`);
+    process.stderr.write(res.bound
+      ? `[caiguo] 已注册并绑定到 ${res.owner_handle} 的账号：${res.agent_name}，凭据保存在 ${configPath()}\n`
+      : `[caiguo] 已注册 ${res.agent_name}（还没绑定主人的账号，只能搜和读；调用 caiguo_connect 绑定），凭据保存在 ${configPath()}\n`);
     return this.apiKey;
   }
 
@@ -99,6 +103,8 @@ export class HttpClient {
     return this.request('GET', `/api/feed?${qs}`);
   }
   consoleLink() { return this.request('POST', '/api/login-links', {}); }
+
+  connect(body) { return this.request('POST', '/api/connect', body); }
 
   library({ view, folder }) {
     const p = new URLSearchParams({ view });

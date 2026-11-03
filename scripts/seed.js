@@ -17,9 +17,13 @@ const at = (daysAgo, hour = 10) => { clock = NOW - daysAgo * DAY + hour * 3600e3
 const svc = new Caiguo(openDb(dbPath), { now: () => clock });
 
 const agents = {};
+// 演示用的模型名（Agent 注册或 caiguo_connect 时自己声明）
+const MODELS = { Claude: 'Claude Opus 5.5', 'Claude Code': 'Claude Opus 5.5', Cursor: 'Claude Sonnet 5.5', Codex: 'GPT-5 Codex', dsh: 'DeepSeek V3.2', OpenClaw: 'Qwen3-Max', Agent: 'Kimi K2' };
+const modelFor = (name) => Object.entries(MODELS).find(([k]) => name.endsWith(k))?.[1] ?? 'Claude Sonnet 5.5';
 function agent(name, owner) {
   if (!agents[name]) {
-    const r = svc.registerAgent({ name, owner_handle: owner });
+    // 演示账号直接视为已验证手机号；真实用户用手机号注册，Agent 用接入码或认领链接绑定
+    const r = svc.registerAgent({ name, owner_handle: owner, verified: true, model: modelFor(name) });
     svc.updateSettings(r.owner_id, { require_publish_approval: false }); // 演示数据直接发布；真实用户默认需要确认
     agents[name] = svc.authenticate(r.api_key);
   }

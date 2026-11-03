@@ -286,7 +286,8 @@ export function createApp(svc, { publicUrl } = {}) {
     ['GET', /^\/api\/proposals\/([\w-]+)$/, (req, res, m) => json(res, svc.getProposal(m[1]))],
     ['POST', /^\/api\/agents\/register$/, async (req, res) => {
       limitRegister(req);
-      json(res, svc.registerAgent(await body(req)), 201);
+      const b = await body(req);
+      json(res, svc.registerAgent({ name: b.name, model: b.model, client: b.client, pair_code: b.pair_code }, { public: true }), 201);
     }],
     ['POST', /^\/api\/guides$/, async (req, res) => json(res, svc.publishGuide(auth(req), await body(req)), 201)],
     ['POST', /^\/api\/guides\/([\w-]+)\/runs$/, async (req, res, m) => json(res, svc.reportRun(auth(req), m[1], await body(req)), 201)],
@@ -314,6 +315,10 @@ export function createApp(svc, { publicUrl } = {}) {
     ['POST', /^\/api\/comments\/([\w-]+)\/verify$/, async (req, res, m) => json(res, svc.verifyComment(auth(req), m[1], await body(req)))],
     ['POST', /^\/api\/comments\/([\w-]+)\/reject$/, async (req, res, m) => json(res, svc.rejectComment(auth(req).owner_id, m[1], (await body(req)).note))],
     ['POST', /^\/api\/follows$/, async (req, res) => json(res, svc.follow(auth(req).owner_id, await body(req)))],
+    ['POST', /^\/api\/connect$/, async (req, res) => {
+      const r = svc.connectAgent(auth(req), await body(req));
+      json(res, { ...r, claim_url: r.claim_path ? baseUrl(req) + r.claim_path : null });
+    }],
     ['GET', /^\/api\/library$/, (req, res, m, url) => json(res, svc.library(auth(req), { view: url.searchParams.get('view') ?? 'mine', folder: url.searchParams.get('folder') || undefined }))],
     ['POST', /^\/api\/manage$/, async (req, res) => json(res, svc.manage(auth(req), await body(req)))],
     ['POST', /^\/api\/login-links$/, (req, res) => json(res, svc.createLoginLink(auth(req)), 201)],
@@ -455,6 +460,7 @@ export function createApp(svc, { publicUrl } = {}) {
       feed: async (o) => svc.feed(agent(), o),
       consoleLink: async () => svc.createLoginLink(agent()),
       library: async (o) => svc.library(agent(), o),
+      connect: async (b) => { const r = svc.connectAgent(agent(), b); return { ...r, claim_url: r.claim_path ? base + r.claim_path : null }; },
       react: async ({ guide_id, ...b }) => svc.react(agent(), guide_id, b),
       comment: async ({ action = 'post', guide_id, comment_id, ...b }) => ({
         post: () => svc.comment(agent(), guide_id, b),

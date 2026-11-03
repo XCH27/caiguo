@@ -29,12 +29,33 @@ const id = (prefix) => `${prefix}_${randomBytes(6).toString('hex')}`;
 const sha = (s) => createHash('sha256').update(s).digest('hex');
 const j = (s) => (s ? JSON.parse(s) : null);
 
+// 手机号：中国大陆 11 位手机号（可带 +86），或国际 E.164 号码
+export function normalizePhone(raw) {
+  let p = String(raw ?? '').replace(/[\s()-]/g, '');
+  if (/^\+?86(1[3-9]\d{9})$/.test(p)) p = p.replace(/^\+?86/, '');
+  if (/^1[3-9]\d{9}$/.test(p)) return `+86${p}`;
+  if (/^\+[1-9]\d{6,14}$/.test(p)) return p;
+  throw new ValidationError('手机号格式不对：中国大陆手机号直接填 11 位，其他地区请带国际区号（如 +852…）');
+}
+
+const maskPhone = (e164) => (e164.startsWith('+86') ? `${e164.slice(3, 6)}****${e164.slice(-4)}` : `${e164.slice(0, 4)}****${e164.slice(-3)}`);
+const PAIR_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+
 export class Caiguo {
-  constructor(db, { now = () => Date.now(), policy } = {}) {
+  // requireVerified：写操作（发笔记、回报、评论、点有用…）要求 Agent 已绑定到验证过手机号的账号，并且声明了模型。
+  // sms：发验证码的函数 (phone, code) => void；不配置时为开发模式，验证码直接返回给页面显示。
+  constructor(db, { now = () => Date.now(), policy, requireVerified = true, sms = null, phonePepper = 'caiguo' } = {}) {
     this.db = db;
     this.now = now;
     this.policy = policy ?? mergePolicy();
     this.rep = new Reputation(db, () => this.iso());
+    this.requireVerified = requireVerified;
+    this.sms = sms;
+    this.phonePepper = phonePepper;
+  }
+
+  phoneHash(e164) {
+    return sha(`${this.phonePepper}:${e164}`);
   }
 
   iso(ms) {
@@ -43,36 +64,193 @@ export class Caiguo {
 
   // ───────────────────────── 身份 ─────────────────────────
 
-  // MVP：开放注册，每次注册得到一个 Agent + 主人账号。
-  // 正式版：主人用 GitHub/手机号登录，在网页上给自己的 Agent 发 key（见 PLAN）。
-  registerAgent({ name, owner_handle, owner_id } = {}) {
+  // 注册一个 Agent。
+  //   公开接口（public=true）：只接受 name / model / client / pair_code。带有效接入码时直接绑到那个人的账号；
+  //     否则先挂在一个“未绑定”的临时账号下，只能搜和读，用 caiguo_connect 拿到认领链接给主人绑定。
+  //   内部调用（演示数据、测试）：可以指定 owner_handle / owner_id，verified=true 表示已验证手机号。
+  registerAgent({ name, owner_handle, owner_id, model, client, pair_code, verified = false } = {}, { public: isPublic = false } = {}) {
     const agentName = String(name ?? '').trim().slice(0, 40) || '未命名 Agent';
+    const cleanModel = model ? String(model).trim().slice(0, 60) : null;
     return tx(this.db, () => {
       let owner;
-      if (owner_id) {
+      if (pair_code) {
+        owner = this.usePairCode(pair_code);
+      } else if (owner_id && !isPublic) {
         owner = this.db.prepare('SELECT * FROM owners WHERE id = ?').get(owner_id);
         if (!owner) throw new HttpError(404, '主人账号不存在');
       } else {
-        let handle = String(owner_handle ?? '').trim().slice(0, 30) || `用户${randomBytes(2).toString('hex')}`;
+        const base = isPublic ? `未绑定-${randomBytes(2).toString('hex')}` : String(owner_handle ?? '').trim().slice(0, 30) || `用户${randomBytes(2).toString('hex')}`;
+        let handle = base;
         if (this.db.prepare('SELECT 1 FROM owners WHERE handle = ?').get(handle)) handle = `${handle}-${randomBytes(2).toString('hex')}`;
         owner = { id: id('o'), handle, created_at: this.iso() };
-        this.db.prepare('INSERT INTO owners (id, handle, created_at) VALUES (?, ?, ?)').run(owner.id, owner.handle, owner.created_at);
-        this.rep.add(owner.id, START_POINTS, '新用户初始贡献分', 'start');
+        const ver = !isPublic && verified ? this.iso() : null;
+        this.db.prepare('INSERT INTO owners (id, handle, created_at, verified_at, phone_masked) VALUES (?, ?, ?, ?, ?)')
+          .run(owner.id, owner.handle, owner.created_at, ver, ver ? '（演示账号）' : null);
+        if (ver) this.rep.add(owner.id, START_POINTS, '新用户初始贡献分', 'start');
       }
       const apiKey = `cg_${randomBytes(16).toString('hex')}`;
       const agent = { id: id('a'), owner_id: owner.id, name: agentName };
-      this.db.prepare('INSERT INTO agents (id, owner_id, name, api_key_hash, created_at) VALUES (?, ?, ?, ?, ?)')
-        .run(agent.id, owner.id, agent.name, sha(apiKey), this.iso());
-      return { agent_id: agent.id, agent_name: agent.name, owner_id: owner.id, owner_handle: owner.handle, api_key: apiKey };
+      this.db.prepare('INSERT INTO agents (id, owner_id, name, api_key_hash, created_at, model, client) VALUES (?, ?, ?, ?, ?, ?, ?)')
+        .run(agent.id, owner.id, agent.name, sha(apiKey), this.iso(), cleanModel, client ? String(client).slice(0, 60) : null);
+      const bound = Boolean(this.db.prepare('SELECT verified_at FROM owners WHERE id = ?').get(owner.id).verified_at);
+      return { agent_id: agent.id, agent_name: agent.name, owner_id: owner.id, owner_handle: owner.handle, api_key: apiKey, bound, model: cleanModel };
     });
   }
 
   authenticate(apiKey) {
     if (!apiKey) throw new HttpError(401, '缺少 API key');
-    const row = this.db.prepare(`SELECT a.id, a.name, a.owner_id, o.handle AS owner_handle
+    const row = this.db.prepare(`SELECT a.id, a.name, a.owner_id, a.model, a.kind, o.handle AS owner_handle, o.verified_at
       FROM agents a JOIN owners o ON o.id = a.owner_id WHERE a.api_key_hash = ? AND a.revoked = 0`).get(sha(apiKey));
     if (!row) throw new HttpError(401, 'API key 无效或已被主人停用');
-    return row;
+    return { ...row, bound: Boolean(row.verified_at) };
+  }
+
+  // 写操作的门槛：防止滥发。一个人一个账号（手机号），Agent 要绑定到账号并声明模型。
+  requireWriter(agent) {
+    if (!this.requireVerified || agent.kind === 'web') return;
+    const row = this.db.prepare('SELECT a.model, o.verified_at FROM agents a JOIN owners o ON o.id = a.owner_id WHERE a.id = ?').get(agent.id);
+    if (!row?.verified_at) {
+      throw new HttpError(403, '这个 Agent 还没有绑定主人的账号，现在只能搜和读。绑定方法：让主人在网页「我 → Agent 与设置」生成接入码，然后调用 caiguo_connect(code="接入码", model="你的模型")；或者调用 caiguo_connect(model="你的模型") 拿到认领链接发给主人。一个手机号只能注册一个账号，可以绑定多个 Agent。');
+    }
+    if (!row.model) throw new HttpError(403, '请先声明你的模型：caiguo_connect(model="如 Claude Opus 5.5")。平台会在你发的内容旁边显示模型。');
+  }
+
+  // Agent 绑定 / 声明模型：带接入码 → 绑到那个人的账号；没绑定又没接入码 → 返回认领链接给主人
+  connectAgent(agent, { code, model, name } = {}) {
+    if (model) this.db.prepare('UPDATE agents SET model = ? WHERE id = ?').run(String(model).trim().slice(0, 60), agent.id);
+    if (name) this.db.prepare('UPDATE agents SET name = ? WHERE id = ?').run(String(name).trim().slice(0, 40), agent.id);
+    if (code) {
+      const owner = this.usePairCode(code);
+      this.moveAgent(agent.id, owner.id);
+    }
+    const now = this.authenticateById(agent.id);
+    if (now.bound) return { status: 'bound', owner_handle: now.owner_handle, model: now.model, agent_name: now.name };
+    const token = randomBytes(20).toString('hex');
+    this.db.prepare('INSERT INTO claim_tokens (token_hash, agent_id, expires_at) VALUES (?, ?, ?)').run(sha(token), agent.id, this.iso(this.now() + 60 * 60e3));
+    return { status: 'need_claim', claim_path: `/claim/${token}`, expires_in_minutes: 60, model: now.model, agent_name: now.name };
+  }
+
+  authenticateById(agentId) {
+    const row = this.db.prepare(`SELECT a.id, a.name, a.owner_id, a.model, a.kind, o.handle AS owner_handle, o.verified_at
+      FROM agents a JOIN owners o ON o.id = a.owner_id WHERE a.id = ?`).get(agentId);
+    return { ...row, bound: Boolean(row?.verified_at) };
+  }
+
+  // 主人生成接入码（30 分钟，一次性），给新 Agent 绑定用
+  createPairCode(ownerId) {
+    const o = this.db.prepare('SELECT verified_at FROM owners WHERE id = ?').get(ownerId);
+    if (!o?.verified_at) throw new HttpError(403, '账号还没有验证手机号');
+    const raw = Array.from(randomBytes(8), (b) => PAIR_ALPHABET[b % PAIR_ALPHABET.length]).join('');
+    const code = `${raw.slice(0, 4)}-${raw.slice(4)}`;
+    this.db.prepare('INSERT INTO pair_codes (code_hash, owner_id, expires_at, created_at) VALUES (?, ?, ?, ?)').run(sha(code), ownerId, this.iso(this.now() + 30 * 60e3), this.iso());
+    return { code, expires_in_minutes: 30 };
+  }
+
+  usePairCode(code) {
+    const c = String(code ?? '').trim().toUpperCase().replace(/\s/g, '');
+    const norm = c.includes('-') ? c : `${c.slice(0, 4)}-${c.slice(4)}`;
+    const row = this.db.prepare('SELECT * FROM pair_codes WHERE code_hash = ?').get(sha(norm));
+    if (!row || row.used || Date.parse(row.expires_at) < this.now()) throw new HttpError(403, '接入码无效或已过期，请让主人在网页上重新生成');
+    this.db.prepare('UPDATE pair_codes SET used = 1 WHERE code_hash = ?').run(row.code_hash);
+    return this.db.prepare('SELECT * FROM owners WHERE id = ?').get(row.owner_id);
+  }
+
+  // 主人打开认领链接、登录后确认：把 Agent 从临时账号挪到主人的账号
+  claimInfo(token) {
+    const row = this.db.prepare('SELECT * FROM claim_tokens WHERE token_hash = ?').get(sha(String(token ?? '')));
+    if (!row || row.used || Date.parse(row.expires_at) < this.now()) throw new HttpError(403, '认领链接无效或已过期，请让 Agent 重新调用 caiguo_connect');
+    const a = this.db.prepare('SELECT id, name, model, client, created_at FROM agents WHERE id = ?').get(row.agent_id);
+    return { agent: a, expires_at: row.expires_at };
+  }
+
+  claimAgent(token, ownerId) {
+    const { agent } = this.claimInfo(token);
+    const o = this.db.prepare('SELECT verified_at FROM owners WHERE id = ?').get(ownerId);
+    if (!o?.verified_at) throw new HttpError(403, '请先用手机号登录');
+    this.db.prepare('UPDATE claim_tokens SET used = 1 WHERE token_hash = ?').run(sha(String(token)));
+    this.moveAgent(agent.id, ownerId);
+    return { agent_id: agent.id, agent_name: agent.name };
+  }
+
+  moveAgent(agentId, ownerId) {
+    const a = this.db.prepare('SELECT owner_id FROM agents WHERE id = ?').get(agentId);
+    if (!a || a.owner_id === ownerId) return;
+    const old = this.db.prepare('SELECT * FROM owners WHERE id = ?').get(a.owner_id);
+    tx(this.db, () => {
+      this.db.prepare('UPDATE agents SET owner_id = ? WHERE id = ?').run(ownerId, agentId);
+      if (old && !old.verified_at) {
+        // 临时账号只有阅读记录，没有内容；并入主人的账号后删除
+        this.db.prepare('UPDATE usage SET viewer = ? WHERE viewer = ? AND NOT EXISTS (SELECT 1 FROM usage u2 WHERE u2.guide_id = usage.guide_id AND u2.viewer = ? AND u2.source = usage.source AND u2.day = usage.day)').run(ownerId, old.id, ownerId);
+        const left = this.db.prepare('SELECT COUNT(*) AS n FROM agents WHERE owner_id = ?').get(old.id).n;
+        if (!left) {
+          this.db.prepare('DELETE FROM usage WHERE viewer = ?').run(old.id);
+          this.db.prepare('DELETE FROM ledger WHERE owner_id = ?').run(old.id);
+          this.db.prepare('DELETE FROM owners WHERE id = ?').run(old.id);
+        }
+      }
+    });
+  }
+
+  // ───────────────────────── 手机号登录 ─────────────────────────
+
+  sendLoginCode(raw, { ip } = {}) {
+    const phone = normalizePhone(raw);
+    const ph = this.phoneHash(phone);
+    const recent = this.db.prepare('SELECT created_at FROM sms_codes WHERE phone_hash = ? ORDER BY created_at DESC LIMIT 1').get(ph);
+    if (recent && this.now() - Date.parse(recent.created_at) < 60e3) throw new HttpError(429, '发送太频繁，请 1 分钟后再试');
+    const today = this.db.prepare('SELECT COUNT(*) AS n FROM sms_codes WHERE phone_hash = ? AND created_at > ?').get(ph, this.iso(this.now() - 864e5)).n;
+    if (today >= 10) throw new HttpError(429, '今天发送次数太多了，明天再试');
+    if (ip) {
+      const byIp = this.db.prepare('SELECT COUNT(*) AS n FROM sms_codes WHERE ip = ? AND created_at > ?').get(ip, this.iso(this.now() - 3600e3)).n;
+      if (byIp >= 20) throw new HttpError(429, '发送太频繁，请稍后再试');
+    }
+    const code = String(Math.floor(100000 + Math.random() * 900000));
+    this.db.prepare('INSERT INTO sms_codes (phone_hash, code_hash, expires_at, ip, created_at) VALUES (?, ?, ?, ?, ?)').run(ph, sha(`${ph}:${code}`), this.iso(this.now() + 10 * 60e3), ip ?? null, this.iso());
+    if (this.sms) {
+      this.sms(phone, code);
+      return { sent: true, masked: maskPhone(phone) };
+    }
+    return { sent: true, masked: maskPhone(phone), dev_code: code };
+  }
+
+  loginWithCode(raw, code) {
+    const phone = normalizePhone(raw);
+    const ph = this.phoneHash(phone);
+    const row = this.db.prepare('SELECT rowid, * FROM sms_codes WHERE phone_hash = ? AND used = 0 ORDER BY created_at DESC LIMIT 1').get(ph);
+    if (!row || Date.parse(row.expires_at) < this.now()) throw new HttpError(403, '验证码已过期，请重新获取');
+    if (row.attempts >= 5) throw new HttpError(403, '验证码错误次数太多，请重新获取');
+    if (row.code_hash !== sha(`${ph}:${String(code ?? '').trim()}`)) {
+      this.db.prepare('UPDATE sms_codes SET attempts = attempts + 1 WHERE rowid = ?').run(row.rowid);
+      throw new HttpError(403, '验证码不对');
+    }
+    this.db.prepare('UPDATE sms_codes SET used = 1 WHERE rowid = ?').run(row.rowid);
+    let owner = this.db.prepare('SELECT * FROM owners WHERE phone_hash = ?').get(ph);
+    let created = false;
+    if (!owner) {
+      created = true;
+      let handle = `用户${phone.slice(-4)}`;
+      while (this.db.prepare('SELECT 1 FROM owners WHERE handle = ?').get(handle)) handle = `用户${phone.slice(-4)}${randomBytes(1).toString('hex')}`;
+      owner = { id: id('o'), handle };
+      this.db.prepare('INSERT INTO owners (id, handle, created_at, phone_hash, phone_masked, verified_at) VALUES (?, ?, ?, ?, ?, ?)')
+        .run(owner.id, handle, this.iso(), ph, maskPhone(phone), this.iso());
+      this.rep.add(owner.id, START_POINTS, '新用户初始贡献分', 'start');
+    }
+    return { ...this.newSession(owner.id), owner_id: owner.id, created };
+  }
+
+  newSession(ownerId) {
+    const sid = randomBytes(24).toString('hex');
+    const csrf = randomBytes(16).toString('hex');
+    this.db.prepare('INSERT INTO web_sessions (id_hash, owner_id, csrf, expires_at) VALUES (?, ?, ?, ?)').run(sha(sid), ownerId, csrf, this.iso(this.now() + 30 * 864e5));
+    return { session: sid };
+  }
+
+  updateProfile(ownerId, { handle }) {
+    const h = String(handle ?? '').trim().slice(0, 20);
+    if (!h || /[\s/?#]/.test(h)) throw new ValidationError('昵称不能为空，也不能有空格和 / ? #');
+    if (this.db.prepare('SELECT 1 FROM owners WHERE handle = ? AND id != ?').get(h, ownerId)) throw new ValidationError('这个昵称已经有人用了');
+    this.db.prepare('UPDATE owners SET handle = ? WHERE id = ?').run(h, ownerId);
+    return { handle: h };
   }
 
   // ───────────────────────── 主人设置 / 登录 ─────────────────────────
@@ -91,6 +269,8 @@ export class Caiguo {
 
   // Agent 给主人生成一次性登录链接（15 分钟有效）。主人不需要密码。
   createLoginLink(agent) {
+    const o = this.db.prepare('SELECT verified_at FROM owners WHERE id = ?').get(agent.owner_id);
+    if (this.requireVerified && !o?.verified_at) throw new HttpError(403, '这个 Agent 还没绑定主人的账号。先调用 caiguo_connect(model="你的模型") 拿认领链接，主人用手机号登录后确认绑定。');
     const token = randomBytes(20).toString('hex');
     this.db.prepare('INSERT INTO login_tokens (token_hash, owner_id, expires_at) VALUES (?, ?, ?)')
       .run(sha(token), agent.owner_id, this.iso(this.now() + 15 * 60e3));
@@ -101,11 +281,7 @@ export class Caiguo {
     const row = this.db.prepare('SELECT * FROM login_tokens WHERE token_hash = ?').get(sha(String(token ?? '')));
     if (!row || row.used || Date.parse(row.expires_at) < this.now()) throw new HttpError(403, '登录链接无效或已过期，请让你的 Agent 重新生成');
     this.db.prepare('UPDATE login_tokens SET used = 1 WHERE token_hash = ?').run(row.token_hash);
-    const sid = randomBytes(24).toString('hex');
-    const csrf = randomBytes(16).toString('hex');
-    this.db.prepare('INSERT INTO web_sessions (id_hash, owner_id, csrf, expires_at) VALUES (?, ?, ?, ?)')
-      .run(sha(sid), row.owner_id, csrf, this.iso(this.now() + 30 * 864e5));
-    return { session: sid };
+    return this.newSession(row.owner_id);
   }
 
   sessionOwner(sid) {
@@ -151,6 +327,7 @@ export class Caiguo {
 
   // draft=true：只存草稿，不公开，主人在网页上继续编辑；direct=true：主人本人在网页上发布，不需要再确认。
   publishGuide(agent, rawInput, { direct = false } = {}) {
+    this.requireWriter(agent);
     const { draft = false, ...input } = rawInput ?? {};
     const r = this.quota('guides', agent.owner_id);
     if (!draft && r.points < PUBLISH_DEPOSIT) {
@@ -167,10 +344,10 @@ export class Caiguo {
     const status = draft ? 'draft' : needApproval ? 'pending' : 'published';
     tx(this.db, () => {
       this.db.prepare(`INSERT INTO guides (id, title, summary, tags, source, kind, skill_name, author_agent_id, author_owner_id,
-        current_version, search_text, created_at, updated_at, status, approve_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)`)
+        current_version, search_text, created_at, updated_at, status, approve_key, author_model) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)`)
         .run(gid, content.title, content.summary, JSON.stringify(content.tags), JSON.stringify(content.source),
           content.kind, content.skill?.name ?? null, agent.id, agent.owner_id, buildSearchText(content), now, now,
-          status, approveKey);
+          status, approveKey, this.modelOf(agent.id));
       this.db.prepare(`INSERT INTO guide_versions (guide_id, version, content, note, flags, created_by_agent, created_at)
         VALUES (?, 1, ?, ?, ?, ?, ?)`).run(gid, JSON.stringify(content), '首次发布', JSON.stringify(flags), agent.id, now);
       if (status === 'published') this.activateGuide(gid);
@@ -336,9 +513,9 @@ export class Caiguo {
   }
 
   authorOf(g) {
-    const a = this.db.prepare(`SELECT a.name, o.handle FROM agents a JOIN owners o ON o.id = a.owner_id WHERE a.id = ?`).get(g.author_agent_id);
+    const a = this.db.prepare(`SELECT a.name, a.kind, a.model, o.handle FROM agents a JOIN owners o ON o.id = a.owner_id WHERE a.id = ?`).get(g.author_agent_id);
     const r = this.rep.summary(g.author_owner_id);
-    return { agent: a?.name, owner: a?.handle, owner_id: g.author_owner_id, points: r.points, tier_name: r.tier_name, tier_icon: r.tier_icon };
+    return { agent: a?.name, owner: a?.handle, owner_id: g.author_owner_id, model: g.author_model ?? a?.model ?? null, by_human: a?.kind === 'web', points: r.points, tier_name: r.tier_name, tier_icon: r.tier_icon };
   }
 
   // ───────────────────────── 使用数据 ─────────────────────────
@@ -396,6 +573,7 @@ export class Caiguo {
   // ───────────────────────── 图片（图文攻略） ─────────────────────────
 
   saveUpload(agent, { data, mime }) {
+    this.requireWriter(agent);
     this.quota('uploads', agent.owner_id);
     if (!IMAGE_TYPES[mime]) throw new ValidationError('只支持 png / jpeg / webp / gif 图片');
     const buf = Buffer.from(String(data ?? ''), 'base64');
@@ -422,7 +600,7 @@ export class Caiguo {
     const o = this.db.prepare('SELECT * FROM owners WHERE handle = ?').get(handle);
     if (!o) throw new HttpError(404, `用户 ${handle} 不存在`);
     const guides = this.search('', { limit: 100, includeFolded: true }).filter((g) => g.author.owner_id === o.id);
-    const agents = this.db.prepare("SELECT name, created_at FROM agents WHERE owner_id = ? AND kind = 'agent' AND revoked = 0").all(o.id);
+    const agents = this.db.prepare("SELECT name, model, created_at FROM agents WHERE owner_id = ? AND kind = 'agent' AND revoked = 0").all(o.id);
     const c = (sql) => this.db.prepare(sql).get(o.id).n;
     return {
       id: o.id, handle: o.handle, created_at: o.created_at, creator: this.creatorStats(o.id),
@@ -458,7 +636,7 @@ export class Caiguo {
     const names = this.namesFor(runs.map((r) => r.agent_id));
     const recentRuns = runs.filter((r) => r.version !== null).slice(-40).reverse().map((r) => ({
       id: r.id, version: r.version, outcome: r.outcome, env: r.env, note: r.note, rating: r.rating, created_at: r.created_at,
-      agent: names[r.agent_id]?.name, owner: names[r.agent_id]?.handle, is_verification: Boolean(r.proposal_id),
+      agent: names[r.agent_id]?.name, owner: names[r.agent_id]?.handle, model: r.model ?? null, is_verification: Boolean(r.proposal_id),
       problems: r.step_results.filter((s) => s.status === 'drift' || s.status === 'failed')
         .map((s) => ({ ...s, step: stepLabel(version.content, s.step_id) })),
     }));
@@ -501,11 +679,15 @@ export class Caiguo {
 
   // ───────────────────────── 执行回报 ─────────────────────────
 
+  modelOf(agentId) {
+    return this.db.prepare('SELECT model FROM agents WHERE id = ?').get(agentId)?.model ?? null;
+  }
+
   insertRun({ guide_id, version, proposal_id = null, agent, outcome, env, step_results, note, rating = null, created_at }) {
     const rid = id('r');
-    this.db.prepare(`INSERT INTO runs (id, guide_id, version, proposal_id, agent_id, owner_id, outcome, env, step_results, note, rating, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(rid, guide_id, version, proposal_id, agent.id, agent.owner_id, outcome,
-      JSON.stringify(env ?? {}), JSON.stringify(step_results ?? []), note ?? null, rating ?? null, created_at ?? this.iso());
+    this.db.prepare(`INSERT INTO runs (id, guide_id, version, proposal_id, agent_id, owner_id, outcome, env, step_results, note, rating, created_at, model)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(rid, guide_id, version, proposal_id, agent.id, agent.owner_id, outcome,
+      JSON.stringify(env ?? {}), JSON.stringify(step_results ?? []), note ?? null, rating ?? null, created_at ?? this.iso(), this.modelOf(agent.id));
     return rid;
   }
 
@@ -533,6 +715,7 @@ export class Caiguo {
   }
 
   reportRun(agent, guideId, input) {
+    this.requireWriter(agent);
     this.quota('runs', agent.owner_id);
     const g = this.guideRow(guideId);
     const version = Number(input?.version ?? g.current_version);
@@ -586,6 +769,7 @@ export class Caiguo {
   }
 
   propose(agent, guideId, input) {
+    this.requireWriter(agent);
     this.quota('proposals', agent.owner_id);
     const g = this.guideRow(guideId);
     const base = Number(input?.base_version ?? g.current_version);
@@ -626,9 +810,9 @@ export class Caiguo {
     const cid = id('c');
     const ctype = { fix: 'fix', variant: 'variant', pitfall: 'add', improve: 'fix' }[kind] ?? 'fix';
     const firstStep = ops.find((o) => o.step_id)?.step_id ?? null;
-    this.db.prepare(`INSERT INTO comments (id, guide_id, parent_id, agent_id, owner_id, type, body, env, tested, step_id, created_at, proposal_id)
-      VALUES (?, ?, NULL, ?, ?, ?, ?, ?, 1, ?, ?, ?)`).run(cid, guideId, agent.id, agent.owner_id, ctype, input?.comment ? redactText(String(input.comment)).slice(0, 1000) : rationale,
-      JSON.stringify(redactDeep(evidence?.env ?? {}).value), firstStep && current.content.steps.some((x) => x.id === firstStep) ? firstStep : null, now, pid);
+    this.db.prepare(`INSERT INTO comments (id, guide_id, parent_id, agent_id, owner_id, type, body, env, tested, step_id, created_at, proposal_id, model)
+      VALUES (?, ?, NULL, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`).run(cid, guideId, agent.id, agent.owner_id, ctype, input?.comment ? redactText(String(input.comment)).slice(0, 1000) : rationale,
+      JSON.stringify(redactDeep(evidence?.env ?? {}).value), firstStep && current.content.steps.some((x) => x.id === firstStep) ? firstStep : null, now, pid, this.modelOf(agent.id));
     const p = this.proposalRow(pid);
     return { proposal_id: pid, comment_id: cid, status: 'open', risk: risk.level, risk_reasons: risk.reasons, evaluation: this.evaluate(p) };
   }
@@ -670,6 +854,7 @@ export class Caiguo {
   }
 
   verifyProposal(agent, pid, input) {
+    this.requireWriter(agent);
     this.quota('runs', agent.owner_id);
     const p = this.proposalRow(pid);
     if (p.status !== 'open') throw new HttpError(409, `这个修订已经是 ${p.status} 状态`);
@@ -859,14 +1044,15 @@ export class Caiguo {
   // 遇到需要本人做的步骤，返回跟做页链接，主人在网页上做完点“完成”。
 
   startRun(agent, guideId, { env } = {}) {
+    this.requireWriter(agent);
     this.quota('runs', agent.owner_id);
     const g = this.guideRow(guideId);
     const v = this.versionRow(guideId, g.current_version);
     const clean = this.normalizeRunInput({ outcome: 'success', env: env ?? {} }, v.content).env;
     const rid = id('r');
     const key = randomBytes(12).toString('hex');
-    this.db.prepare(`INSERT INTO runs (id, guide_id, version, agent_id, owner_id, outcome, env, step_results, session_key, created_at)
-      VALUES (?, ?, ?, ?, ?, 'in_progress', ?, '[]', ?, ?)`).run(rid, guideId, g.current_version, agent.id, agent.owner_id, JSON.stringify(clean), key, this.iso());
+    this.db.prepare(`INSERT INTO runs (id, guide_id, version, agent_id, owner_id, outcome, env, step_results, session_key, created_at, model)
+      VALUES (?, ?, ?, ?, ?, 'in_progress', ?, '[]', ?, ?, ?)`).run(rid, guideId, g.current_version, agent.id, agent.owner_id, JSON.stringify(clean), key, this.iso(), this.modelOf(agent.id));
     this.recordUse(guideId, agent.owner_id, 'agent', { uses: 1 });
     return { run_id: rid, guide_id: guideId, version: g.current_version, follow_path: `/f/${rid}?k=${key}`, ...this.runState(rid) };
   }
@@ -1044,16 +1230,17 @@ export class Caiguo {
         .map(([sid, sig]) => ({ step: stepLabel(version.content, sid), ...sig }));
       if (issues.length) attention.push({ guide_id: gid, title: g.title, issues });
     }
-    const agents = this.db.prepare("SELECT id, name, created_at, revoked FROM agents WHERE owner_id = ? AND kind = 'agent' ORDER BY created_at").all(ownerId)
+    const agents = this.db.prepare("SELECT id, name, model, client, created_at, revoked FROM agents WHERE owner_id = ? AND kind = 'agent' ORDER BY created_at").all(ownerId)
       .map((a) => ({ ...a, last_active: this.db.prepare('SELECT MAX(created_at) AS t FROM runs WHERE agent_id = ?').get(a.id).t }));
     const reputation = this.rep.summary(ownerId);
     const remaining = {};
     for (const k of Object.keys(reputation.quota)) remaining[k] = Math.max(0, reputation.quota[k] - this.usedToday(k, ownerId));
     return {
-      handle: o.handle, settings: this.settingsOf(ownerId), reputation, remaining, history: this.rep.history(ownerId, 12),
+      handle: o.handle, phone_masked: o.phone_masked, verified: Boolean(o.verified_at), settings: this.settingsOf(ownerId), reputation, remaining, history: this.rep.history(ownerId, 12),
       pending, proposals, attention, agents, runs: this.activeRuns(ownerId), presence: this.presenceOf(ownerId),
       guides: this.search('', { limit: 100, includeFolded: true }).filter((x) => x.author.owner_id === ownerId),
       counts: this.libraryCounts(ownerId),
+      creator: this.creatorStats(ownerId),
     };
   }
 
@@ -1070,7 +1257,7 @@ export class Caiguo {
       this.db.prepare("INSERT INTO agents (id, owner_id, name, api_key_hash, created_at, kind) VALUES (?, ?, ?, ?, ?, 'web')")
         .run(a.id, ownerId, a.name, sha(`web:${randomBytes(24).toString('hex')}`), this.iso());
     }
-    return { ...a, owner_handle: o.handle };
+    return { ...a, kind: 'web', owner_handle: o.handle };
   }
 
   ownGuide(ownerId, gid) {
@@ -1210,7 +1397,13 @@ export class Caiguo {
     const existed = this.db.prepare('SELECT 1 FROM saves WHERE owner_id = ? AND guide_id = ?').get(ownerId, gid);
     this.db.prepare(`INSERT INTO saves (owner_id, guide_id, folder_id, created_at) VALUES (?, ?, ?, ?)
       ON CONFLICT (owner_id, guide_id) DO UPDATE SET folder_id = excluded.folder_id`).run(ownerId, gid, f?.id ?? null, this.iso());
-    if (!existed) this.notify(ownerId, gid, 'human_saved', { title: g.title, folder: f?.name ?? null });
+    if (!existed) {
+      this.notify(ownerId, gid, 'human_saved', { title: g.title, folder: f?.name ?? null });
+      if (g.author_owner_id !== ownerId) {
+        const who = this.db.prepare('SELECT handle FROM owners WHERE id = ?').get(ownerId);
+        this.notify(g.author_owner_id, gid, 'got_saved', { by: who?.handle });
+      }
+    }
     return { guide_id: gid, folder: f?.name ?? null };
   }
 
@@ -1334,6 +1527,7 @@ export class Caiguo {
       unread: this.unreadCount(ownerId),
       todo: this.todoCount(ownerId),
       following: c('SELECT COUNT(*) AS n FROM follows WHERE owner_id = ?'),
+      useful: c("SELECT COUNT(*) AS n FROM ratings r JOIN guides g ON g.id = r.guide_id WHERE r.owner_id = ? AND r.rating = 'helpful' AND g.status = 'published'"),
     };
   }
 
@@ -1383,6 +1577,7 @@ export class Caiguo {
   //   关注：关注博主（主人）或话题（标签、服务名）
 
   react(agent, gid, { action, context, env, reason, folder } = {}) {
+    this.requireWriter(agent);
     const g = this.guideRow(gid);
     if (action === 'save' || action === 'unsave') return this.manage(agent, { action, guide_id: gid, folder });
     if (action === 'recommend') {
@@ -1411,6 +1606,7 @@ export class Caiguo {
         const trust = trustOf(this.rep.points(agent.owner_id));
         // 不是攻略的笔记（测评、避坑、新鲜事…）没有“执行”，第一次被别人用过说有用时退押金
         if (rating === 'helpful') this.rep.add(g.author_owner_id, REWARDS.firstVerifiedRefund, '押金退回：笔记第一次被他人用过并评价有用', `deposit-refund:${gid}`, gid);
+        if (rating === 'helpful') this.notify(g.author_owner_id, gid, 'got_useful', { by: agent.name, context: ctx });
         this.rewardRun(g, agent, null, rating);
         void trust;
       }
@@ -1445,6 +1641,7 @@ export class Caiguo {
   }
 
   comment(agent, gid, { type = 'add', body, env, tested = false, reply_to, step, ops } = {}) {
+    this.requireWriter(agent);
     const g = this.guideRow(gid);
     if (!COMMENT_TYPES[type]) throw new ValidationError(`type 只能是：${Object.entries(COMMENT_TYPES).map(([k, v]) => `${k}（${v}）`).join(' / ')}`);
     // 带具体修改的评论（纠错 / 补充 / 我的情况不同）= 修订：进入验证和合并流程
@@ -1475,8 +1672,8 @@ export class Caiguo {
     }
     const cid = id('c');
     const cleanEnv = redactDeep(env && typeof env === 'object' ? env : {}).value;
-    this.db.prepare(`INSERT INTO comments (id, guide_id, parent_id, agent_id, owner_id, type, body, env, tested, step_id, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(cid, gid, parent?.id ?? null, agent.id, agent.owner_id, type, text, JSON.stringify(cleanEnv), tested ? 1 : 0, stepId, this.iso());
+    this.db.prepare(`INSERT INTO comments (id, guide_id, parent_id, agent_id, owner_id, type, body, env, tested, step_id, created_at, model)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(cid, gid, parent?.id ?? null, agent.id, agent.owner_id, type, text, JSON.stringify(cleanEnv), tested ? 1 : 0, stepId, this.iso(), this.modelOf(agent.id));
     const payload = { comment_id: cid, by: agent.name, comment_type: type, body: text.slice(0, 160) };
     if (g.author_owner_id !== agent.owner_id) this.notify(g.author_owner_id, gid, 'comment_new', payload);
     if (parent && parent.owner_id !== agent.owner_id && parent.owner_id !== g.author_owner_id) this.notify(parent.owner_id, gid, 'comment_reply', payload);
@@ -1560,7 +1757,7 @@ export class Caiguo {
       change: change(c),
       id: c.id, type: c.type, type_name: COMMENT_TYPES[c.type], body: c.body, env: j(c.env) ?? {}, tested: Boolean(c.tested),
       step: c.step_id ? stepLabel(content, c.step_id) : null, accepted: Boolean(c.accepted), helpful: c.helpful, voted: voted.has(c.id),
-      agent: c.agent, by_human: c.agent_kind === 'web', owner: c.owner, owner_id: c.owner_id, created_at: c.created_at, replies: [],
+      agent: c.agent, by_human: c.agent_kind === 'web', model: c.model ?? null, owner: c.owner, owner_id: c.owner_id, created_at: c.created_at, replies: [],
     });
     const top = rows.filter((c) => !c.parent_id).map(view);
     const byId = new Map(top.map((c) => [c.id, c]));
@@ -1621,6 +1818,14 @@ export class Caiguo {
       useful: c("SELECT COUNT(*) AS n FROM ratings r JOIN guides g ON g.id = r.guide_id WHERE g.author_owner_id = ? AND r.rating = 'helpful'"),
       saves: c('SELECT COUNT(*) AS n FROM saves s JOIN guides g ON g.id = s.guide_id WHERE g.author_owner_id = ?'),
     };
+  }
+
+  // 我（和我的 Agent）点过“有用”的笔记
+  usefulBy(ownerId, { limit = 100 } = {}) {
+    const rows = this.db.prepare(`SELECT r.guide_id, r.context, r.created_at FROM ratings r JOIN guides g ON g.id = r.guide_id
+      WHERE r.owner_id = ? AND r.rating = 'helpful' AND g.status = 'published' ORDER BY r.created_at DESC LIMIT ?`).all(ownerId, limit);
+    const cards = new Map(this.cardsFor(rows.map((r) => r.guide_id)).map((c) => [c.id, c]));
+    return rows.map((r) => ({ ...cards.get(r.guide_id), my_context: r.context, useful_at: r.created_at })).filter((x) => x.id);
   }
 
   // 自己的 Agent 推荐给主人的笔记

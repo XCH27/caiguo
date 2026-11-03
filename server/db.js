@@ -204,6 +204,29 @@ CREATE TABLE IF NOT EXISTS follows (
   created_at TEXT NOT NULL,
   PRIMARY KEY (owner_id, target_type, target)
 );
+CREATE TABLE IF NOT EXISTS sms_codes (
+  phone_hash TEXT NOT NULL,
+  code_hash TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  used INTEGER NOT NULL DEFAULT 0,
+  ip TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS sms_codes_phone ON sms_codes(phone_hash, created_at);
+CREATE TABLE IF NOT EXISTS pair_codes (
+  code_hash TEXT PRIMARY KEY,
+  owner_id TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  used INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS claim_tokens (
+  token_hash TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  used INTEGER NOT NULL DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS presence (
   owner_id TEXT NOT NULL,
   guide_id TEXT NOT NULL,
@@ -223,6 +246,14 @@ const COLUMNS = [
   ['agents', 'kind', "TEXT NOT NULL DEFAULT 'agent'"],
   ['owners', 'seen_at', 'TEXT'],
   ['comments', 'proposal_id', 'TEXT'],
+  ['comments', 'model', 'TEXT'],
+  ['owners', 'phone_hash', 'TEXT'],
+  ['owners', 'phone_masked', 'TEXT'],
+  ['owners', 'verified_at', 'TEXT'],
+  ['agents', 'model', 'TEXT'],
+  ['agents', 'client', 'TEXT'],
+  ['guides', 'author_model', 'TEXT'],
+  ['runs', 'model', 'TEXT'],
   ['ratings', 'context', 'TEXT'],
   ['ratings', 'env', "TEXT NOT NULL DEFAULT '{}'"],
   ['ratings', 'agent_id', 'TEXT'],
@@ -237,6 +268,8 @@ export function openDb(path = ':memory:') {
     const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
     if (!cols.includes(col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${ddl}`);
   }
+  // 一个手机号只能有一个账号
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS owners_phone ON owners(phone_hash) WHERE phone_hash IS NOT NULL');
   return db;
 }
 

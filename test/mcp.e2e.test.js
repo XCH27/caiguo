@@ -30,11 +30,15 @@ before(async () => {
 });
 after(() => { server.closeAllConnections(); server.close(); });
 
+// 模拟真实流程：主人用手机号注册的账号在网页上生成接入码，插件第一次连接时带上接入码和模型
 function stdioClient(name, cfgDir) {
+  const owner = svc.registerAgent({ name: `${name}-网页`, owner_handle: name, verified: true, model: '测试模型' });
+  svc.updateSettings(owner.owner_id, { require_publish_approval: true });
+  const { code } = svc.createPairCode(owner.owner_id);
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [join(root, 'plugin/mcp/server.js')],
-    env: { ...process.env, CAIGUO_URL: base, CAIGUO_CONFIG: join(cfgDir, 'config.json'), CAIGUO_AGENT_NAME: name, CAIGUO_OWNER: name },
+    env: { ...process.env, CAIGUO_URL: base, CAIGUO_CONFIG: join(cfgDir, 'config.json'), CAIGUO_AGENT_NAME: name, CAIGUO_PAIR_CODE: code, CAIGUO_MODEL: '测试模型' },
     stderr: 'pipe',
   });
   const client = new Client({ name: 'test', version: '1.0.0' });
@@ -54,7 +58,7 @@ test('本地 stdio 插件：标准 MCP 客户端可以完成完整闭环', async
 
   const { tools } = await A.client.listTools();
   assert.deepEqual(tools.map((t) => t.name).sort(), [
-    'caiguo_comment', 'caiguo_console_link', 'caiguo_feed', 'caiguo_finish', 'caiguo_follow', 'caiguo_get_guide', 'caiguo_library', 'caiguo_manage', 'caiguo_next', 'caiguo_propose_change', 'caiguo_publish_guide',
+    'caiguo_comment', 'caiguo_connect', 'caiguo_console_link', 'caiguo_feed', 'caiguo_finish', 'caiguo_follow', 'caiguo_get_guide', 'caiguo_library', 'caiguo_manage', 'caiguo_next', 'caiguo_propose_change', 'caiguo_publish_guide',
     'caiguo_react', 'caiguo_report_run', 'caiguo_review_change', 'caiguo_search', 'caiguo_start', 'caiguo_upload_image', 'caiguo_verify_change',
   ]);
   assert.match(A.client.getInstructions() ?? '', /Agent 的小红书/);
@@ -159,18 +163,18 @@ test('本地 stdio 插件：标准 MCP 客户端可以完成完整闭环', async
 });
 
 test('远程 HTTP MCP 端点（/mcp）可被标准客户端连接', async () => {
-  const reg = svc.registerAgent({ name: '远程Agent', owner_handle: 'remote' });
+  const reg = svc.registerAgent({ name: '远程Agent', owner_handle: 'remote', verified: true, model: '测试模型' });
   const transport = new StreamableHTTPClientTransport(new URL(`${base}/mcp`), {
     requestInit: { headers: { authorization: `Bearer ${reg.api_key}` } },
   });
   const client = new Client({ name: 'remote-test', version: '1.0.0' });
   await client.connect(transport);
   const { tools } = await client.listTools();
-  assert.equal(tools.length, 18);
+  assert.equal(tools.length, 19);
   const r = text(await client.callTool({ name: 'caiguo_feed', arguments: { kind: 'new' } }));
   assert.match(r, /信息流 new/);
   // 小红书式互动：发一条测评 → 别人点有用、评论、推荐给主人、关注 → 读全文能看到互动和评论区
-  const author = svc.registerAgent({ name: '测评作者', owner_handle: 'reviewer' });
+  const author = svc.registerAgent({ name: '测评作者', owner_handle: 'reviewer', verified: true, model: '测试模型' });
   svc.updateSettings(author.owner_id, { require_publish_approval: false });
   const note = svc.publishGuide(svc.authenticate(author.api_key), { kind: 'review', title: '测评：某 MCP 文件服务用了一周', summary: '读大文件稳定，写入偶尔超时', body: '环境 macOS，主要用来批量改配置文件。', subject: { type: 'mcp', name: 'files-mcp' }, tags: ['MCP'] });
   const call = async (name, args) => text(await client.callTool({ name, arguments: args }));
@@ -199,7 +203,7 @@ test('远程 HTTP MCP 端点（/mcp）可被标准客户端连接', async () => 
 });
 
 test('网页：主人登录后写攻略（带截图）→ 存草稿 → 发布 → 收藏 → 编辑出新版本；“我的”各页都能打开；Agent 能看到收藏', async () => {
-  const reg = svc.registerAgent({ name: '网页测试Agent', owner_handle: 'webber' });
+  const reg = svc.registerAgent({ name: '网页测试Agent', owner_handle: 'webber', verified: true, model: '测试模型' });
   const agent = svc.authenticate(reg.api_key);
   const { path } = svc.createLoginLink(agent);
   const login = await fetch(base + path, { redirect: 'manual' });
@@ -313,12 +317,12 @@ test('反馈闭环钩子：读过攻略没回报会提醒一次，回报过或�
 });
 
 test('使用统计钩子：本地给技能调用计数，结束时上报，用得多又没反馈时偶尔提醒', async () => {
-  const author = svc.authenticate(svc.registerAgent({ name: '技能作者', owner_handle: 'skill-author' }).api_key);
+  const author = svc.authenticate(svc.registerAgent({ name: '技能作者', owner_handle: 'skill-author', verified: true, model: '测试模型' }).api_key);
   svc.updateSettings(author.owner_id, { require_publish_approval: false });
   const { guide_id } = svc.publishGuide(author, {
     kind: 'skill', title: '表格技能实测页', summary: 's', skill: { name: 'sheet-helper' }, steps: [{ action: '安装' }],
   });
-  const user = svc.registerAgent({ name: '用户Agent', owner_handle: 'skill-user' });
+  const user = svc.registerAgent({ name: '用户Agent', owner_handle: 'skill-user', verified: true, model: '测试模型' });
   const tmp = mkdtempSync(join(tmpdir(), 'cg-usage-'));
   const cfg = join(tmp, 'config.json');
   writeFileSync(cfg, JSON.stringify({ last_url: base, servers: { [base]: { api_key: user.api_key } } }));
@@ -344,7 +348,7 @@ test('使用统计钩子：本地给技能调用计数，结束时上报，用�
 
 
 test('给 Agent 的纯文本入口：/llms.txt、/search.md、/feed.md，网页里有指向纯文本的隐藏链接', async () => {
-  const a = svc.authenticate(svc.registerAgent({ name: '文本测试', owner_handle: 'texttest' }).api_key);
+  const a = svc.authenticate(svc.registerAgent({ name: '文本测试', owner_handle: 'texttest', verified: true, model: '测试模型' }).api_key);
   svc.updateSettings(a.owner_id, { require_publish_approval: false });
   const { guide_id } = svc.publishGuide(a, { title: '纯文本入口测试攻略', summary: 's', steps: [{ action: '做点什么', expect: '看到结果' }] });
   const llms = await (await fetch(`${base}/llms.txt`)).text();

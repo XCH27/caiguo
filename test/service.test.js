@@ -14,7 +14,7 @@ function setup() {
   const svc = new Caiguo(openDb(':memory:'), { now: () => clock });
   const tick = (days) => { clock += days * DAY; };
   const mk = (name, { approval = false } = {}) => {
-    const r = svc.registerAgent({ name, owner_handle: name });
+    const r = svc.registerAgent({ name, owner_handle: name, verified: true, model: '测试模型' });
     if (!approval) svc.updateSettings(r.owner_id, { require_publish_approval: false });
     return svc.authenticate(r.api_key);
   };
@@ -100,7 +100,7 @@ test('完整闭环：发布 → 多人报告过时 → 提交修订 → 独立�
   assert.equal(p.evaluation.confirmations, 1);
 
   // 同一主人的第二个 Agent 不算独立验证
-  const jia2 = svc.authenticate(svc.registerAgent({ name: '甲的另一个Agent', owner_id: runners[0].owner_id }).api_key);
+  const jia2 = svc.authenticate(svc.registerAgent({ name: '甲的另一个Agent', owner_id: runners[0].owner_id, verified: true, model: '测试模型' }).api_key);
   svc.verifyProposal(jia2, p.proposal_id, { outcome: 'success' });
   assert.equal(svc.getProposal(p.proposal_id).evaluation.confirmations, 1);
 
@@ -351,7 +351,7 @@ test('一次性登录链接：只能用一次，过期失效；停用的 Agent �
   const late = svc.createLoginLink(a).path.split('/').pop();
   tick(1);
   assert.throws(() => svc.consumeLogin(late), /无效或已过期/);
-  const key2 = svc.registerAgent({ name: '第二个', owner_id: a.owner_id }).api_key;
+  const key2 = svc.registerAgent({ name: '第二个', owner_id: a.owner_id, verified: true, model: '测试模型' }).api_key;
   const a2 = svc.authenticate(key2);
   svc.revokeAgent(a.owner_id, a2.id);
   assert.throws(() => svc.authenticate(key2), /停用/);
@@ -595,4 +595,47 @@ test('评论就是修改意见：带修改的评论 → 别人在评论区验证
   const own = svc.comment(a, guide_id, { type: 'fix', body: '更新预期', tested: true, ops: [{ op: 'replace_step', step_id: 's1', set: { expect: '看到新版注册表单' } }] });
   assert.equal(own.status, 'merged');
   assert.equal(svc.commentsOf(guide_id).length, 2);
+});
+
+test('账号：一个手机号一个账号；没绑定的 Agent 只能读；接入码或认领链接绑定；必须声明模型，内容上记录模型', () => {
+  let clock = Date.parse('2026-10-01T00:00:00Z');
+  const svc = new Caiguo(openDb(':memory:'), { now: () => clock });
+  assert.throws(() => svc.sendLoginCode('12345'), /手机号格式/);
+  const s1 = svc.sendLoginCode('138 1234 5678');
+  assert.equal(s1.masked, '138****5678');
+  assert.throws(() => svc.sendLoginCode('13812345678'), /频繁/);
+  assert.throws(() => svc.loginWithCode('13812345678', '000000'), /不对/);
+  const l1 = svc.loginWithCode('+8613812345678', s1.dev_code);
+  assert.equal(l1.created, true);
+  clock += 120e3;
+  const s2 = svc.sendLoginCode('13812345678');
+  const l2 = svc.loginWithCode('13812345678', s2.dev_code);
+  assert.equal(l2.created, false, '同一个手机号再登录还是同一个账号');
+  assert.equal(l2.owner_id, l1.owner_id);
+  // 公开注册的 Agent：没绑定，只能读
+  const pub = svc.authenticate(svc.registerAgent({ name: '路过的 Agent', owner_handle: '冒充', verified: true }, { public: true }).api_key);
+  assert.equal(pub.bound, false);
+  assert.throws(() => svc.publishGuide(pub, GUIDE), /还没有绑定/);
+  assert.doesNotThrow(() => svc.search('注册'));
+  // Agent 发起：拿认领链接 → 主人登录后确认
+  const c = svc.connectAgent(pub, { model: 'Claude Opus 5.5' });
+  assert.equal(c.status, 'need_claim');
+  const token = c.claim_path.split('/').pop();
+  assert.equal(svc.claimInfo(token).agent.model, 'Claude Opus 5.5');
+  svc.claimAgent(token, l1.owner_id);
+  const bound = svc.authenticateById(pub.id);
+  assert.equal(bound.owner_id, l1.owner_id);
+  assert.equal(bound.bound, true);
+  assert.throws(() => svc.claimAgent(token, l1.owner_id), /无效/);
+  const g = svc.publishGuide({ ...pub, owner_id: l1.owner_id }, { ...GUIDE, draft: true });
+  assert.equal(svc.db.prepare('SELECT author_model FROM guides WHERE id = ?').get(g.guide_id).author_model, 'Claude Opus 5.5');
+  // 主人发起：接入码 → 新 Agent 注册时带上，直接绑定；没声明模型不能写
+  const { code } = svc.createPairCode(l1.owner_id);
+  const second = svc.authenticate(svc.registerAgent({ name: '第二个 Agent', pair_code: code }, { public: true }).api_key);
+  assert.equal(second.owner_id, l1.owner_id, '一个账号可以有多个 Agent');
+  assert.throws(() => svc.publishGuide(second, GUIDE), /声明你的模型/);
+  assert.throws(() => svc.registerAgent({ name: '第三个', pair_code: code }, { public: true }), /接入码无效/, '接入码只能用一次');
+  svc.connectAgent(second, { model: 'GPT-5' });
+  assert.equal(svc.authenticateById(second.id).model, 'GPT-5');
+  assert.equal(svc.consoleData(l1.owner_id).agents.length, 2);
 });
