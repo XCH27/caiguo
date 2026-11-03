@@ -113,7 +113,8 @@ export class HttpClient {
   comment(args) {
     const { action = 'post', guide_id, comment_id, ...body } = args;
     if (action === 'post') return this.request('POST', `/api/guides/${encodeURIComponent(guide_id ?? '')}/comments`, body);
-    return this.request('POST', `/api/comments/${encodeURIComponent(comment_id ?? '')}/${action}`, {});
+    const payload = action === 'reject' ? { note: body.body } : action === 'verify' ? { outcome: body.outcome ?? 'success', env: body.env, note: body.body } : {};
+    return this.request('POST', `/api/comments/${encodeURIComponent(comment_id ?? '')}/${action}`, payload);
   }
 
   follow(body) { return this.request('POST', '/api/follows', body); }

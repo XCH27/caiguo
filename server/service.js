@@ -622,8 +622,15 @@ export class Caiguo {
       const merged = this.mergeProposal(pid, { by: agent.owner_id, note: '作者/维护者直接更新' });
       return { proposal_id: pid, status: 'merged', merged_version: merged.version, risk: risk.level };
     }
+    // 别人的修订就是评论区里一条“带修改的评论”：大家在评论区验证，作者采纳即合并
+    const cid = id('c');
+    const ctype = { fix: 'fix', variant: 'variant', pitfall: 'add', improve: 'fix' }[kind] ?? 'fix';
+    const firstStep = ops.find((o) => o.step_id)?.step_id ?? null;
+    this.db.prepare(`INSERT INTO comments (id, guide_id, parent_id, agent_id, owner_id, type, body, env, tested, step_id, created_at, proposal_id)
+      VALUES (?, ?, NULL, ?, ?, ?, ?, ?, 1, ?, ?, ?)`).run(cid, guideId, agent.id, agent.owner_id, ctype, input?.comment ? redactText(String(input.comment)).slice(0, 1000) : rationale,
+      JSON.stringify(redactDeep(evidence?.env ?? {}).value), firstStep && current.content.steps.some((x) => x.id === firstStep) ? firstStep : null, now, pid);
     const p = this.proposalRow(pid);
-    return { proposal_id: pid, status: 'open', risk: risk.level, risk_reasons: risk.reasons, evaluation: this.evaluate(p) };
+    return { proposal_id: pid, comment_id: cid, status: 'open', risk: risk.level, risk_reasons: risk.reasons, evaluation: this.evaluate(p) };
   }
 
   proposalRow(pid) {
@@ -652,6 +659,7 @@ export class Caiguo {
       proposer: { agent: names[p.agent_id]?.name, owner: names[p.agent_id]?.handle },
       created_at: p.created_at, resolved_at: p.resolved_at, review_note: p.review_note,
       ops: p.ops, diff,
+      comment_id: this.db.prepare('SELECT id FROM comments WHERE proposal_id = ?').get(p.id)?.id ?? null,
       evaluation: p.status === 'open' ? this.evaluate(p) : null,
     };
   }
@@ -735,6 +743,7 @@ export class Caiguo {
           .run(g.id, p.owner_id, `${merged} 次修订被合并`, now);
       }
       this.rewardMerge(p, g, newVersion);
+      this.db.prepare('UPDATE comments SET accepted = 1 WHERE proposal_id = ?').run(pid);
       this.notify(p.owner_id, g.id, 'proposal_merged', { proposal_id: pid, version: newVersion, by: byCommunity ? 'community' : 'author' });
       if (byCommunity) this.notify(g.author_owner_id, g.id, 'proposal_merged', { proposal_id: pid, version: newVersion, by: 'community' });
       return { version: newVersion };
@@ -1435,9 +1444,16 @@ export class Caiguo {
     return { useful: r?.rating === 'helpful', misleading: r?.rating === 'misleading', recommended: Boolean(rec) };
   }
 
-  comment(agent, gid, { type = 'add', body, env, tested = false, reply_to, step } = {}) {
+  comment(agent, gid, { type = 'add', body, env, tested = false, reply_to, step, ops } = {}) {
     const g = this.guideRow(gid);
     if (!COMMENT_TYPES[type]) throw new ValidationError(`type 只能是：${Object.entries(COMMENT_TYPES).map(([k, v]) => `${k}（${v}）`).join(' / ')}`);
+    // 带具体修改的评论（纠错 / 补充 / 我的情况不同）= 修订：进入验证和合并流程
+    if (ops !== undefined && ops !== null) {
+      if (!['fix', 'add', 'variant'].includes(type)) throw new ValidationError('只有补充、纠错、我的情况不同可以附带修改（ops）');
+      if (!tested) throw new ValidationError('附带修改的评论需要你已经按修改后的做法实际跑通过（tested: true）');
+      const r = this.propose(agent, gid, { kind: { fix: 'fix', add: 'pitfall', variant: 'variant' }[type], rationale: body, ops, evidence: { outcome: 'success', env } });
+      return { comment_id: r.comment_id ?? null, guide_id: gid, type, proposal_id: r.proposal_id, status: r.status, merged_version: r.merged_version, evaluation: r.evaluation };
+    }
     const text = redactText(String(body ?? '').trim()).slice(0, 1000);
     if (text.length < 4) throw new ValidationError('评论内容太短。写具体的：补充了什么、哪里变了、你的情况有什么不同');
     this.quota('comments', agent.owner_id);
@@ -1478,11 +1494,22 @@ export class Caiguo {
     return { comment_id: cid, voted: !had, guide_id: c.guide_id };
   }
 
-  // 笔记作者采纳评论（求助笔记的“已解决”；其他笔记相当于置顶）
-  acceptComment(ownerId, cid) {
+  // 笔记作者采纳评论（求助笔记的“已解决”；其他笔记相当于置顶）。
+  // 带修改的评论被采纳 = 修改合并进笔记（作者或维护者）。
+  acceptComment(ownerId, cid, { name } = {}) {
     const c = this.db.prepare('SELECT * FROM comments WHERE id = ?').get(cid);
     if (!c) throw new HttpError(404, '评论不存在');
     const g = this.guideRow(c.guide_id);
+    if (c.proposal_id) {
+      const p = this.proposalRow(c.proposal_id);
+      if (p.status === 'open') {
+        const r = this.reviewProposal({ owner_id: ownerId, name: name ?? '作者' }, p.id, { action: 'merge' });
+        this.db.prepare('UPDATE comments SET accepted = 1 WHERE id = ?').run(cid);
+        return { comment_id: cid, accepted: true, guide_id: c.guide_id, merged_version: r.merged_version };
+      }
+      if (p.status === 'merged') return { comment_id: cid, accepted: true, guide_id: c.guide_id, merged_version: p.merged_version };
+      throw new HttpError(409, `这条修改已经是 ${p.status} 状态`);
+    }
     if (g.author_owner_id !== ownerId) throw new HttpError(403, '只有笔记作者可以采纳评论');
     this.db.prepare('UPDATE comments SET accepted = CASE WHEN id = ? THEN 1 - accepted ELSE 0 END WHERE guide_id = ?').run(cid, c.guide_id);
     const now = this.db.prepare('SELECT accepted FROM comments WHERE id = ?').get(cid).accepted;
@@ -1493,6 +1520,23 @@ export class Caiguo {
     return { comment_id: cid, accepted: Boolean(now), guide_id: c.guide_id };
   }
 
+  // 不采纳一条带修改的评论（写明原因，提交者会看到）
+  rejectComment(ownerId, cid, note) {
+    const c = this.db.prepare('SELECT * FROM comments WHERE id = ?').get(cid);
+    if (!c?.proposal_id) throw new HttpError(404, '这条评论没有附带修改');
+    this.reviewProposal({ owner_id: ownerId }, c.proposal_id, { action: 'reject', note });
+    return { comment_id: cid, guide_id: c.guide_id, status: 'rejected' };
+  }
+
+  // “我也按这个改法试过”：给带修改的评论做独立验证
+  verifyComment(agent, cid, { outcome = 'success', env, note } = {}) {
+    const c = this.db.prepare('SELECT * FROM comments WHERE id = ?').get(cid);
+    if (!c?.proposal_id) throw new HttpError(404, '这条评论没有附带修改，不需要验证；觉得有帮助可以点“有帮助”');
+    if (c.owner_id === agent.owner_id) throw new ValidationError('不能验证自己提的修改');
+    const r = this.verifyProposal(agent, c.proposal_id, { outcome, env, note });
+    return { comment_id: cid, guide_id: c.guide_id, ...r };
+  }
+
   // 评论区：采纳的在最前，然后按“有帮助”人数、是否实测、时间排序；回复挂在下面
   commentsOf(gid, { viewer } = {}) {
     const rows = this.db.prepare(`SELECT c.*, a.name AS agent, a.kind AS agent_kind, o.handle AS owner,
@@ -1501,7 +1545,19 @@ export class Caiguo {
     const voted = viewer ? new Set(this.db.prepare(`SELECT comment_id FROM comment_votes WHERE owner_id = ?`).all(viewer).map((x) => x.comment_id)) : new Set();
     const g = this.db.prepare('SELECT current_version FROM guides WHERE id = ?').get(gid);
     const content = this.versionRow(gid, g.current_version).content;
+    const change = (c) => {
+      if (!c.proposal_id) return null;
+      const row = this.db.prepare('SELECT * FROM proposals WHERE id = ?').get(c.proposal_id);
+      if (!row) return null;
+      const pv = this.proposalView(row, content);
+      const mine = viewer ? Boolean(this.db.prepare('SELECT 1 FROM runs WHERE proposal_id = ? AND owner_id = ?').get(row.id, viewer)) : false;
+      return {
+        id: pv.id, status: pv.status, risk: pv.risk, diff: pv.diff, merged_version: pv.merged_version, review_note: pv.review_note,
+        confirmations: pv.evaluation?.confirmations ?? null, needed: pv.evaluation?.needed ?? null, summary: pv.evaluation?.summary ?? null, verified_by_viewer: mine,
+      };
+    };
     const view = (c) => ({
+      change: change(c),
       id: c.id, type: c.type, type_name: COMMENT_TYPES[c.type], body: c.body, env: j(c.env) ?? {}, tested: Boolean(c.tested),
       step: c.step_id ? stepLabel(content, c.step_id) : null, accepted: Boolean(c.accepted), helpful: c.helpful, voted: voted.has(c.id),
       agent: c.agent, by_human: c.agent_kind === 'web', owner: c.owner, owner_id: c.owner_id, created_at: c.created_at, replies: [],
@@ -1509,7 +1565,7 @@ export class Caiguo {
     const top = rows.filter((c) => !c.parent_id).map(view);
     const byId = new Map(top.map((c) => [c.id, c]));
     for (const c of rows.filter((x) => x.parent_id).sort((a, b) => a.created_at.localeCompare(b.created_at))) byId.get(c.parent_id)?.replies.push(view(c));
-    const rank = (c) => (c.accepted ? 1e6 : 0) + c.helpful * 100 + (c.tested ? 10 : 0) + (c.type === 'fix' ? 5 : 0);
+    const rank = (c) => (c.accepted ? 1e6 : 0) + (c.change?.status === 'open' ? 5e5 : 0) + c.helpful * 100 + (c.change?.confirmations ?? 0) * 100 + (c.tested ? 10 : 0) + (c.type === 'fix' ? 5 : 0);
     return top.sort((a, b) => rank(b) - rank(a) || b.created_at.localeCompare(a.created_at));
   }
 

@@ -46,7 +46,7 @@ export function createApp(svc, { publicUrl } = {}) {
       const g = svc.getGuide(m[1], { viewer: me ? me.owner_id : anonViewer(req, 'web'), source: 'web', presenceOwner: me?.owner_id, ownerView: me?.owner_id });
       const related = g.tags.filter((t) => t !== '示例').length
         ? svc.search('', { limit: 100 }).filter((x) => x.id !== g.id && x.tags.some((t) => t !== '示例' && g.tags.includes(t))).slice(0, 8) : [];
-      const notice = url.searchParams.has('updated') ? '已保存为新版本。' : url.searchParams.has('proposed') ? '修订已提交，等作者确认或其他人验证。'
+      const notice = url.searchParams.has('updated') ? '已保存为新版本。' : url.searchParams.has('proposed') ? '已作为带修改的评论发在评论区，等作者采纳或其他人验证。'
         : url.searchParams.has('published') ? '已发布。' : url.searchParams.has('reacted') ? '已记录，谢谢你的真实反馈。' : url.searchParams.has('commented') ? '评论已发表。' : null;
       g.mine = me ? svc.myReactions(me.owner_id, g.id) : {};
       return html(res, V.renderGuide(g, {
@@ -76,10 +76,16 @@ export function createApp(svc, { publicUrl } = {}) {
       const r = svc.comment(svc.webAgent(me.owner_id), m[1], { type: f.type, body: f.body, tested: Boolean(f.tested), step: f.step || undefined, reply_to: f.reply_to || undefined });
       redirect(res, `/g/${m[1]}?commented=1#${r.comment_id}`);
     }],
-    ['POST', /^\/comments\/([\w-]+)\/(helpful|accept)$/, async (req, res, m) => {
-      const me = requireMe(req, await form(req));
-      const r = m[2] === 'helpful' ? svc.voteComment(me.owner_id, m[1]) : svc.acceptComment(me.owner_id, m[1]);
-      redirect(res, `/g/${r.guide_id}#${m[1]}`);
+    ['POST', /^\/comments\/([\w-]+)\/(helpful|accept|verify|reject)$/, async (req, res, m) => {
+      const f = await form(req);
+      const me = requireMe(req, f);
+      const r = {
+        helpful: () => svc.voteComment(me.owner_id, m[1]),
+        accept: () => svc.acceptComment(me.owner_id, m[1], { name: `${me.handle}（网页）` }),
+        verify: () => svc.verifyComment(svc.webAgent(me.owner_id), m[1], { outcome: 'success', note: '在网页上确认：按这个改法试过，可行' }),
+        reject: () => svc.rejectComment(me.owner_id, m[1], f.note),
+      }[m[2]]();
+      redirect(res, `/g/${r.guide_id}${m[2] === 'accept' && r.merged_version ? '?updated=1' : ''}#${m[1]}`);
     }],
     ['POST', /^\/follow$/, async (req, res) => {
       const f = await form(req);
@@ -304,7 +310,9 @@ export function createApp(svc, { publicUrl } = {}) {
     ['GET', /^\/api\/guides\/([\w-]+)\/comments$/, (req, res, m) => json(res, { comments: svc.commentsOf(m[1]) })],
     ['POST', /^\/api\/guides\/([\w-]+)\/comments$/, async (req, res, m) => json(res, svc.comment(auth(req), m[1], await body(req)), 201)],
     ['POST', /^\/api\/comments\/([\w-]+)\/helpful$/, (req, res, m) => json(res, svc.voteComment(auth(req).owner_id, m[1]))],
-    ['POST', /^\/api\/comments\/([\w-]+)\/accept$/, (req, res, m) => json(res, svc.acceptComment(auth(req).owner_id, m[1]))],
+    ['POST', /^\/api\/comments\/([\w-]+)\/accept$/, (req, res, m) => { const a = auth(req); json(res, svc.acceptComment(a.owner_id, m[1], { name: a.name })); }],
+    ['POST', /^\/api\/comments\/([\w-]+)\/verify$/, async (req, res, m) => json(res, svc.verifyComment(auth(req), m[1], await body(req)))],
+    ['POST', /^\/api\/comments\/([\w-]+)\/reject$/, async (req, res, m) => json(res, svc.rejectComment(auth(req).owner_id, m[1], (await body(req)).note))],
     ['POST', /^\/api\/follows$/, async (req, res) => json(res, svc.follow(auth(req).owner_id, await body(req)))],
     ['GET', /^\/api\/library$/, (req, res, m, url) => json(res, svc.library(auth(req), { view: url.searchParams.get('view') ?? 'mine', folder: url.searchParams.get('folder') || undefined }))],
     ['POST', /^\/api\/manage$/, async (req, res) => json(res, svc.manage(auth(req), await body(req)))],
@@ -398,7 +406,7 @@ export function createApp(svc, { publicUrl } = {}) {
         return redirect(res, '/me/guides');
       }
       const r = svc.editGuide(web, gid, editInput(model), { rationale: f.rationale, tested: Boolean(f.tested) });
-      return redirect(res, `/g/${gid}?${r.status === 'merged' ? 'updated' : 'proposed'}=1`);
+      return redirect(res, r.status === 'merged' ? `/g/${gid}?updated=1` : `/g/${gid}?proposed=1#${r.comment_id ?? 'comments'}`);
     } catch (e) {
       if (e.status && e.status < 500) return again({ error: e.message, add });
       throw e;
@@ -448,8 +456,13 @@ export function createApp(svc, { publicUrl } = {}) {
       consoleLink: async () => svc.createLoginLink(agent()),
       library: async (o) => svc.library(agent(), o),
       react: async ({ guide_id, ...b }) => svc.react(agent(), guide_id, b),
-      comment: async ({ action = 'post', guide_id, comment_id, ...b }) => (action === 'post' ? svc.comment(agent(), guide_id, b)
-        : action === 'helpful' ? svc.voteComment(agent().owner_id, comment_id) : svc.acceptComment(agent().owner_id, comment_id)),
+      comment: async ({ action = 'post', guide_id, comment_id, ...b }) => ({
+        post: () => svc.comment(agent(), guide_id, b),
+        helpful: () => svc.voteComment(agent().owner_id, comment_id),
+        accept: () => svc.acceptComment(agent().owner_id, comment_id, { name: agent().name }),
+        verify: () => svc.verifyComment(agent(), comment_id, { outcome: b.outcome ?? 'success', env: b.env, note: b.body }),
+        reject: () => svc.rejectComment(agent().owner_id, comment_id, b.body),
+      }[action] ?? (() => { throw new Error('action 只能是 post / helpful / verify / accept / reject'); }))(),
       follow: async (b) => svc.follow(agent().owner_id, b),
       manage: async (b) => svc.manage(agent(), b),
     };

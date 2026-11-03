@@ -557,3 +557,42 @@ test('互动：有用必须写用它做了什么；推荐给主人进消息；�
   svc.follow(u.owner_id, { type: 'tag', target: 'Oracle', unfollow: true });
   assert.equal(svc.followingOf(u.owner_id).tags.length, 0);
 });
+
+test('评论就是修改意见：带修改的评论 → 别人在评论区验证 → 作者采纳即更新；不采纳要写原因', () => {
+  const { svc, mk } = setup();
+  const a = mk('作者');
+  const b = mk('纠错者');
+  const c = mk('验证者');
+  const { guide_id } = svc.publishGuide(a, GUIDE);
+  assert.throws(() => svc.comment(b, guide_id, { type: 'fix', body: '按钮改名了', ops: [{ op: 'replace_step', step_id: 's2', set: { target: { role: 'button', name: '发送验证码' } } }] }), /tested/);
+  const r = svc.comment(b, guide_id, { type: 'fix', body: '第 2 步按钮现在叫“发送验证码”', tested: true, env: { region: '中国大陆' }, ops: [{ op: 'replace_step', step_id: 's2', set: { target: { role: 'button', name: '发送验证码' } } }] });
+  assert.equal(r.status, 'open');
+  assert.ok(r.comment_id && r.proposal_id);
+  let cm = svc.commentsOf(guide_id)[0];
+  assert.equal(cm.id, r.comment_id);
+  assert.equal(cm.type, 'fix');
+  assert.equal(cm.step, '第 2 步');
+  assert.equal(cm.change.status, 'open');
+  assert.equal(cm.change.diff[0].after.includes('发送验证码'), true);
+  // 同一个修订在攻略的步骤旁边也能看到，并且指向这条评论
+  assert.equal(svc.getGuide(guide_id).proposals[0].comment_id, r.comment_id);
+  assert.throws(() => svc.verifyComment(b, r.comment_id), /自己/);
+  svc.verifyComment(c, r.comment_id, { env: { region: '中国大陆' } });
+  assert.equal(svc.commentsOf(guide_id, { viewer: c.owner_id })[0].change.verified_by_viewer, true);
+  assert.throws(() => svc.acceptComment(b.owner_id, r.comment_id), /作者或维护者/);
+  const ok = svc.acceptComment(a.owner_id, r.comment_id);
+  assert.equal(ok.merged_version, 2);
+  assert.equal(svc.getGuide(guide_id).content.steps[1].target.name, '发送验证码');
+  cm = svc.commentsOf(guide_id)[0];
+  assert.equal(cm.change.status, 'merged');
+  assert.equal(cm.accepted, true);
+  // 不采纳
+  const r2 = svc.comment(c, guide_id, { type: 'add', body: '补一个坑：海外卡也会被拒', tested: true, ops: [{ op: 'add_pitfall', pitfall: { symptom: '海外卡被拒', fix: '换国内双币卡' } }] });
+  assert.throws(() => svc.rejectComment(a.owner_id, r2.comment_id, ''), /原因/);
+  svc.rejectComment(a.owner_id, r2.comment_id, '和第 3 步的已知问题重复');
+  assert.equal(svc.commentsOf(guide_id).find((x) => x.id === r2.comment_id).change.status, 'rejected');
+  // 作者自己带修改的评论直接生效，不留评论
+  const own = svc.comment(a, guide_id, { type: 'fix', body: '更新预期', tested: true, ops: [{ op: 'replace_step', step_id: 's1', set: { expect: '看到新版注册表单' } }] });
+  assert.equal(own.status, 'merged');
+  assert.equal(svc.commentsOf(guide_id).length, 2);
+});

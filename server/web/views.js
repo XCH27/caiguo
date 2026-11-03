@@ -311,8 +311,8 @@ function stepBlock(g, s, i) {
     if (!ds.length) continue;
     const ev = p.evaluation;
     const w = ev?.needed ? Math.min(100, Math.round((ev.confirmations / ev.needed) * 100)) : 0;
-    alerts += `<div class="blk blk-cobalt"><b>修订：${esc(p.rationale)}</b>${ds.map((d) => `${d.before ? `<del>${esc(d.before)}</del>` : ''}${d.after ? `<ins>${esc(d.after)}</ins>` : ''}`).join('')}
-      <span class="prog"><i style="width:${w}%"></i></span><small>${esc(ev?.summary ?? '')}</small></div>`;
+    alerts += `<a class="blk blk-cobalt" href="#${esc(p.comment_id ?? 'comments')}"><b>评论区有人提了修改：${esc(p.rationale)}</b>${ds.map((d) => `${d.before ? `<del>${esc(d.before)}</del>` : ''}${d.after ? `<ins>${esc(d.after)}</ins>` : ''}`).join('')}
+      <span class="prog"><i style="width:${w}%"></i></span><small>${esc(ev?.summary ?? '')} · 去评论区验证 →</small></a>`;
   }
   return `<li class="step${sig.status === 'suspect' ? ' step-warn' : ''}" id="${esc(s.id)}">
   <span class="step-n">${String(i + 1).padStart(2, '0')}</span>
@@ -425,7 +425,7 @@ function actionBar(g, { me, sent, saved, folders }) {
     : '';
   const comments = `<a class="act" href="#comments">${icon('chat')}<span>评论 <em>${x.comments}</em></span></a>`;
   const edit = me
-    ? `<a class="act" href="/g/${esc(g.id)}/edit">${icon('edit')}<span>${own ? '编辑' : '提修改建议'}</span></a>`
+    ? `<a class="act" href="/g/${esc(g.id)}/edit">${icon('edit')}<span>${own ? '编辑' : '改一改'}</span></a>`
     : '';
   const md = `<a class="act act-quiet" href="/g/${esc(g.id)}.md">${icon('text')}<span>文本版</span></a>`;
   const hint = me
@@ -448,14 +448,40 @@ function commentItem(g, cm, me, { reply = false } = {}) {
       <span class="pill cm-t cm-${esc(cm.type)}">${esc(cm.type_name)}</span>${cm.tested ? '<span class="pill pill-lime">实测过</span>' : ''}${cm.accepted ? '<span class="pill pill-ink">作者采纳</span>' : ''}${cm.step ? `<a class="cm-step" href="#${esc(g.content.steps.find((s, i) => `第 ${i + 1} 步` === cm.step)?.id ?? '')}">${esc(cm.step)}</a>` : ''}
       <time>${ago(cm.created_at)}</time></div>
     <p>${esc(cm.body)}</p>
+    ${cm.change ? changeBlock(g, cm, me) : ''}
     ${env.length ? `<div class="cmt-env">${env.slice(0, 4).map(([k, v]) => `<span>${esc(k)}: ${esc(v)}</span>`).join('')}</div>` : ''}
     <div class="cm-acts">
       ${me ? `<form method="post" action="/comments/${esc(cm.id)}/helpful">${csrf}<button class="cm-btn${cm.voted ? ' on' : ''}" type="submit">${icon('thumb')}有帮助 ${cm.helpful || ''}</button></form>` : `<span class="cm-btn">${icon('thumb')}有帮助 ${cm.helpful || ''}</span>`}
       ${me && !reply ? `<details class="cm-reply-box"><summary class="cm-btn">回复</summary><form method="post" action="/g/${esc(g.id)}/comments">${csrf}<input type="hidden" name="reply_to" value="${esc(cm.id)}"><input type="hidden" name="type" value="${cm.type === 'ask' ? 'answer' : 'add'}"><textarea name="body" rows="2" required minlength="4" maxlength="1000" placeholder="写具体一点"></textarea><button class="btn btn-ink" type="submit">回复</button></form></details>` : ''}
-      ${own && !reply && cm.owner_id !== me.owner_id ? `<form method="post" action="/comments/${esc(cm.id)}/accept">${csrf}<button class="cm-btn" type="submit">${cm.accepted ? '取消采纳' : g.kind === 'ask' ? '采纳为答案' : '采纳'}</button></form>` : ''}
+      ${own && !reply && cm.owner_id !== me.owner_id && !cm.change ? `<form method="post" action="/comments/${esc(cm.id)}/accept">${csrf}<button class="cm-btn" type="submit">${cm.accepted ? '取消采纳' : g.kind === 'ask' ? '采纳为答案' : '采纳'}</button></form>` : ''}
     </div>
     ${(cm.replies ?? []).map((r) => commentItem(g, r, me, { reply: true })).join('')}
   </div>
+</div>`;
+}
+
+// 带修改的评论：显示改了什么、验证进度；别人可以“我也试过”，作者可以采纳（合并）或不采纳
+function changeBlock(g, cm, me) {
+  const ch = cm.change;
+  const own = me && (g.author.owner_id === me.owner_id || (g.maintainers ?? []).some((x) => x.handle === me.handle));
+  const csrf = me ? csrfInput(me) : '';
+  const state = {
+    open: `<span class="pill ${ch.risk === 'high' ? 'pill-orange' : 'pill-cobalt'}">待采纳 · ${esc(RISK[ch.risk] ?? '')}</span><small>${ch.needed ? `${ch.confirmations}/${ch.needed} 个独立验证` : ''}${ch.risk === 'high' ? ' · 改链接或付款步骤，只能由作者确认' : ''}</small>`,
+    merged: `<span class="pill pill-lime">已采纳，笔记更新到 v${ch.merged_version}</span>`,
+    rejected: `<span class="pill pill-ink">作者没有采纳</span>${ch.review_note ? `<small>原因：${esc(ch.review_note)}</small>` : ''}`,
+    conflict: `<span class="pill pill-gray">和新版本冲突</span>${ch.review_note ? `<small>${esc(ch.review_note)}</small>` : ''}`,
+  }[ch.status] ?? '';
+  const w = ch.needed ? Math.min(100, Math.round((ch.confirmations / ch.needed) * 100)) : 0;
+  return `<div class="change">
+  <div class="change-h"><b>附带的修改</b>${state}</div>
+  ${ch.status === 'open' && ch.needed ? `<span class="prog prog-cobalt"><i style="width:${w}%"></i></span>` : ''}
+  <div class="diffs">${ch.diff.map((x) => `<span class="where">${esc(x.where)}</span>${x.before ? `<del>${esc(x.before)}</del>` : ''}${x.after ? `<ins>${esc(x.after)}</ins>` : ''}`).join('')}</div>
+  ${ch.status === 'open' && me ? `<div class="row">
+    ${me.owner_id !== cm.owner_id && !ch.verified_by_viewer ? `<form method="post" action="/comments/${esc(cm.id)}/verify">${csrf}<button class="btn btn-outline" type="submit">我也按这个改法试过，可行</button></form>` : ''}
+    ${ch.verified_by_viewer ? '<span class="muted">你已经验证过</span>' : ''}
+    ${own ? `<form method="post" action="/comments/${esc(cm.id)}/accept">${csrf}<button class="btn btn-ink" type="submit">采纳，更新笔记</button></form>
+    <details class="cm-reply-box"><summary class="cm-btn">不采纳</summary><form method="post" action="/comments/${esc(cm.id)}/reject">${csrf}<textarea name="note" rows="2" required minlength="2" placeholder="原因（提交者会看到）"></textarea><button class="btn btn-outline" type="submit">不采纳</button></form></details>` : ''}
+  </div>` : ''}
 </div>`;
 }
 
@@ -466,9 +492,10 @@ function commentsSection(g, me) {
     <div class="cm-types">${types.map((t, i) => `<label class="cm-type"><input type="radio" name="type" value="${t}" ${i === 0 ? 'checked' : ''}><span>${COMMENT_TYPES[t]}</span></label>`).join('')}</div>
     <textarea name="body" rows="3" required minlength="4" maxlength="1000" placeholder="${g.kind === 'ask' ? '你是怎么解决的？环境、做法、结果' : '写具体的：补充了什么、哪里变了（报错原文）、你的情况有什么不同'}"></textarea>
     <div class="row">${g.content.steps.length ? `<label class="cm-stepsel">针对第 <input name="step" type="number" min="1" max="${g.content.steps.length}"> 步</label>` : ''}<label class="check"><input type="checkbox" name="tested"><span>我实际做过 / 验证过</span></label><button class="btn btn-ink" type="submit">发表</button></div>
+    <p class="cm-hint">${g.author.owner_id === me.owner_id ? `你是作者，可以直接 <a href="/g/${esc(g.id)}/edit">编辑笔记</a>。` : `想直接给出改好的写法？<a href="/g/${esc(g.id)}/edit">在编辑器里改</a>，改完会作为一条“带修改的评论”发在这里，大家验证、作者采纳后就更新进笔记。`}</p>
   </form>` : `<p class="muted"><a href="/login">登录</a>后可以评论。Agent 用 caiguo_comment 评论。</p>`;
   return `<section class="cmts" id="comments" aria-labelledby="cm-h">
-  <div class="box-h"><h2 class="sec-h" id="cm-h">评论 <small>${list.length} 条 · 采纳的和“有帮助”多的在前</small></h2></div>
+  <div class="box-h"><h2 class="sec-h" id="cm-h">评论 <small>${list.length} 条 · 采纳的、待采纳的修改和“有帮助”多的在前</small></h2></div>
   ${form}
   ${list.length ? list.map((cm) => commentItem(g, cm, me)).join('') : `<p class="muted">${g.kind === 'ask' ? '还没有回答。' : '还没有评论。'}评论只收具体的补充、纠错、提问和回答。</p>`}
 </section>`;
@@ -723,14 +750,14 @@ function pendingCard(g, me) {
 
 function proposalCard(p, me) {
   return `<article class="todo${p.risk === 'high' ? ' todo-orange' : ''}">
-  <span class="${p.risk === 'high' ? 'tape tape-orange' : 'pill pill-cobalt'} todo-tag">${p.risk === 'high' ? '高风险修订 · 需要你确认' : `修订 · ${RISK[p.risk]}`}</span>
+  <span class="${p.risk === 'high' ? 'tape tape-orange' : 'pill pill-cobalt'} todo-tag">${p.risk === 'high' ? '带修改的评论 · 高风险，需要你确认' : `带修改的评论 · ${RISK[p.risk]}`}</span>
   <small>${esc(p.proposer.agent)} · ${ago(p.created_at)} · ${esc(p.evaluation?.summary ?? '')}</small>
-  <b>《${esc(p.guide_title)}》：${esc(p.rationale)}</b>
+  <b>《${esc(p.guide_title)}》：${esc(p.rationale)}</b>${p.comment_id ? ` <a class="muted" href="/g/${esc(p.guide_id)}#${esc(p.comment_id)}">在评论区查看 →</a>` : ''}
   <div class="diffs">${p.diff.map((x) => `<span class="where">${esc(x.where)}</span>${x.before ? `<del>${esc(x.before)}</del>` : ''}${x.after ? `<ins>${esc(x.after)}</ins>` : ''}`).join('')}</div>
   ${p.risk === 'high' ? '<p class="muted">改链接、付款步骤这类修订永远不会自动生效，请确认新地址是官方的。</p>' : ''}
   <div class="row">
-    <form method="post" action="/me/proposals/${esc(p.id)}">${csrfInput(me)}<input type="hidden" name="action" value="merge"><button class="btn btn-ink" type="submit">合并</button></form>
-    <form method="post" action="/me/proposals/${esc(p.id)}" class="row">${csrfInput(me)}<input type="hidden" name="action" value="reject"><label class="sr" for="n-${esc(p.id)}">拒绝原因</label><input id="n-${esc(p.id)}" name="note" required placeholder="拒绝原因（提交者会看到）"><button class="btn btn-outline" type="submit">拒绝</button></form>
+    <form method="post" action="/me/proposals/${esc(p.id)}">${csrfInput(me)}<input type="hidden" name="action" value="merge"><button class="btn btn-ink" type="submit">采纳，更新笔记</button></form>
+    <form method="post" action="/me/proposals/${esc(p.id)}" class="row">${csrfInput(me)}<input type="hidden" name="action" value="reject"><label class="sr" for="n-${esc(p.id)}">不采纳的原因</label><input id="n-${esc(p.id)}" name="note" required placeholder="不采纳的原因（提交者会看到）"><button class="btn btn-outline" type="submit">不采纳</button></form>
   </div>
 </article>`;
 }
@@ -748,7 +775,7 @@ export function renderMeOverview(d, { me, saved, history, runs, recommends = [] 
 ${d.runs.length ? `<section><h2 class="sec-h sec-sm">你的 Agent 正在做</h2>${d.runs.map((x) => `<a class="todo todo-ink" href="${esc(x.follow_path)}"><b>${esc(x.agent)} · 《${esc(x.title)}》</b><small>已回报 ${x.state.done.length}/${x.state.total_steps} 步 · 打开跟做页 →</small></a>`).join('')}</section>` : ''}
 <section><div class="box-h"><h2 class="sec-h sec-sm">等你处理 <em>${todo}</em></h2>${todo > 2 ? '<a href="/me/messages">全部 →</a>' : ''}</div>
   ${d.pending.slice(0, 2).map((g) => pendingCard(g, me)).join('')}${d.proposals.slice(0, Math.max(0, 2 - d.pending.length)).map((p) => proposalCard(p, me)).join('')}
-  ${!todo ? '<p class="muted">没有待处理的事。Agent 想发布攻略、别人给你的攻略提修订时会出现在这里。</p>' : ''}
+  ${!todo ? '<p class="muted">没有待处理的事。Agent 想发布笔记、别人在你的笔记下发了带修改的评论时会出现在这里。</p>' : ''}
 </section>
 ${d.attention.length ? `<section><h2 class="sec-h sec-sm">你的攻略收到的问题回报</h2>${d.attention.map((a) => `<a class="todo" href="/g/${esc(a.guide_id)}"><b>《${esc(a.title)}》</b><small>${a.issues.map((x) => `${esc(x.step)} ${x.problem_count} 人报告${x.recent_problems[0]?.observed ? `「${esc(x.recent_problems[0].observed)}」` : ''}`).join('；')}</small></a>`).join('')}</section>` : ''}
 ${recommends.length ? `<section><div class="box-h"><h2 class="sec-h sec-sm">你的 Agent 推荐给你</h2></div><div class="recs">${recommends.slice(0, 4).map((g) => `<a class="rec" href="/g/${esc(g.id)}">${thumb(g)}<span><small>${esc(g.recommended_by)} · ${ago(g.recommended_at)}</small><b>${esc(g.title)}</b><q>${esc(g.reason)}</q></span></a>`).join('')}</div></section>` : ''}
@@ -875,10 +902,10 @@ const MSG = {
   comment_accepted: (m) => [`你在《${m.title}》的评论被作者采纳`, '贡献分 +1', 'pill-lime', '采纳'],
   new_follower: (m) => [`${m.by} 关注了你`, '', 'pill-yellow', '粉丝'],
   run_problem: (m) => [`《${m.title}》收到问题回报`, `${esc(m.by)}：${(m.problems ?? []).map((p) => `${esc(p.step)}${p.status === 'drift' ? '与描述不符' : '失败'}${p.observed ? `「${esc(p.observed)}」` : ''}`).join('；')}`, 'pill-yellow', '问题'],
-  proposal_new: (m) => [`《${m.title}》收到修订`, `${esc(m.by)}（${RISK[m.risk] ?? ''}）：${esc(m.rationale)}`, 'pill-cobalt', '修订'],
-  proposal_merged: (m) => [`《${m.title}》的修订已合并`, `更新到 v${m.version}（${m.by === 'community' ? '社区自动合并' : '作者合并'}）`, 'pill-lime', '合并'],
-  proposal_rejected: (m) => [`你给《${m.title}》的修订被拒绝`, esc(m.note ?? ''), 'pill-ink', '拒绝'],
-  proposal_conflict: (m) => [`你给《${m.title}》的修订和新版本冲突`, esc(m.note ?? ''), 'pill-outline', '冲突'],
+  proposal_new: (m) => [`《${m.title}》收到带修改的评论`, `${esc(m.by)}（${RISK[m.risk] ?? ''}）：${esc(m.rationale)}`, 'pill-cobalt', '修改'],
+  proposal_merged: (m) => [`《${m.title}》的修改已采纳`, `更新到 v${m.version}（${m.by === 'community' ? '社区自动合并' : '作者合并'}）`, 'pill-lime', '合并'],
+  proposal_rejected: (m) => [`你给《${m.title}》的修改没有被采纳`, esc(m.note ?? ''), 'pill-ink', '拒绝'],
+  proposal_conflict: (m) => [`你给《${m.title}》的修改和新版本冲突`, esc(m.note ?? ''), 'pill-outline', '冲突'],
 };
 
 export function renderMessages(d, { me, items, seenAt }) {
@@ -1130,13 +1157,13 @@ export function renderEditor({ model, mode, gid, action, error, notice, me, add 
   const steps = [...model.steps, ...Array.from({ length: Math.max(add.steps ?? 0, model.steps.length ? 0 : (model.kind === 'guide' ? 3 : 1)) }, () => ({ ...blankStep }))];
   const sources = [...model.sources, ...Array.from({ length: Math.max(add.sources ?? 0, model.sources.length ? 0 : 1) }, () => ({}))];
   const pitfalls = [...model.pitfalls, ...Array.from({ length: Math.max(add.pitfalls ?? 0, model.pitfalls.length ? 0 : 1) }, () => ({}))];
-  const titleText = { new: '发笔记', draft: '编辑草稿', edit: '编辑笔记', suggest: '提修改建议' }[mode];
+  const titleText = { new: '发笔记', draft: '编辑草稿', edit: '编辑笔记', suggest: '改一改（会发成带修改的评论）' }[mode];
   const kindName = KINDS[model.kind] ?? '笔记';
   const submit = {
     new: `<button class="btn btn-outline btn-lg" type="submit" name="op" value="draft">存草稿</button><button class="btn btn-ink btn-lg" type="submit" name="op" value="publish">发布（押金 3 分）</button>`,
     draft: `<button class="btn btn-outline btn-lg" type="submit" name="op" value="draft">保存</button><button class="btn btn-ink btn-lg" type="submit" name="op" value="publish">保存并发布</button>`,
     edit: `<button class="btn btn-ink btn-lg" type="submit" name="op" value="save">保存为新版本</button>`,
-    suggest: `<button class="btn btn-ink btn-lg" type="submit" name="op" value="save">提交修订</button>`,
+    suggest: `<button class="btn btn-ink btn-lg" type="submit" name="op" value="save">发到评论区</button>`,
   }[mode];
   const body = `
 <a class="back" href="${gid && mode !== 'draft' ? `/g/${esc(gid)}` : '/me/guides'}">${icon('back')}${gid && mode !== 'draft' ? '回到笔记' : '我的笔记'}</a>
@@ -1145,7 +1172,7 @@ export function renderEditor({ model, mode, gid, action, error, notice, me, add 
   ${csrfInput(me)}
   <input type="hidden" name="step_n" value="${steps.length}"><input type="hidden" name="src_n" value="${sources.length}"><input type="hidden" name="pit_n" value="${pitfalls.length}">
   <h1 class="page-h">${titleText}</h1>
-  ${mode === 'suggest' ? '<p class="muted">你的修改会作为“待合并修订”显示在攻略上。作者确认，或者有足够多的人独立验证后生效。改链接、付款步骤这类修订必须作者确认。</p>' : ''}
+  ${mode === 'suggest' ? '<p class="muted">改完会作为一条“带修改的评论”发在评论区，并标在对应的步骤旁边。作者采纳，或者有足够多的人在评论区验证后生效。改链接、付款步骤这类修改必须作者确认。</p>' : ''}
   ${mode === 'edit' ? '<p class="muted">保存后生成新版本。只有被你改过的步骤会清空旧的回报记录，没改的步骤保留。</p>' : ''}
   ${error ? `<div class="blk blk-danger" role="alert"><b>没有保存</b><span>${esc(error)}</span></div>` : ''}
   ${notice ? `<div class="blk blk-soft" role="status">${esc(notice)}</div>` : ''}
@@ -1205,8 +1232,8 @@ export function renderEditor({ model, mode, gid, action, error, notice, me, add 
     <button class="btn btn-text" type="submit" name="op" value="add_pitfall">${icon('plus')}再加一个坑</button>
   </section>
 
-  ${mode === 'suggest' || mode === 'edit' ? `<section class="ed-sec"><h2><span>6</span>${mode === 'suggest' ? '修订说明' : '更新说明'}</h2>
-    <label class="ed-full"><span>${mode === 'suggest' ? '你实际看到了什么、为什么这样改 <em>必填</em>' : '这次改了什么（会显示在更新记录里）'}</span><textarea name="rationale" rows="3">${esc(model.rationale ?? '')}</textarea></label>
+  ${mode === 'suggest' || mode === 'edit' ? `<section class="ed-sec"><h2><span>6</span>${mode === 'suggest' ? '评论内容' : '更新说明'}</h2>
+    <label class="ed-full"><span>${mode === 'suggest' ? '你实际看到了什么、为什么这样改（会作为评论正文） <em>必填</em>' : '这次改了什么（会显示在更新记录里）'}</span><textarea name="rationale" rows="3">${esc(model.rationale ?? '')}</textarea></label>
     ${mode === 'suggest' ? '<label class="check"><input type="checkbox" name="tested"><span>我已经按修改后的做法实际跑通了</span></label>' : ''}
   </section>` : ''}
 

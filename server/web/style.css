@@ -551,6 +551,17 @@ code, pre { font-family: var(--mono); }
 .rules { padding-top: 36px; }
 .rules .sticky { margin: 0; }
 
+/* 带修改的评论 */
+.change { display: flex; flex-direction: column; gap: 8px; padding: 14px 16px; border: 2px solid var(--cobalt); border-radius: 16px; background: #f5f7ff; }
+.change-h { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.change-h small { font-size: 12px; color: #444; }
+.prog-cobalt { background: #dfe5ff; max-width: 280px; }
+.prog-cobalt i { background: var(--cobalt); }
+.change .row .btn { min-height: 40px; font-size: 14px; }
+.cm-hint { font-size: 12px; color: var(--muted); }
+.cm-hint a, .todo .muted { text-decoration: underline; }
+a.blk-cobalt:hover { filter: brightness(1.08); }
+
 /* 小红书式：类型标签、推荐理由、互动、评论 */
 .note-why { font-size: 12px; color: #8a5a00; background: #fff6d1; padding: 1px 8px; border-radius: 6px; width: fit-content; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .act em { font-style: normal; font-family: var(--num); font-weight: 800; color: #555; margin-left: 2px; }

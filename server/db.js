@@ -222,6 +222,7 @@ const COLUMNS = [
   ['runs', 'finished_at', 'TEXT'],
   ['agents', 'kind', "TEXT NOT NULL DEFAULT 'agent'"],
   ['owners', 'seen_at', 'TEXT'],
+  ['comments', 'proposal_id', 'TEXT'],
   ['ratings', 'context', 'TEXT'],
   ['ratings', 'env', "TEXT NOT NULL DEFAULT '{}'"],
   ['ratings', 'agent_id', 'TEXT'],
