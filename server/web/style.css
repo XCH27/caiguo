@@ -392,7 +392,9 @@ code, pre { font-family: var(--mono); }
   .ph-sm { font-size: 16px; }
   .poster-top .tape, .poster-top .pill, .poster-top .label { font-size: 10px; padding: 1px 6px; }
   .hero { grid-template-columns: 1fr; gap: 18px; }
-  .poster-big .ph { font-size: 32px; }
+  .poster-big { aspect-ratio: auto !important; min-height: 0; padding: 18px 16px 16px; gap: 18px; }
+  .poster-big .ph { font-size: 28px; }
+  .poster-big .shot-tilt { width: 70%; }
   .hero h1 { font-size: 22px; }
   .lead { font-size: 15px; }
   .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }

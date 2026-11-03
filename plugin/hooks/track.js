@@ -29,6 +29,7 @@ const sid = String(input.session_id ?? 'default').replace(/[^\w-]/g, '').slice(0
 const sessionFile = join(tmpdir(), 'caiguo-hooks', `${sid}.json`);
 const usageFile = process.env.CAIGUO_USAGE_FILE || join(dirname(configPath()), 'usage.json');
 const session = readJson(sessionFile, { read: {}, reported: [], reminded: [] });
+session.runs ??= {}; // run_id → guide_id（caiguo_start 开的、还没 caiguo_finish 的执行）
 const usage = readJson(usageFile, { pending: {}, skills: {} });
 
 function skillNameOf(toolInput) {
@@ -49,16 +50,26 @@ if (mode === 'post') {
     }
     process.exit(0);
   }
-  if (tool.endsWith('caiguo_get_guide') && args.guide_id) {
-    const text = JSON.stringify(input.tool_response ?? '');
-    const m = text.match(/# (.+?)  \[/);
+  const strings = (v) => (typeof v === 'string' ? [v] : v && typeof v === 'object' ? Object.values(v).flatMap(strings) : []);
+  const text = strings(input.tool_response).join('\n');
+  if ((tool.endsWith('caiguo_get_guide') || tool.endsWith('caiguo_start')) && args.guide_id) {
+    const m = text.match(/^# (.+)$/m);
     session.read[args.guide_id] = m ? m[1] : args.guide_id;
+    const run = text.match(/执行编号: ([\w-]+)/);
+    if (tool.endsWith('caiguo_start') && run) session.runs[run[1]] = args.guide_id;
   }
-  if ((tool.endsWith('caiguo_report_run') || tool.endsWith('caiguo_propose_change')) && args.guide_id) {
-    session.reported.push(args.guide_id);
+  let reportedGuide = null;
+  if ((tool.endsWith('caiguo_report_run') || tool.endsWith('caiguo_propose_change')) && args.guide_id) reportedGuide = args.guide_id;
+  if ((tool.endsWith('caiguo_finish') || tool.endsWith('caiguo_next')) && args.run_id && session.runs[args.run_id]) {
+    reportedGuide = session.runs[args.run_id];
+    if (tool.endsWith('caiguo_finish')) delete session.runs[args.run_id];
+  }
+  if (reportedGuide) {
+    const guideId = reportedGuide;
+    if (!session.reported.includes(guideId)) session.reported.push(guideId);
     // 给技能实测页回报过 → 重置该技能的“待反馈”计数
     for (const s of Object.values(usage.skills)) {
-      if (s.guide_id === args.guide_id) { s.uses_since_feedback = 0; s.last_feedback_at = new Date().toISOString(); }
+      if (s.guide_id === guideId) { s.uses_since_feedback = 0; s.last_feedback_at = new Date().toISOString(); }
     }
     writeJson(usageFile, usage);
   }
@@ -81,7 +92,7 @@ function actedAfterReading(transcriptPath) {
     if (e?.type !== 'assistant' || !Array.isArray(content)) continue;
     for (const c of content) if (c?.type === 'tool_use') tools.push(String(c.name));
   }
-  const lastRead = tools.findLastIndex((n) => n.endsWith('caiguo_get_guide'));
+  const lastRead = tools.findLastIndex((n) => n.endsWith('caiguo_get_guide') || n.endsWith('caiguo_start'));
   if (lastRead < 0) return true;
   return tools.slice(lastRead + 1).some((n) => !n.includes('caiguo') && !PASSIVE.has(n));
 }
@@ -114,12 +125,18 @@ if (mode === 'stop') {
   if (input.stop_hook_active) process.exit(0);
   const reasons = [];
 
+  const open = Object.entries(session.runs).filter(([rid]) => !session.reminded.includes(rid));
+  if (open.length) {
+    session.reminded.push(...open.map(([rid]) => rid));
+    reasons.push(`本次会话用 caiguo_start 开始的执行 ${open.map(([rid, gid]) => `${rid}（攻略 ${gid}）`).join('、')} 还没有结束。如果已经做完或决定不做了，请调用 caiguo_finish(run_id, outcome, rating) 收尾（outcome 填 success / partial / failed）；如果还在等用户完成本人步骤，可以忽略这条。`);
+  }
+
   const pending = Object.entries(session.read).filter(([id]) => !session.reported.includes(id) && !session.reminded.includes(id));
   // 只读了攻略、没有实际动手（只是回答问题）时不提醒，避免打扰
   if (pending.length && actedAfterReading(input.transcript_path)) {
     session.reminded.push(...pending.map(([id]) => id));
     const list = pending.map(([id, title]) => `《${title}》(${id})`).join('、');
-    reasons.push(`本次会话读取了攻略 ${list}，但还没有回报执行结果。如果你照着它做了（哪怕只做了一部分），请调用 caiguo_report_run 逐步回报 ok / drift / failed / skipped，并给出 rating。如果只是看了看、没有执行，不需要回报。`);
+    reasons.push(`本次会话读取了攻略 ${list}，但还没有回报执行结果。如果你照着它做了（哪怕只做了一部分），请调用 caiguo_report_run 逐步回报（或下次用 caiguo_start / caiguo_next 边做边回报） ok / drift / failed / skipped，并给出 rating。如果只是看了看、没有执行，不需要回报。`);
   }
 
   const now = Date.now();

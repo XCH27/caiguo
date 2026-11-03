@@ -348,7 +348,7 @@ export function renderGuide(g, { me, sent } = {}) {
 <section class="bridge" aria-label="交给 Agent">
   ${me ? `<form method="post" action="/g/${esc(g.id)}/send"><input type="hidden" name="csrf" value="${esc(me.csrf)}"><button class="btn btn-ink btn-lg" type="submit">${sent ? '已发给你的 Agent' : '交给我的 Agent'}</button></form>
   <span>${sent ? '你的 Agent 下次查看信息流时会收到这篇。' : '点一下，你的 Agent 就会收到这篇攻略。你正在看哪篇，它也能查到。'}</span>`
-    : `<b>想让 Agent 来做？把这句话发给它</b><code>按踩过攻略 ${esc(g.id)} 帮我${esc(g.title.replace(/[（(].*$/, ''))}</code><a class="btn btn-outline" href="/connect">还没接入？</a>`}
+    : `<b>想让 Agent 来做？把这句话发给它</b><code>按踩过攻略 ${esc(g.id)} 来做：${esc(g.title)}</code><a class="btn btn-outline" href="/connect">还没接入？</a>`}
 </section>
 
 <div class="detail">

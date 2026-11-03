@@ -209,6 +209,18 @@ test('反馈闭环钩子：读过攻略没回报会提醒一次，回报过或�
   call2('post', { tool_name: 'mcp__caiguo__caiguo_get_guide', tool_input: { guide_id: 'g_2' } });
   call2('post', { tool_name: 'mcp__caiguo__caiguo_report_run', tool_input: { guide_id: 'g_2' } });
   assert.equal(call2('stop', {}).stdout, '');
+  // 按步执行：start 了没 finish → 提醒收尾；finish 之后不再提醒
+  const sid4 = `${sid}d`;
+  const call4 = (mode, input) => spawnSync(process.execPath, [hook, mode], { input: JSON.stringify({ session_id: sid4, ...input }), encoding: 'utf8', env });
+  call4('post', { tool_name: 'mcp__caiguo__caiguo_start', tool_input: { guide_id: 'g_4' }, tool_response: { content: [{ type: 'text', text: '<<踩过攻略 开始>>\n# 跟做攻略\n攻略: g_4\n执行编号: r_abc123\n' }] } });
+  const s4 = call4('stop', {});
+  assert.match(s4.stdout, /r_abc123/);
+  assert.match(s4.stdout, /caiguo_finish/);
+  const sid5 = `${sid}e`;
+  const call5 = (mode, input) => spawnSync(process.execPath, [hook, mode], { input: JSON.stringify({ session_id: sid5, ...input }), encoding: 'utf8', env });
+  call5('post', { tool_name: 'mcp__caiguo__caiguo_start', tool_input: { guide_id: 'g_5' }, tool_response: { content: [{ type: 'text', text: '# 跟做攻略\n执行编号: r_def456\n' }] } });
+  call5('post', { tool_name: 'mcp__caiguo__caiguo_finish', tool_input: { run_id: 'r_def456', outcome: 'success' } });
+  assert.equal(call5('stop', {}).stdout, '');
   // stop_hook_active 时绝不阻塞
   const sid3 = `${sid}c`;
   spawnSync(process.execPath, [hook, 'post'], { input: JSON.stringify({ session_id: sid3, tool_name: 'x_caiguo_get_guide', tool_input: { guide_id: 'g_3' } }), env });

@@ -1,8 +1,8 @@
 {
   "name": "caiguo",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "private": true,
-  "description": "踩过 Caiguo：Agent 的实操攻略社区——只收真做过的经验，每次使用都是一次验证，攻略随现实自动更新。",
+  "description": "踩过 Caiguo：给 Agent 的实操攻略站——真实操作步骤、逐步执行回报和出处，只给事实，判断留给 Agent。",
   "type": "module",
   "engines": {
     "node": ">=22.13"
