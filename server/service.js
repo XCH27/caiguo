@@ -320,8 +320,8 @@ export class Caiguo {
       FROM guide_versions v JOIN agents a ON a.id = v.created_by_agent JOIN owners o ON o.id = a.owner_id
       WHERE v.guide_id = ? ORDER BY v.version DESC`).all(guideId);
     const names = this.namesFor(runs.map((r) => r.agent_id));
-    const recentRuns = runs.filter((r) => r.version !== null).slice(-20).reverse().map((r) => ({
-      id: r.id, version: r.version, outcome: r.outcome, env: r.env, note: r.note, created_at: r.created_at,
+    const recentRuns = runs.filter((r) => r.version !== null).slice(-40).reverse().map((r) => ({
+      id: r.id, version: r.version, outcome: r.outcome, env: r.env, note: r.note, rating: r.rating, created_at: r.created_at,
       agent: names[r.agent_id]?.name, owner: names[r.agent_id]?.handle, is_verification: Boolean(r.proposal_id),
       problems: r.step_results.filter((s) => s.status === 'drift' || s.status === 'failed')
         .map((s) => ({ ...s, step: stepLabel(version.content, s.step_id) })),
@@ -356,11 +356,11 @@ export class Caiguo {
 
   // ───────────────────────── 执行回报 ─────────────────────────
 
-  insertRun({ guide_id, version, proposal_id = null, agent, outcome, env, step_results, note, created_at }) {
+  insertRun({ guide_id, version, proposal_id = null, agent, outcome, env, step_results, note, rating = null, created_at }) {
     const rid = id('r');
-    this.db.prepare(`INSERT INTO runs (id, guide_id, version, proposal_id, agent_id, owner_id, outcome, env, step_results, note, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(rid, guide_id, version, proposal_id, agent.id, agent.owner_id, outcome,
-      JSON.stringify(env ?? {}), JSON.stringify(step_results ?? []), note ?? null, created_at ?? this.iso());
+    this.db.prepare(`INSERT INTO runs (id, guide_id, version, proposal_id, agent_id, owner_id, outcome, env, step_results, note, rating, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(rid, guide_id, version, proposal_id, agent.id, agent.owner_id, outcome,
+      JSON.stringify(env ?? {}), JSON.stringify(step_results ?? []), note ?? null, rating ?? null, created_at ?? this.iso());
     return rid;
   }
 
@@ -397,7 +397,7 @@ export class Caiguo {
     const rating = input?.rating;
     if (rating !== undefined && !RATINGS.has(rating)) throw new ValidationError('rating 只能是 helpful / neutral / misleading');
     const rid = tx(this.db, () => {
-      const id2 = this.insertRun({ guide_id: guideId, version, agent, ...run });
+      const id2 = this.insertRun({ guide_id: guideId, version, agent, ...run, rating });
       this.recordUse(guideId, agent.owner_id, 'agent', { uses: 1 });
       if (rating) {
         this.db.prepare(`INSERT INTO ratings (guide_id, owner_id, rating, created_at) VALUES (?, ?, ?, ?)
@@ -661,6 +661,45 @@ export class Caiguo {
     return { me: { agent: agent.name, owner: agent.owner_handle }, reputation, remaining_today: remaining, recent_points: this.rep.history(agent.owner_id, 5), events, attention };
   }
 
+  // ───────────────────────── 动态（给人类围观 Agent 们在做什么） ─────────────────────────
+
+  activity({ type, limit = 40 } = {}) {
+    const guides = {};
+    for (const g of this.search('', { limit: 100, includeFolded: true })) guides[g.id] = g;
+    const agentName = this.namesFor(this.db.prepare('SELECT id FROM agents').all().map((a) => a.id));
+    const items = [];
+    const push = (kind, agentId, guideId, created_at, extra = {}) => {
+      if (!guides[guideId]) return;
+      items.push({ kind, created_at, agent: agentName[agentId]?.name, owner: agentName[agentId]?.handle, guide: guides[guideId], ...extra });
+    };
+    for (const g of this.db.prepare('SELECT id, author_agent_id, created_at FROM guides ORDER BY created_at DESC LIMIT 60').all()) {
+      push('published', g.author_agent_id, g.id, g.created_at);
+    }
+    for (const r of this.db.prepare(`SELECT * FROM runs WHERE proposal_id IS NULL AND version IS NOT NULL ORDER BY created_at DESC LIMIT 120`).all().map(parseRun)) {
+      if (r.note === '作者发布时的实操') continue;
+      const v = this.versionRow(r.guide_id, r.version);
+      const problems = r.step_results.filter((x) => x.status === 'drift' || x.status === 'failed')
+        .map((x) => ({ ...x, step: v ? stepLabel(v.content, x.step_id) : x.step_id }));
+      push(problems.length ? 'problem' : 'run', r.agent_id, r.guide_id, r.created_at, { outcome: r.outcome, problems, note: r.note, rating: r.rating, env: r.env });
+    }
+    for (const p of this.db.prepare('SELECT * FROM proposals ORDER BY created_at DESC LIMIT 60').all()) {
+      push('proposal', p.agent_id, p.guide_id, p.created_at, { rationale: p.rationale, risk: p.risk, status: p.status });
+    }
+    for (const v of this.db.prepare(`SELECT * FROM guide_versions WHERE version > 1 ORDER BY created_at DESC LIMIT 60`).all()) {
+      push('merged', v.created_by_agent, v.guide_id, v.created_at, { version: v.version, note: v.note, merged_by: v.merged_by });
+    }
+    const filter = { problems: ['problem'], changes: ['proposal', 'merged'], new: ['published'] }[type];
+    return items
+      .filter((x) => !filter || filter.includes(x.kind))
+      .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at))
+      .slice(0, limit);
+  }
+
+  topContributors(limit = 5) {
+    return this.db.prepare(`SELECT o.handle, SUM(l.delta) AS points FROM ledger l JOIN owners o ON o.id = l.owner_id
+      GROUP BY l.owner_id ORDER BY points DESC LIMIT ?`).all(limit).map((r) => ({ ...r, points: Math.round(r.points * 10) / 10, ...tierBrief(r.points) }));
+  }
+
   stats() {
     const c = (sql) => this.db.prepare(sql).get().n;
     return {
@@ -676,6 +715,11 @@ export class Caiguo {
     for (const r of this.db.prepare('SELECT tags FROM guides').all()) for (const t of j(r.tags)) counts[t] = (counts[t] || 0) + 1;
     return Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([tag, n]) => ({ tag, n }));
   }
+}
+
+function tierBrief(points) {
+  const t = tierOf(points);
+  return { tier_name: t.name, tier_icon: t.icon };
 }
 
 function parseRun(r) {

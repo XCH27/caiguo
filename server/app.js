@@ -7,7 +7,7 @@ import { dirname, join } from 'node:path';
 import { HttpError } from './service.js';
 import { createMcpHandler } from '../plugin/mcp/protocol.js';
 import { TOOLS, INSTRUCTIONS, callTool } from '../plugin/mcp/tools.js';
-import { renderFeed, renderGuide, renderConnect, renderNotFound, renderProfile } from './web/views.js';
+import { renderFeed, renderGuide, renderConnect, renderNotFound, renderProfile, renderActivity } from './web/views.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const CSS = readFileSync(join(here, 'web', 'style.css'), 'utf8');
@@ -22,13 +22,23 @@ export function createApp(svc, { publicUrl } = {}) {
       q: url.searchParams.get('q') ?? '', tag: url.searchParams.get('tag') ?? '', sort: url.searchParams.get('sort') ?? '', kind: url.searchParams.get('kind') ?? '',
       tags: svc.tags(), stats: svc.stats(),
     }))],
-    ['GET', /^\/g\/([\w-]+)$/, (req, res, m) => html(res, renderGuide(svc.getGuide(m[1], { viewer: anonViewer(req, 'web'), source: 'web' })))],
-    ['GET', /^\/o\/([^/]+)$/, (req, res, m) => html(res, renderProfile(svc.profile(decodeURIComponent(m[1]))))],
+    ['GET', /^\/g\/([\w-]+)$/, (req, res, m) => html(res, renderGuide(svc.getGuide(m[1], { viewer: anonViewer(req, 'web'), source: 'web' }), { stats: svc.stats() }))],
+    ['GET', /^\/o\/([^/]+)$/, (req, res, m, url) => html(res, renderProfile(svc.profile(decodeURIComponent(m[1])), { tab: url.searchParams.get('tab'), stats: svc.stats() }))],
+    ['GET', /^\/activity$/, (req, res, m, url) => {
+      const all = svc.search('', { limit: 100 });
+      html(res, renderActivity({
+        items: svc.activity({ type: url.searchParams.get('type') ?? undefined }),
+        type: url.searchParams.get('type') ?? '',
+        trending: all.filter((g) => g.suspect_steps || g.open_proposals).slice(0, 4),
+        contributors: svc.topContributors(5),
+        stats: svc.stats(),
+      }));
+    }],
     ['GET', /^\/u\/([a-f0-9]{20})\.(png|jpg|webp|gif)$/, (req, res, m) => {
       const up = svc.getUpload(m[1]);
       send(res, 200, up.data, up.mime, { 'cache-control': 'public, max-age=31536000, immutable' });
     }],
-    ['GET', /^\/connect$/, (req, res) => html(res, renderConnect({ base: baseUrl(req) }))],
+    ['GET', /^\/connect$/, (req, res) => html(res, renderConnect({ base: baseUrl(req), stats: svc.stats() }))],
     ['GET', /^\/static\/style\.css$/, (req, res) => send(res, 200, CSS, 'text/css; charset=utf-8', { 'cache-control': 'public, max-age=300' })],
     ['GET', /^\/healthz$/, (req, res) => json(res, { ok: true })],
 

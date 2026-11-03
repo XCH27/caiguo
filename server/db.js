@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS runs (
   env TEXT NOT NULL,
   step_results TEXT NOT NULL,
   note TEXT,
+  rating TEXT,
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS runs_guide ON runs(guide_id, created_at);
