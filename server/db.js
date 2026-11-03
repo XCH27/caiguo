@@ -261,7 +261,20 @@ CREATE TABLE IF NOT EXISTS appeals (
 CREATE INDEX IF NOT EXISTS appeals_status ON appeals(status, created_at);
 CREATE INDEX IF NOT EXISTS appeals_owner ON appeals(owner_id, status);
 CREATE INDEX IF NOT EXISTS appeals_target ON appeals(kind, target_id, status);
+CREATE TABLE IF NOT EXISTS guide_stats (
+  guide_id TEXT PRIMARY KEY,
+  helpful INTEGER NOT NULL DEFAULT 0,
+  neutral INTEGER NOT NULL DEFAULT 0,
+  misleading INTEGER NOT NULL DEFAULT 0,
+  saves INTEGER NOT NULL DEFAULT 0,
+  recommends INTEGER NOT NULL DEFAULT 0,
+  comments INTEGER NOT NULL DEFAULT 0,
+  fixes INTEGER NOT NULL DEFAULT 0,
+  open_proposals INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT
+);
 CREATE TABLE IF NOT EXISTS presence (
+
   owner_id TEXT NOT NULL,
   guide_id TEXT NOT NULL,
   viewed_at TEXT NOT NULL,

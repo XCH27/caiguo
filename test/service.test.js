@@ -1022,3 +1022,81 @@ test('关注标签变更：有误导与修订合并进入关注者事实流', ()
   assert.ok(msgs2.some((m) => m.kind === 'followed_updated' && m.tag === 'Cloudflare'));
 });
 
+
+test('中文检索：标题整串命中优先于正文沾边；无关查询仍为空', async () => {
+  const { score, tokenize } = await import('../server/logic/search.js');
+  assert.ok(tokenize('银联卡').has('银联'));
+  assert.ok(tokenize('银联卡').has('联卡'));
+  const titleHit = {
+    title: '银联卡注册海外云失败怎么办',
+    tags: ['支付'],
+    search_text: '银联卡注册海外云失败怎么办\n支付\n换双币卡再试',
+  };
+  const bodyOnly = {
+    title: '完全另一回事的笔记',
+    tags: ['杂谈'],
+    search_text: '完全另一回事的笔记\n杂谈\n文中偶尔提到银联卡三个字而已',
+  };
+  assert.ok(score('银联卡注册', titleHit) > score('银联卡注册', bodyOnly));
+  assert.equal(score('量子纠缠冰箱', titleHit), 0);
+
+  const { svc, mk } = setup();
+  const a = mk('检索作者');
+  svc.publishGuide(a, { ...GUIDE, title: '银联卡注册海外云失败怎么办', tags: ['支付', '云服务'], summary: '标题党相关' });
+  svc.publishGuide(a, {
+    ...GUIDE,
+    title: '周末去哪玩',
+    tags: ['生活'],
+    summary: '文中提到银联卡三个字',
+    steps: GUIDE.steps,
+    pitfalls: [{ symptom: '银联卡被拒', fix: '换卡' }],
+  });
+  const hits = svc.search('银联卡注册');
+  assert.ok(hits.length >= 1);
+  assert.match(hits[0].title, /银联卡注册/);
+});
+
+test('guide_stats：互动写入后汇总表与卡片一致，冷读不再依赖多次 COUNT', () => {
+  const { svc, mk } = setup();
+  const a = mk('统计作者');
+  const u = mk('统计读者');
+  const { guide_id } = svc.publishGuide(a, GUIDE);
+  svc.refreshGuideStats(guide_id);
+  let st = svc.db.prepare('SELECT * FROM guide_stats WHERE guide_id = ?').get(guide_id);
+  assert.equal(st.helpful, 0);
+  assert.equal(st.saves, 0);
+  assert.equal(st.comments, 0);
+
+  svc.react(u, guide_id, { action: 'useful', context: '按步骤做成了' });
+  svc.saveGuide(u.owner_id, guide_id);
+  svc.comment(u, guide_id, { type: 'add', body: '补充：用企业邮箱更稳' });
+  st = svc.statsOf(guide_id); // 脏标记延后刷新
+  assert.equal(st.helpful, 1);
+  assert.equal(st.saves, 1);
+  assert.equal(st.comments, 1);
+  assert.equal(svc.interactionsOf(guide_id).useful, 1);
+  assert.equal(svc.cardOf(svc.guideRow(guide_id)).useful, 1);
+  assert.equal(svc.cardOf(svc.guideRow(guide_id)).saves, 1);
+
+  // 批量预加载路径与单篇一致
+  const preload = svc.preloadForCards([svc.guideRow(guide_id)]);
+  assert.equal(preload.stats.get(guide_id).helpful, 1);
+  assert.ok(preload.versions.has(guide_id));
+});
+
+test('为你推荐冷启动：无行为信号时用近期热门话题，并给出事实理由', () => {
+  const { svc, mk } = setup();
+  const a = mk('热门作者');
+  const b = mk('热门作者乙');
+  const newbie = mk('新用户甲');
+  svc.publishGuide(a, { ...GUIDE, title: 'Cloudflare 隧道入门', tags: ['Cloudflare', '网络'] });
+  svc.publishGuide(b, { ...GUIDE, title: 'Workers 定时任务', tags: ['Cloudflare', 'Workers'] });
+  svc.publishGuide(a, { ...GUIDE, title: '无关生活帖', tags: ['生活'] });
+  const hot = svc.hotTopics({ limit: 5 });
+  assert.ok(hot.some((t) => t.tag === 'Cloudflare'));
+  // newbie 无关注/收藏/执行/历史 → 冷启动
+  const fy = svc.forYou(newbie.owner_id, { limit: 10 });
+  assert.ok(fy.length >= 1);
+  assert.ok(fy.some((g) => g.tags.includes('Cloudflare')));
+  assert.ok(fy.some((g) => /热门话题/.test(g.reason)));
+});

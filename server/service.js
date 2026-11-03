@@ -76,6 +76,7 @@ export class Caiguo {
     // 卡片缓存（瀑布流、搜索每次要给所有公开笔记算卡片）：笔记有新互动时立即失效，其他统计（如被调用次数）最多滞后 cardTtl 毫秒。0 = 不缓存
     this.cardTtl = cardTtl;
     this.cardCache = new Map();
+    this.statsDirty = new Set();
     this.now = now;
     this.policy = policy ?? mergePolicy();
     this.rep = new Reputation(db, () => this.iso());
@@ -591,8 +592,10 @@ export class Caiguo {
     let rows = this.db.prepare("SELECT * FROM guides WHERE status = 'published'").all().map((g) => ({ ...g, tags: j(g.tags), source: j(g.source) }));
     if (tag) rows = rows.filter((g) => g.tags.includes(tag));
     if (kind) rows = rows.filter((g) => g.kind === kind);
-    let items = rows.map((g) => ({ g, s: q ? score(q, g) : 1 })).filter((x) => x.s > 0).map(({ g, s }) => {
-      const item = this.cardOf(g);
+    const candidates = rows.map((g) => ({ g, s: q ? score(q, g) : 1 })).filter((x) => x.s > 0);
+    const preload = this.preloadForCards(candidates.map((x) => x.g));
+    let items = candidates.map(({ g, s }) => {
+      const item = this.cardOf(g, preload);
       item.score = Math.round(s * 10) / 10;
       return { rank: s, folded: item.folded, item };
     });
@@ -614,27 +617,100 @@ export class Caiguo {
   }
 
   // 一篇攻略的卡片数据（搜索结果、瀑布流、收藏、历史共用）。g 是 guides 表的一行（tags/source 已解析）。
-  cardOf(g) {
-    if (!(this.cardTtl > 0)) return this.buildCard(g);
+  cardOf(g, preload) {
+    if (!(this.cardTtl > 0)) return this.buildCard(g, preload);
     const key = `${g.current_version}|${g.status}|${g.updated_at}`;
     const hit = this.cardCache.get(g.id);
     if (hit && hit.key === key && this.now() - hit.at < this.cardTtl) return { ...hit.card };
-    const card = this.buildCard(g);
+    const card = this.buildCard(g, preload);
     this.cardCache.set(g.id, { key, at: this.now(), card });
     return { ...card };
   }
 
   invalidateCard(gid) {
-    if (gid) this.cardCache.delete(gid);
+    if (gid) {
+      this.cardCache.delete(gid);
+      // 许多写路径在落库前进 invalidate；统计延后到下次读取时刷新，避免读到半新半旧
+      this.statsDirty.add(gid);
+    }
   }
 
-  buildCard(g) {
+  // 卡片互动计数汇总表：写时刷新，读时一条 SQL，避免瀑布流冷启动每篇打 6～8 次 COUNT
+  refreshGuideStats(gid) {
+    if (!gid) return;
+    this.statsDirty.delete(gid);
+    const exists = this.db.prepare('SELECT 1 FROM guides WHERE id = ?').get(gid);
+    if (!exists) {
+      this.db.prepare('DELETE FROM guide_stats WHERE guide_id = ?').run(gid);
+      return;
+    }
+    const rat = { helpful: 0, neutral: 0, misleading: 0 };
+    for (const r of this.db.prepare('SELECT rating, COUNT(*) AS n FROM ratings WHERE guide_id = ? GROUP BY rating').all(gid)) {
+      if (r.rating in rat) rat[r.rating] = r.n;
+    }
+    const saves = this.db.prepare('SELECT COUNT(*) AS n FROM saves WHERE guide_id = ?').get(gid).n;
+    const recommends = this.db.prepare('SELECT COUNT(*) AS n FROM recommends WHERE guide_id = ?').get(gid).n;
+    const comments = this.db.prepare('SELECT COUNT(*) AS n FROM comments WHERE guide_id = ? AND hidden = 0').get(gid).n;
+    const fixes = this.db.prepare("SELECT COUNT(*) AS n FROM comments WHERE guide_id = ? AND type = 'fix' AND hidden = 0").get(gid).n;
+    const open_proposals = this.db.prepare("SELECT COUNT(*) AS n FROM proposals WHERE guide_id = ? AND status = 'open'").get(gid).n;
+    this.db.prepare(`INSERT INTO guide_stats (guide_id, helpful, neutral, misleading, saves, recommends, comments, fixes, open_proposals, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT (guide_id) DO UPDATE SET
+        helpful = excluded.helpful, neutral = excluded.neutral, misleading = excluded.misleading,
+        saves = excluded.saves, recommends = excluded.recommends, comments = excluded.comments,
+        fixes = excluded.fixes, open_proposals = excluded.open_proposals, updated_at = excluded.updated_at`)
+      .run(gid, rat.helpful, rat.neutral, rat.misleading, saves, recommends, comments, fixes, open_proposals, this.iso());
+  }
+
+  statsOf(gid) {
+    let row = this.db.prepare('SELECT * FROM guide_stats WHERE guide_id = ?').get(gid);
+    if (!row || this.statsDirty.has(gid)) {
+      this.refreshGuideStats(gid);
+      this.statsDirty.delete(gid);
+      row = this.db.prepare('SELECT * FROM guide_stats WHERE guide_id = ?').get(gid);
+    }
+    return row ?? { guide_id: gid, helpful: 0, neutral: 0, misleading: 0, saves: 0, recommends: 0, comments: 0, fixes: 0, open_proposals: 0 };
+  }
+
+  preloadForCards(guides) {
+    const ids = [...new Set(guides.map((g) => g.id).filter(Boolean))];
+    const empty = { versions: new Map(), runs: new Map(), stats: new Map() };
+    if (!ids.length) return empty;
+    for (const id of ids) {
+      if (this.statsDirty.has(id) || !this.db.prepare('SELECT 1 FROM guide_stats WHERE guide_id = ?').get(id)) {
+        this.refreshGuideStats(id);
+        this.statsDirty.delete(id);
+      }
+    }
+    // SQLite 变量上限保守分块
+    const versions = new Map();
+    const runs = new Map();
+    const stats = new Map();
+    for (let i = 0; i < ids.length; i += 400) {
+      const chunk = ids.slice(i, i + 400);
+      const ph = chunk.map(() => '?').join(',');
+      for (const v of this.db.prepare(`SELECT v.* FROM guide_versions v JOIN guides g ON g.id = v.guide_id AND v.version = g.current_version WHERE g.id IN (${ph})`).all(...chunk)) {
+        versions.set(v.guide_id, { ...v, content: j(v.content), flags: j(v.flags) });
+      }
+      for (const r of this.db.prepare(`SELECT * FROM runs WHERE guide_id IN (${ph}) ORDER BY created_at`).all(...chunk)) {
+        if (!runs.has(r.guide_id)) runs.set(r.guide_id, []);
+        runs.get(r.guide_id).push(parseRun(r));
+      }
+      for (const s of this.db.prepare(`SELECT * FROM guide_stats WHERE guide_id IN (${ph})`).all(...chunk)) {
+        stats.set(s.guide_id, s);
+      }
+    }
+    return { versions, runs, stats };
+  }
+
+  buildCard(g, preload) {
     if (typeof g.tags === 'string') g = { ...g, tags: j(g.tags), source: j(g.source) };
-    const runs = this.runsFor(g.id);
-    const { version, health } = this.healthOf(g, runs);
-    const ratings = this.ratingsOf(g.id);
+    const runs = preload?.runs?.get(g.id) ?? this.runsFor(g.id);
+    const version = preload?.versions?.get(g.id) ?? this.versionRow(g.id, g.current_version);
+    const health = computeHealth({ guide: g, content: version.content, version: g.current_version, runs, now: this.now() });
+    const stats = preload?.stats?.get(g.id) ?? this.statsOf(g.id);
+    const ratings = { helpful: stats.helpful, neutral: stats.neutral, misleading: stats.misleading };
     const usage = this.usageOf(g.id);
-    const open = this.db.prepare("SELECT COUNT(*) AS n FROM proposals WHERE guide_id = ? AND status = 'open'").get(g.id).n;
     const c = version.content;
     return {
       id: g.id, kind: g.kind, status: g.status, title: g.title, summary: g.summary, tags: g.tags, source: g.source,
@@ -656,18 +732,22 @@ export class Caiguo {
       success_rate_30d: health.success_rate_30d,
       distinct_runners: health.distinct_runners,
       suspect_steps: health.suspect_steps.length,
-      open_proposals: open,
+      open_proposals: stats.open_proposals,
       helpful: ratings.helpful,
       uses_30d: usage.uses_30d,
       agent_reads_30d: usage.agent_reads_30d,
-      saves: this.saveCount(g.id),
+      saves: stats.saves,
       kind_name: KINDS[g.kind] ?? g.kind,
       body: c.body ? c.body.slice(0, 160) : null,
       subject: c.subject ?? null,
       items_count: c.items?.length ?? 0,
       pitfalls_count: c.pitfalls?.length ?? 0,
       solved: g.kind === 'ask' ? Boolean(this.db.prepare('SELECT 1 FROM comments WHERE guide_id = ? AND accepted = 1').get(g.id)) : undefined,
-      ...(({ useful, misleading, recommends, comments, fixes }) => ({ useful, misleading, recommends, comments, fixes }))(this.interactionsOf(g.id)),
+      useful: stats.helpful,
+      misleading: stats.misleading,
+      recommends: stats.recommends,
+      comments: stats.comments,
+      fixes: stats.fixes,
       folded: ratings.misleading >= 3 && health.others_success === 0 && ratings.helpful === 0,
     };
   }
@@ -717,9 +797,8 @@ export class Caiguo {
   }
 
   ratingsOf(guideId) {
-    const out = { helpful: 0, neutral: 0, misleading: 0 };
-    for (const r of this.db.prepare('SELECT rating, COUNT(*) AS n FROM ratings WHERE guide_id = ? GROUP BY rating').all(guideId)) out[r.rating] = r.n;
-    return out;
+    const s = this.statsOf(guideId);
+    return { helpful: s.helpful, neutral: s.neutral, misleading: s.misleading };
   }
 
   // 技能被调用次数：插件的钩子在本地计数，定期批量上报（只有技能名和次数）
@@ -1594,7 +1673,7 @@ export class Caiguo {
   }
 
   saveCount(gid) {
-    return this.db.prepare('SELECT COUNT(*) AS n FROM saves WHERE guide_id = ?').get(gid).n;
+    return this.statsOf(gid).saves;
   }
 
   // folder: undefined = 全部；'none' = 未分类；其他 = 收藏夹 id
@@ -1795,14 +1874,14 @@ export class Caiguo {
   }
 
   interactionsOf(gid) {
-    const c = (sql) => this.db.prepare(sql).get(gid).n;
+    const s = this.statsOf(gid);
     return {
-      useful: c("SELECT COUNT(*) AS n FROM ratings WHERE guide_id = ? AND rating = 'helpful'"),
-      misleading: c("SELECT COUNT(*) AS n FROM ratings WHERE guide_id = ? AND rating = 'misleading'"),
-      saves: c('SELECT COUNT(*) AS n FROM saves WHERE guide_id = ?'),
-      recommends: c('SELECT COUNT(*) AS n FROM recommends WHERE guide_id = ?'),
-      comments: c('SELECT COUNT(*) AS n FROM comments WHERE guide_id = ? AND hidden = 0'),
-      fixes: c("SELECT COUNT(*) AS n FROM comments WHERE guide_id = ? AND type = 'fix' AND hidden = 0"),
+      useful: s.helpful,
+      misleading: s.misleading,
+      saves: s.saves,
+      recommends: s.recommends,
+      comments: s.comments,
+      fixes: s.fixes,
     };
   }
 
@@ -2050,6 +2129,18 @@ export class Caiguo {
     for (const t of tagsOf("SELECT g.tags FROM usage u JOIN guides g ON g.id = u.guide_id WHERE u.viewer = ? AND u.source = 'agent'")) add(t, 1, '你的 Agent 读过同话题的笔记');
     const envRow = this.db.prepare("SELECT env FROM runs WHERE owner_id = ? AND env != '{}' ORDER BY created_at DESC LIMIT 1").get(ownerId);
     const followUsers = new Set(this.db.prepare("SELECT target FROM follows WHERE owner_id = ? AND target_type = 'user'").all(ownerId).map((r) => r.target));
+    // 从收藏/执行过的笔记里提取 skill.name，当作弱兴趣（与热门话题同一权重通道）
+    for (const row of this.db.prepare(`SELECT gv.content FROM saves s JOIN guides g ON g.id = s.guide_id
+      JOIN guide_versions gv ON gv.guide_id = g.id AND gv.version = g.current_version WHERE s.owner_id = ?`).all(ownerId)) {
+      const skill = j(row.content)?.skill?.name;
+      if (skill) add([skill], 2, `你收藏过相关技能「${skill}」`);
+    }
+    for (const row of this.db.prepare(`SELECT gv.content FROM runs r JOIN guides g ON g.id = r.guide_id
+      JOIN guide_versions gv ON gv.guide_id = g.id AND gv.version = g.current_version
+      WHERE r.owner_id = ? AND r.proposal_id IS NULL`).all(ownerId)) {
+      const skill = j(row.content)?.skill?.name;
+      if (skill) add([skill], 2, `你的 Agent 执行过相关技能「${skill}」`);
+    }
     return { weights: w, why, env: j(envRow?.env) ?? {}, followUsers };
   }
 
@@ -2061,10 +2152,32 @@ export class Caiguo {
     return { items: all.slice(from, from + size), total: all.length, offset: from };
   }
 
+  // 全站近期热门话题（排除「示例」），给冷启动推荐用
+  hotTopics({ limit = 12 } = {}) {
+    const rows = this.db.prepare("SELECT tags, updated_at FROM guides WHERE status = 'published'").all();
+    const w = {};
+    for (const r of rows) {
+      const age = (this.now() - Date.parse(r.updated_at)) / 864e5;
+      const boost = age < 14 ? 2 : age < 60 ? 1 : 0.4;
+      for (const t of j(r.tags) ?? []) {
+        if (!t || t === '示例') continue;
+        w[t] = (w[t] ?? 0) + boost;
+      }
+    }
+    return Object.entries(w).sort((a, b) => b[1] - a[1]).slice(0, limit).map(([tag, score]) => ({ tag, score }));
+  }
+
   forYou(ownerId, { limit = 20 } = {}) {
     const all = this.search('', { limit: 10000 });
     if (!ownerId) return all.slice(0, limit).map((g) => ({ ...g, reason: '最新' }));
     const me = this.interestsOf(ownerId);
+    // 冷启动：没有任何关注/收藏/执行/浏览信号时，用近期热门话题作弱相关
+    if (Object.keys(me.weights).length === 0) {
+      for (const { tag } of this.hotTopics({ limit: 10 })) {
+        me.weights[tag] = 1.5;
+        me.why[tag] = `近期热门话题 #${tag}`;
+      }
+    }
     const seen = new Set(this.db.prepare(`SELECT guide_id FROM history WHERE owner_id = ? UNION SELECT guide_id FROM saves WHERE owner_id = ?
       UNION SELECT guide_id FROM runs WHERE owner_id = ?`).all(ownerId, ownerId, ownerId).map((r) => r.guide_id));
     const scored = all.filter((g) => g.author.owner_id !== ownerId).map((g) => {
@@ -2079,6 +2192,12 @@ export class Caiguo {
       if (me.followUsers.has(g.author.owner_id)) { s += 5; reason = `你关注了 ${g.author.owner}`; }
       const envHit = Object.entries(g.applies_to ?? {}).filter(([k, v]) => me.env[k] && String(me.env[k]) === String(v)).map(([k, v]) => `${k}=${v}`);
       if (envHit.length) { s += 2 * envHit.length; reason = reason ?? `适用条件和你的环境一致（${envHit.join('，')}）`; }
+      // 技能名与笔记 skill 对齐（已有信号之外的弱加分）
+      const skillName = g.skill?.name;
+      if (skillName && me.weights[skillName]) {
+        s += 1;
+        reason = reason ?? me.why[skillName];
+      }
       if (seen.has(g.id)) s *= 0.3;
       const ageDays = (this.now() - Date.parse(g.updated_at)) / 864e5;
       s += Math.max(0, 1 - ageDays / 60);
