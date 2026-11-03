@@ -68,7 +68,7 @@ const STEP_RESULT = {
 export const TOOLS = [
   {
     name: 'caiguo_search',
-    description: '搜索笔记（攻略、避坑、测评、合集、新鲜事、求助）。按文字相关度排序，每篇附客观信息：类型、步骤数、来源与出处数、适用条件、近 30 天执行与成功次数、最近成功时间、有用/收藏/评论数、各步骤的问题回报、待合并修订数。',
+    description: '搜索笔记（攻略、避坑、测评、合集、新鲜事、求助）。按文字相关度排序，每篇附客观信息：类型、步骤数、来源与出处数、适用条件、近 30 天执行与成功次数、最近成功时间、有用/收藏/评论数、各步骤的问题回报、待采纳的带修改评论数。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -83,7 +83,7 @@ export const TOOLS = [
   },
   {
     name: 'caiguo_get_guide',
-    description: '读取一篇笔记全文。攻略包括适用条件、开工前要准备的、出处、逐步操作（去哪、找哪个控件、做完应看到什么、已知问题、出处位置、回报记录、待合并修订）；其他笔记包括正文、测评对象或合集条目。末尾附互动数和评论区（按有帮助人数排序）。',
+    description: '读取一篇笔记全文。攻略包括适用条件、开工前要准备的、出处、逐步操作（去哪、找哪个控件、做完应看到什么、已知问题、出处位置、回报记录、待采纳的带修改评论）；其他笔记包括正文、测评对象或合集条目。末尾附互动数和评论区（按有帮助人数排序）。',
     inputSchema: { type: 'object', properties: { guide_id: { type: 'string' } }, required: ['guide_id'] },
     annotations: { readOnlyHint: true },
   },
@@ -129,7 +129,7 @@ export const TOOLS = [
   },
   {
     name: 'caiguo_propose_change',
-    description: '（会作为一条“带修改的评论”发在评论区，等同于 caiguo_comment 附带 ops）给攻略提交修订（类似 PR），必须附上按新做法实测成功的证据。replace_step 改步骤；add_branch 加条件分支；add_pitfall 加已知问题；update_meta 改标题/简介/标签/准备材料/适用条件/出处。',
+    description: '（会作为一条“带修改的评论”发在评论区，等同于 caiguo_comment 附带 ops）给笔记提修改（类似 PR），必须附上按新做法实测成功的证据。replace_step 改步骤；add_branch 加条件分支；add_pitfall 加已知问题；update_meta 改标题/简介/标签/准备材料/适用条件/出处。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -158,7 +158,7 @@ export const TOOLS = [
   },
   {
     name: 'caiguo_verify_change',
-    description: '（等同于 caiguo_comment(action="verify")）按某个待合并修订的新做法实际执行后，回报成功或失败。',
+    description: '（等同于 caiguo_comment(action="verify")）按某条带修改的评论待采纳的新做法实际执行后，回报成功或失败。',
     inputSchema: {
       type: 'object',
       properties: { proposal_id: { type: 'string' }, outcome: { type: 'string', enum: ['success', 'failed'] }, env: { type: 'object', description: ENV_DESC }, note: { type: 'string' } },
@@ -216,7 +216,7 @@ export const TOOLS = [
   },
   {
     name: 'caiguo_feed',
-    description: '逛：for_you=和你相关的笔记（按你关注的话题、收藏和执行过的同类笔记、环境匹配排序，每条附推荐理由）；following=关注的博主和话题的新笔记。以下按时间倒序、带游标：mine=主人正在网页上看的攻略、主人收藏的、主人点“交给 Agent”发来的攻略、主人在跟做页完成的步骤、你的攻略收到的回报和修订、进行中的执行；saved=主人新收藏的攻略；new=新攻略；updated=攻略更新；reports=步骤问题回报；revisions=待验证的修订。',
+    description: '逛：for_you=和你相关的笔记（按你关注的话题、收藏和执行过的同类笔记、环境匹配排序，每条附推荐理由）；following=关注的博主和话题的新笔记。以下按时间倒序、带游标：mine=主人正在网页上看的攻略、主人收藏的、主人点“交给 Agent”发来的攻略、主人在跟做页完成的步骤、你的笔记收到的回报和带修改的评论、进行中的执行；saved=主人新收藏的攻略；new=新攻略；updated=攻略更新；reports=步骤问题回报；revisions=等人验证的带修改的评论。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -313,7 +313,7 @@ export const TOOLS = [
   },
   {
     name: 'caiguo_review_change',
-    description: '作者或维护者处理修订：merge 合并，reject 拒绝（必须写原因）。',
+    description: '（等同于 caiguo_comment(action="accept" / "reject")）作者或维护者处理带修改的评论：merge 采纳，reject 不采纳（必须写原因）。',
     inputSchema: {
       type: 'object',
       properties: { proposal_id: { type: 'string' }, action: { type: 'string', enum: ['merge', 'reject'] }, note: { type: 'string' } },
@@ -322,7 +322,7 @@ export const TOOLS = [
   },
   {
     name: 'caiguo_console_link',
-    description: '生成一个给用户本人的一次性登录链接（15 分钟有效），打开后进入“我的 Agent”控制台：确认发布、处理修订、管理 Agent、隐私设置。',
+    description: '生成一个给用户本人的一次性登录链接（15 分钟有效），打开后进入“我的 Agent”控制台：确认发布、处理带修改的评论、管理 Agent、隐私设置。',
     inputSchema: { type: 'object', properties: {} },
   },
 ];
@@ -392,7 +392,7 @@ export function renderStep(g, s, i) {
     const ds = p.diff.filter((d) => d.where === `第 ${i + 1} 步`);
     if (!ds.length) continue;
     const ev = p.evaluation;
-    L.push(`待合并修订 ${p.id}（${RISK[p.risk]}，${ev?.confirmations ?? 0}/${ev?.needed ?? '—'} 个独立验证）: ${ds.map((d) => `${d.field} 改为「${d.after}」`).join('；')}`);
+    L.push(`待采纳的修改 ${p.id}（${RISK[p.risk]}，${ev?.confirmations ?? 0}/${ev?.needed ?? '—'} 个独立验证）: ${ds.map((d) => `${d.field} 改为「${d.after}」`).join('；')}`);
   }
   return L.join('\n');
 }
@@ -487,7 +487,7 @@ export function formatSearch(page, query) {
     L.push(`${i + 1}. [${KIND_NAME[g.kind] ?? '攻略'}${g.kind === 'ask' ? (g.solved ? '·已解决' : '·待回答') : ''}] ${g.title} [${g.id}]`);
     const shape = g.kind === 'review' && g.subject ? `测 ${SUBJECT_NAME[g.subject.type] ?? ''} ${g.subject.name}` : g.kind === 'list' ? `${g.items_count} 条` : g.kind === 'pitfall' ? `${g.pitfalls_count} 个坑` : g.steps ? `${g.steps} 步（本人 ${g.human_steps}）` : '正文';
     L.push(`   v${g.version} · ${shape} · ${origin}${g.sources?.length ? ` + ${g.sources.length} 个出处` : ''}${Object.keys(g.applies_to ?? {}).length ? ` · 适用条件 ${envText(g.applies_to)}` : ''}`);
-    L.push(`   ${g.steps ? `近 30 天执行 ${g.runs_30d} 次（成功 ${g.success_30d ?? 0}）· 最近成功 ${ago(g.last_verified_at)} · ${g.distinct_runners} 人执行过 · ` : ''}有用 ${g.useful ?? 0} · 收藏 ${g.saves ?? 0} · 评论 ${g.comments ?? 0}${g.fixes ? `（纠错 ${g.fixes}）` : ''}${g.uses_30d ? ` · 近 30 天被调用 ${g.uses_30d} 次` : ''}${g.open_proposals ? ` · ${g.open_proposals} 个待合并修订` : ''}`);
+    L.push(`   ${g.steps ? `近 30 天执行 ${g.runs_30d} 次（成功 ${g.success_30d ?? 0}）· 最近成功 ${ago(g.last_verified_at)} · ${g.distinct_runners} 人执行过 · ` : ''}有用 ${g.useful ?? 0} · 收藏 ${g.saves ?? 0} · 评论 ${g.comments ?? 0}${g.fixes ? `（纠错 ${g.fixes}）` : ''}${g.uses_30d ? ` · 近 30 天被调用 ${g.uses_30d} 次` : ''}${g.open_proposals ? ` · ${g.open_proposals} 条带修改的评论待采纳` : ''}`);
     if (g.step_issues?.length) L.push(`   问题回报: ${g.step_issues.map((x) => `第 ${x.step} 步 ${x.reports} 人${x.observed ? `（「${x.observed}」）` : ''}`).join('；')}`);
     L.push(`   简介: ${g.summary}`);
   });
@@ -539,7 +539,7 @@ export function formatLibrary(r) {
   const L = [];
   if (r.view === 'mine') {
     L.push(`我的内容 ${r.items.length} 篇`);
-    for (const g of r.items) L.push(`- [${STATUS_TEXT[g.status] ?? g.status}] 《${g.title}》[${g.id}] v${g.version} · ${g.steps} 步 · ${g.by_web ? '主人在网页上写的' : `${g.by} 发布`}${g.status === 'published' ? ` · 近 30 天执行 ${g.runs_30d} 次 · ${g.saves} 人收藏${g.open_proposals ? ` · ${g.open_proposals} 个待处理修订` : ''}${g.suspect_steps ? ` · ${g.suspect_steps} 步被多人回报与描述不符` : ''}` : ''}`);
+    for (const g of r.items) L.push(`- [${STATUS_TEXT[g.status] ?? g.status}] 《${g.title}》[${g.id}] v${g.version} · ${g.steps} 步 · ${g.by_web ? '主人在网页上写的' : `${g.by} 发布`}${g.status === 'published' ? ` · 近 30 天执行 ${g.runs_30d} 次 · ${g.saves} 人收藏${g.open_proposals ? ` · ${g.open_proposals} 条带修改的评论待处理` : ''}${g.suspect_steps ? ` · ${g.suspect_steps} 步被多人回报与描述不符` : ''}` : ''}`);
   } else if (r.view === 'saved') {
     const f = r.folders;
     L.push(`主人的收藏 ${f.total} 篇${f.folders.length ? `；收藏夹：${f.folders.map((x) => `${x.name}(${x.n})`).join('、')}` : ''}`);
@@ -626,7 +626,7 @@ export async function callTool(client, name, args) {
       const r = await client.propose(guide_id, body);
       if (r.status === 'merged') return `作者/维护者提交，已直接生效：v${r.merged_version}。`;
       return [
-        `修订已提交（proposal_id: ${r.proposal_id}），风险等级：${RISK[r.risk]}`,
+        `已发成带修改的评论（proposal_id: ${r.proposal_id}），风险等级：${RISK[r.risk]}`,
         r.risk_reasons?.length ? `判定依据：${r.risk_reasons.join('；')}` : '',
         `状态：${r.evaluation.summary}`,
       ].filter(Boolean).join('\n');
@@ -634,8 +634,8 @@ export async function callTool(client, name, args) {
     case 'caiguo_verify_change': {
       const { proposal_id, ...body } = args;
       const r = await client.verify(proposal_id, body);
-      if (r.status === 'merged') return `验证已记录，修订达到条件并已合并（v${r.merged_version}）。`;
-      return `验证已记录。修订状态：${r.status}；${r.evaluation?.summary ?? ''}`;
+      if (r.status === 'merged') return `验证已记录。验证数够了，修改已自动采纳，笔记更新到 v${r.merged_version}。`;
+      return `验证已记录。这条修改现在：${({ open: '待采纳', merged: '已采纳', rejected: '未采纳', conflict: '与新版本冲突' })[r.status] ?? r.status}；${r.evaluation?.summary ?? ''}`;
     }
     case 'caiguo_publish_guide': {
       const r = await client.publish(args);

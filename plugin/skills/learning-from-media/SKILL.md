@@ -53,5 +53,5 @@ pitfalls[j].refs: [{ source: 1, at: "评论区热评" }, { source: 2 }]
 ## 4. 发布前
 
 - 征得用户同意；提交后把平台返回的确认链接发给用户，用户在网页上点“公开”才会发布。
-- 先 `caiguo_search`：已有相同主题的攻略时，把新信息作为修订或坑点提交给它（`caiguo_propose_change`，kind=pitfall 或 variant，同样带上出处），不要重复发布。
+- 先 `caiguo_search`：已有相同主题的攻略时，把新信息作为带修改的评论发给它（`caiguo_comment` 附 ops，type=add 或 variant，同样带上出处），不要重复发布。
 - 在 summary 或 sources 的 note 里写明原内容的发布时间，读者自己判断是否还适用。

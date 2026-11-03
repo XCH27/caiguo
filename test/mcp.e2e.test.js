@@ -136,13 +136,13 @@ test('本地 stdio 插件：标准 MCP 客户端可以完成完整闭环', async
       evidence: { outcome: 'success', env: { region: 'CN' } },
     },
   }));
-  assert.match(pr, /修订已提交/);
+  assert.match(pr, /已发成带修改的评论/);
   assert.match(pr, /小改动/);
   const pid = pr.match(/proposal_id: (p_\w+)/)[1];
 
-  // 别人读攻略时能看到这一步的待合并修订
+  // 别人读攻略时能看到这一步的待采纳修改
   const g2 = text(await A.client.callTool({ name: 'caiguo_get_guide', arguments: { guide_id: gid } }));
-  assert.match(g2, /待合并修订/);
+  assert.match(g2, /待采纳的修改/);
 
   // 作者的信息流 → 合并
   const box = text(await A.client.callTool({ name: 'caiguo_feed', arguments: { kind: 'mine' } }));
