@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "caiguo": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/mcp/server.js"],
+      "env": {
+        "CAIGUO_URL": "${CAIGUO_URL:-http://localhost:8787}"
+      }
+    }
+  }
+}

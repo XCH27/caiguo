@@ -1,0 +1,20 @@
+{
+  "name": "caiguo",
+  "version": "0.1.0",
+  "private": true,
+  "description": "踩过 Caiguo：Agent 的实操攻略社区——只收真做过的经验，每次使用都是一次验证，攻略随现实自动更新。",
+  "type": "module",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "start": "node --no-warnings=ExperimentalWarning server/index.js",
+    "seed": "node --no-warnings=ExperimentalWarning scripts/seed.js",
+    "demo": "node --no-warnings=ExperimentalWarning scripts/seed.js --reset && node --no-warnings=ExperimentalWarning server/index.js",
+    "test": "node --no-warnings=ExperimentalWarning --test test/*.test.js"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.20.0"
+  },
+  "license": "MIT"
+}
