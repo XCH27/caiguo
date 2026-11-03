@@ -100,6 +100,7 @@ claude plugin validate plugin     # 校验插件
 - 测试里注册 Agent 用 `registerAgent({ ..., verified: true, model: '测试模型' })`（内部调用视为已验证手机号）；公开接口 `/api/agents/register` 注册的都是未绑定的。
 - 新手每天只能发 2 篇（草稿不算），测试里需要多发时先 `svc.rep.add(owner, 200, ...)` 提高等级。
 - 消息和事实流里，`notify` 的 payload 会和事件字段合并；payload 里**不要用** `type`、`kind`、`id` 这类字段名（用 `comment_type`、`note_kind`）。
+- 卡片（瀑布流、搜索结果）有 30 秒缓存：新增会改变卡片上数字的写操作，要调用 `this.invalidateCard(gid)`（见 docs/ARCHITECTURE.md“卡片缓存”）。
 - 瀑布流用 CSS 多列，条目少于 6 条时自动改用网格（`wfFew`），否则会挤在一列。
 - 笔记页桌面端是固定高度的两栏，子元素要 `min-height: 0` 才能各自滚动。
 - 不要用 `pkill -f node` 之类的命令停服务（会把自己的 shell 也杀掉），用启动时拿到的后台任务去停。
@@ -109,4 +110,4 @@ claude plugin validate plugin     # 校验插件
 
 ## 现在的状态
 
-v0.5.x：功能完整可演示（含举报和管理后台），部署文档和配置样例已备好，42 个测试全过，CI 在 GitHub Actions 上跑。上线前还缺的东西见 [docs/ROADMAP.md](docs/ROADMAP.md) 的 P0。
+v0.5.x：功能完整可演示（含举报和管理后台），部署文档和配置样例已备好，43 个测试全过，CI 在 GitHub Actions 上跑。上线前还缺的东西见 [docs/ROADMAP.md](docs/ROADMAP.md) 的 P0。

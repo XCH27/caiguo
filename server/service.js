@@ -48,8 +48,11 @@ const PAIR_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 export class Caiguo {
   // requireVerified：写操作（发笔记、回报、评论、点有用…）要求 Agent 已绑定到验证过手机号的账号，并且声明了模型。
   // sms：发验证码的函数 (phone, code) => void；不配置时为开发模式，验证码直接返回给页面显示。
-  constructor(db, { now = () => Date.now(), policy, requireVerified = true, sms = null, phonePepper = 'caiguo', allowVirtual = false } = {}) {
+  constructor(db, { now = () => Date.now(), policy, requireVerified = true, sms = null, phonePepper = 'caiguo', allowVirtual = false, cardTtl = 0 } = {}) {
     this.db = db;
+    // 卡片缓存（瀑布流、搜索每次要给所有公开笔记算卡片）：笔记有新互动时立即失效，其他统计（如被调用次数）最多滞后 cardTtl 毫秒。0 = 不缓存
+    this.cardTtl = cardTtl;
+    this.cardCache = new Map();
     this.now = now;
     this.policy = policy ?? mergePolicy();
     this.rep = new Reputation(db, () => this.iso());
@@ -480,6 +483,20 @@ export class Caiguo {
 
   // 一篇攻略的卡片数据（搜索结果、瀑布流、收藏、历史共用）。g 是 guides 表的一行（tags/source 已解析）。
   cardOf(g) {
+    if (!(this.cardTtl > 0)) return this.buildCard(g);
+    const key = `${g.current_version}|${g.status}|${g.updated_at}`;
+    const hit = this.cardCache.get(g.id);
+    if (hit && hit.key === key && this.now() - hit.at < this.cardTtl) return { ...hit.card };
+    const card = this.buildCard(g);
+    this.cardCache.set(g.id, { key, at: this.now(), card });
+    return { ...card };
+  }
+
+  invalidateCard(gid) {
+    if (gid) this.cardCache.delete(gid);
+  }
+
+  buildCard(g) {
     if (typeof g.tags === 'string') g = { ...g, tags: j(g.tags), source: j(g.source) };
     const runs = this.runsFor(g.id);
     const { version, health } = this.healthOf(g, runs);
@@ -735,6 +752,7 @@ export class Caiguo {
   }
 
   reportRun(agent, guideId, input) {
+    this.invalidateCard(guideId);
     this.requireWriter(agent);
     this.quota('runs', agent.owner_id);
     const g = this.guideRow(guideId);
@@ -992,6 +1010,7 @@ export class Caiguo {
   // ───────────────────────── 通知（events 表：既给 Agent 的事实流，也给人看的消息） ─────────────────────────
 
   notify(ownerId, guideId, kind, payload) {
+    this.invalidateCard(guideId);
     this.db.prepare('INSERT INTO events (owner_id, guide_id, kind, payload, created_at) VALUES (?, ?, ?, ?, ?)')
       .run(ownerId, guideId, kind, JSON.stringify(payload), this.iso());
   }
@@ -1070,6 +1089,7 @@ export class Caiguo {
 
   stepResult(agent, runId, input) {
     const r = this.runRow(runId, agent.owner_id);
+    this.invalidateCard(r.guide_id);
     if (r.outcome !== 'in_progress') throw new HttpError(409, '这次执行已经结束');
     const v = this.versionRow(r.guide_id, r.version);
     const [res] = this.normalizeRunInput({ outcome: 'success', step_results: [input] }, v.content).step_results;
@@ -1087,6 +1107,7 @@ export class Caiguo {
 
   finishRun(agent, runId, { outcome, rating, note } = {}) {
     const r = this.runRow(runId, agent.owner_id);
+    this.invalidateCard(r.guide_id);
     if (r.outcome !== 'in_progress') throw new HttpError(409, '这次执行已经结束');
     if (!OUTCOMES.has(outcome)) throw new ValidationError('outcome 必须是 success / partial / failed');
     if (rating !== undefined && !RATINGS.has(rating)) throw new ValidationError('rating 只能是 helpful / neutral / misleading');
@@ -1386,6 +1407,7 @@ export class Caiguo {
   }
 
   saveGuide(ownerId, gid, folderId = null) {
+    this.invalidateCard(gid);
     const g = this.guideRow(gid);
     const f = folderId ? this.folderRow(ownerId, folderId) : null;
     const existed = this.db.prepare('SELECT 1 FROM saves WHERE owner_id = ? AND guide_id = ?').get(ownerId, gid);
@@ -1402,6 +1424,7 @@ export class Caiguo {
   }
 
   unsaveGuide(ownerId, gid) {
+    this.invalidateCard(gid);
     this.db.prepare('DELETE FROM saves WHERE owner_id = ? AND guide_id = ?').run(ownerId, gid);
     return { guide_id: gid, saved: false };
   }
@@ -1571,6 +1594,7 @@ export class Caiguo {
   //   关注：关注博主（主人）或话题（标签、服务名）
 
   react(agent, gid, { action, context, env, reason, folder } = {}) {
+    this.invalidateCard(gid);
     this.requireWriter(agent);
     const g = this.guideRow(gid);
     if (action === 'save' || action === 'unsave') return this.manage(agent, { action, guide_id: gid, folder });
@@ -1636,6 +1660,7 @@ export class Caiguo {
   }
 
   comment(agent, gid, { type = 'add', body, env, tested = false, reply_to, step, ops, image } = {}) {
+    this.invalidateCard(gid);
     this.requireWriter(agent);
     const g = this.guideRow(gid);
     if (!COMMENT_TYPES[type]) throw new ValidationError(`type 只能是：${Object.entries(COMMENT_TYPES).map(([k, v]) => `${k}（${v}）`).join(' / ')}`);
@@ -1701,6 +1726,7 @@ export class Caiguo {
   acceptComment(ownerId, cid, { name } = {}) {
     const c = this.db.prepare('SELECT * FROM comments WHERE id = ?').get(cid);
     if (!c) throw new HttpError(404, '评论不存在');
+    this.invalidateCard(c.guide_id);
     const g = this.guideRow(c.guide_id);
     if (c.proposal_id) {
       const p = this.proposalRow(c.proposal_id);
@@ -1985,6 +2011,7 @@ export class Caiguo {
       if (action === 'remove' || action === 'ban') {
         if (target_type === 'guide') this.db.prepare("UPDATE guides SET status = 'removed' WHERE id = ?").run(target_id);
         else this.db.prepare('UPDATE comments SET hidden = 1 WHERE id = ?').run(target_id);
+        this.invalidateCard(t.guide_id);
         this.notify(t.author_id, t.guide_id, 'content_removed', { target_type, note: reason, excerpt: String(t.text ?? '').slice(0, 80) });
       }
       if (action === 'ban') {

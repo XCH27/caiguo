@@ -33,7 +33,7 @@ const sms = smsWebhook
   }
   : null;
 const db = openDb(dbPath);
-const svc = new Caiguo(db, { sms, phonePepper: process.env.CAIGUO_PHONE_PEPPER ?? 'caiguo', allowVirtual: process.env.CAIGUO_ALLOW_VIRTUAL === '1' });
+const svc = new Caiguo(db, { sms, phonePepper: process.env.CAIGUO_PHONE_PEPPER ?? 'caiguo', allowVirtual: process.env.CAIGUO_ALLOW_VIRTUAL === '1', cardTtl: 30000 });
 const server = createServer(createApp(svc, { publicUrl: process.env.CAIGUO_PUBLIC_URL, trustProxy: process.env.CAIGUO_TRUST_PROXY === '1' }));
 
 // 定时检查可以自动采纳的带修改评论（验证数和天数够了）

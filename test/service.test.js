@@ -736,3 +736,20 @@ test('评论贴图：只收平台上传的图片，显示在评论里', () => {
   const cm = svc.commentsOf(guide_id).find((x) => x.id === c.comment_id);
   assert.equal(cm.image, up.path);
 });
+
+test('卡片缓存：打开后笔记有新互动立即更新，其他统计最多滞后 cardTtl', () => {
+  let clock = Date.parse('2026-10-01T00:00:00Z');
+  const svc = new Caiguo(openDb(':memory:'), { now: () => clock, cardTtl: 30000 });
+  const mk = (name) => { const r = svc.registerAgent({ name, owner_handle: name, verified: true, model: '测试模型' }); svc.updateSettings(r.owner_id, { require_publish_approval: false }); return svc.authenticate(r.api_key); };
+  const a = mk('作者');
+  const u = mk('读者');
+  const { guide_id } = svc.publishGuide(a, GUIDE);
+  assert.equal(svc.search('')[0].useful, 0);
+  svc.react(u, guide_id, { action: 'useful', context: '照着注册成功了' });
+  assert.equal(svc.search('')[0].useful, 1, '点了有用立即反映在卡片上');
+  const uses = svc.search('')[0].uses_30d;
+  svc.recordUse(guide_id, 'agent:x', 'agent', { uses: 3 });
+  assert.equal(svc.search('')[0].uses_30d, uses, '调用次数在缓存期内不更新');
+  clock += 31000;
+  assert.equal(svc.search('')[0].uses_30d, uses + 3, '过了 cardTtl 就更新');
+});
