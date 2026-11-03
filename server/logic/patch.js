@@ -2,7 +2,7 @@
 // 这里负责：校验操作、应用到攻略上、按风险分级、生成人类可读的变更说明。
 
 import {
-  ValidationError, normalizeStep, normalizeBranch, normalizePitfall, normalizeMeta, clean, stepLabel,
+  ValidationError, normalizeStep, normalizeBranch, normalizePitfall, normalizeMeta, clean, stepLabel, STEP_FIELDS,
 } from './content.js';
 
 export const OP_TYPES = ['replace_step', 'insert_step', 'remove_step', 'add_branch', 'add_pitfall', 'remove_pitfall', 'update_meta'];
@@ -19,7 +19,12 @@ export function normalizeOps(ops) {
     switch (op.op) {
       case 'replace_step': {
         need(op.step_id, `${f}.step_id`);
-        const set = normalizeStep(op.set, `${f}.set`, { partial: true });
+        if (!op.set || typeof op.set !== 'object') throw new ValidationError(`${f}.set 必须是对象`);
+        // 值为 null 表示删掉这个字段（如去掉截图、清空备注）；动作和执行者不能删
+        const cleared = Object.keys(op.set).filter((k) => op.set[k] === null && CLEARABLE.has(k));
+        const rest = Object.fromEntries(Object.entries(op.set).filter(([k]) => !cleared.includes(k)));
+        const set = clean(normalizeStep(rest, `${f}.set`, { partial: true }));
+        for (const k of cleared) set[k] = null;
         if (!Object.keys(set).length) throw new ValidationError(`${f}.set 不能为空`);
         return { op: op.op, step_id: op.step_id, set };
       }
@@ -51,6 +56,8 @@ export function normalizeOps(ops) {
   });
 }
 
+const CLEARABLE = new Set(['target', 'expect', 'notes', 'screenshot', 'branches', 'refs', 'irreversible', 'sensitive']);
+
 function need(v, field) {
   if (typeof v !== 'string' || !v) throw new ValidationError(`缺少字段：${field}`);
 }
@@ -69,7 +76,9 @@ export function applyOps(content, ops, newVersion) {
     switch (op.op) {
       case 'replace_step': {
         const idx = findStep(op.step_id);
-        c.steps[idx] = clean({ ...c.steps[idx], ...op.set, rev: newVersion ?? c.steps[idx].rev });
+        const merged = { ...c.steps[idx], ...op.set, rev: newVersion ?? c.steps[idx].rev };
+        for (const k of Object.keys(merged)) if (merged[k] === null) delete merged[k];
+        c.steps[idx] = clean(merged);
         break;
       }
       case 'insert_step': {
@@ -213,4 +222,75 @@ function fmt(v) {
   if (Array.isArray(v)) return v.join('、');
   if (typeof v === 'object') return Object.entries(v).map(([k, x]) => `${k}=${x}`).join('，');
   return String(v);
+}
+
+// 稳定序列化：比较两个值是否相同时不受键顺序影响
+function stable(v) {
+  if (v === undefined || v === null) return '';
+  if (Array.isArray(v)) return `[${v.map(stable).join(',')}]`;
+  if (typeof v === 'object') {
+    const keys = Object.keys(v).filter((k) => v[k] !== undefined && v[k] !== null).sort();
+    return `{${keys.map((k) => `${k}:${stable(v[k])}`).join(',')}}`;
+  }
+  return JSON.stringify(v);
+}
+
+// 把“编辑后的完整攻略”和当前版本比较，生成修订操作（网页编辑器用）。
+// edited.steps 里带 id 的是原来的某一步，不带 id 的是新增的；
+// edited.pitfalls 里带 id 的是原来的坑点，step_pos 是它对应编辑后第几步（从 1 开始）。
+// 不支持调换已有步骤的顺序（保持原顺序）。
+export function diffToOps(old, edited) {
+  const ops = [];
+  const meta = {};
+  for (const k of META_FIELDS) {
+    if (!(k in edited)) continue;
+    if (stable(edited[k]) !== stable(old[k])) meta[k] = edited[k] ?? (k === 'poster' ? '' : edited[k]);
+  }
+  for (const k of Object.keys(meta)) if (meta[k] === undefined) delete meta[k];
+  if (Object.keys(meta).length) ops.push({ op: 'update_meta', set: meta });
+
+  const oldIds = new Set(old.steps.map((s) => s.id));
+  const kept = new Set(edited.steps.filter((s) => s.id && oldIds.has(s.id)).map((s) => s.id));
+  for (const s of old.steps) if (!kept.has(s.id)) ops.push({ op: 'remove_step', step_id: s.id });
+
+  let seq = old.seq?.step ?? old.steps.length;
+  let prev = null;
+  const finalIds = [];
+  for (const s of edited.steps) {
+    const { id, rev, ...body } = s;
+    if (id && kept.has(id)) {
+      const o = old.steps.find((x) => x.id === id);
+      const set = {};
+      for (const k of STEP_FIELDS) {
+        if (stable(body[k]) === stable(o[k])) continue;
+        set[k] = body[k] === undefined || body[k] === false && o[k] === undefined ? null : body[k];
+        if (set[k] === null && (k === 'irreversible' || k === 'sensitive')) set[k] = false;
+        if (set[k] === null && !CLEARABLE.has(k)) delete set[k];
+      }
+      if (Object.keys(set).length) ops.push({ op: 'replace_step', step_id: id, set });
+      prev = id;
+    } else {
+      ops.push({ op: 'insert_step', after: prev ?? 'start', step: clean({ ...body }) });
+      prev = `s${++seq}`;
+    }
+    finalIds.push(prev);
+  }
+
+  const oldPits = new Map(old.pitfalls.map((p) => [p.id, p]));
+  const keptPits = new Set();
+  for (const p of edited.pitfalls ?? []) {
+    const { id, step_pos, step_id, ...body } = p;
+    const sid = step_pos ? finalIds[step_pos - 1] : undefined;
+    const next = clean({ ...body, step_id: sid });
+    if (id && oldPits.has(id)) {
+      keptPits.add(id);
+      const o = oldPits.get(id);
+      const { id: _i, ...ob } = o;
+      if (stable(ob) === stable(next)) continue;
+      ops.push({ op: 'remove_pitfall', pitfall_id: id });
+    }
+    ops.push({ op: 'add_pitfall', pitfall: next });
+  }
+  for (const id of oldPits.keys()) if (!keptPits.has(id)) ops.push({ op: 'remove_pitfall', pitfall_id: id });
+  return ops;
 }

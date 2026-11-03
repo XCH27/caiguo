@@ -3,7 +3,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { tx } from './db.js';
 import { normalizeNewGuide, ValidationError, stepLabel } from './logic/content.js';
-import { normalizeOps, applyOps, classifyRisk, describeOps } from './logic/patch.js';
+import { normalizeOps, applyOps, classifyRisk, describeOps, diffToOps } from './logic/patch.js';
 import { computeHealth } from './logic/health.js';
 import { evaluateProposal, mergePolicy } from './logic/merge.js';
 import { redactDeep, redactText, scanForRisks } from './logic/redact.js';
@@ -148,9 +148,11 @@ export class Caiguo {
 
   // ───────────────────────── 攻略 ─────────────────────────
 
-  publishGuide(agent, input) {
+  // draft=true：只存草稿，不公开，主人在网页上继续编辑；direct=true：主人本人在网页上发布，不需要再确认。
+  publishGuide(agent, rawInput, { direct = false } = {}) {
+    const { draft = false, ...input } = rawInput ?? {};
     const r = this.quota('guides', agent.owner_id);
-    if (r.points < PUBLISH_DEPOSIT) {
+    if (!draft && r.points < PUBLISH_DEPOSIT) {
       throw new HttpError(402, `贡献分不足：发布需要 ${PUBLISH_DEPOSIT} 分押金（你现在有 ${r.points} 分）。押金会在攻略第一次被别人实测成功时退回。可以先通过回报执行、验证修订、提交修订来积累贡献分。`);
     }
     const { value: redacted, findings } = redactDeep(input);
@@ -159,25 +161,27 @@ export class Caiguo {
     const similar = this.search(content.title, { limit: 3 }).filter((g) => g.score >= 6);
     const gid = id('g');
     const now = this.iso();
-    const needApproval = this.settingsOf(agent.owner_id).require_publish_approval;
+    const needApproval = !draft && !direct && this.settingsOf(agent.owner_id).require_publish_approval;
     const approveKey = needApproval ? randomBytes(16).toString('hex') : null;
+    const status = draft ? 'draft' : needApproval ? 'pending' : 'published';
     tx(this.db, () => {
       this.db.prepare(`INSERT INTO guides (id, title, summary, tags, source, kind, skill_name, author_agent_id, author_owner_id,
         current_version, search_text, created_at, updated_at, status, approve_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)`)
         .run(gid, content.title, content.summary, JSON.stringify(content.tags), JSON.stringify(content.source),
           content.kind, content.skill?.name ?? null, agent.id, agent.owner_id, buildSearchText(content), now, now,
-          needApproval ? 'pending' : 'published', approveKey);
+          status, approveKey);
       this.db.prepare(`INSERT INTO guide_versions (guide_id, version, content, note, flags, created_by_agent, created_at)
         VALUES (?, 1, ?, ?, ?, ?, ?)`).run(gid, JSON.stringify(content), '首次发布', JSON.stringify(flags), agent.id, now);
-      if (!needApproval) this.activateGuide(gid);
+      if (status === 'published') this.activateGuide(gid);
     });
     return {
       guide_id: gid,
       version: 1,
-      status: needApproval ? 'pending' : 'published',
+      status,
+      edit_path: status === 'draft' ? `/me/guides/${gid}/edit` : null,
       approve_path: needApproval ? `/approve/${gid}?k=${approveKey}` : null,
       deposit: PUBLISH_DEPOSIT,
-      points_left: Math.round((r.points - (needApproval ? 0 : PUBLISH_DEPOSIT)) * 10) / 10,
+      points_left: Math.round((r.points - (status === 'published' ? PUBLISH_DEPOSIT : 0)) * 10) / 10,
       redactions: findings,
       flags,
       similar: similar.map((g) => ({ id: g.id, title: g.title })),
@@ -250,51 +254,20 @@ export class Caiguo {
 
   // 平台的定位是攻略站：搜索只按文字相关度排序，给出每篇的客观信息，
   // 不替 Agent 判断“哪篇更好、适不适合你”。被多人评为“误导”且没人跑通过的内容会被折叠（内容治理）。
-  search(q, { tag, kind, limit = 20, sort, includeFolded = false } = {}) {
+  search(q, { tag, kind, origin, limit = 20, sort, includeFolded = false } = {}) {
     let rows = this.db.prepare("SELECT * FROM guides WHERE status = 'published'").all().map((g) => ({ ...g, tags: j(g.tags), source: j(g.source) }));
     if (tag) rows = rows.filter((g) => g.tags.includes(tag));
     if (kind) rows = rows.filter((g) => g.kind === kind);
     let items = rows.map((g) => ({ g, s: q ? score(q, g) : 1 })).filter((x) => x.s > 0).map(({ g, s }) => {
-      const runs = this.runsFor(g.id);
-      const { version, health } = this.healthOf(g, runs);
-      const ratings = this.ratingsOf(g.id);
-      const usage = this.usageOf(g.id);
-      const folded = ratings.misleading >= 3 && health.others_success === 0;
-      const open = this.db.prepare("SELECT COUNT(*) AS n FROM proposals WHERE guide_id = ? AND status = 'open'").get(g.id).n;
-      const c = version.content;
-      return {
-        rank: s,
-        folded,
-        item: {
-          id: g.id, kind: g.kind, title: g.title, summary: g.summary, tags: g.tags, source: g.source,
-          skill: c.skill, poster: c.poster,
-          origin: c.origin ?? (g.source?.type === 'external' ? 'external' : 'firsthand'),
-          sources: (c.sources ?? []).map((x) => ({ type: x.type, platform: x.platform, title: x.title, author: x.author, url: x.url })),
-          applies_to: c.applies_to,
-          steps: c.steps.length,
-          human_steps: c.steps.filter((st) => st.actor === 'human').length,
-          step_issues: Object.entries(health.steps).filter(([, sig]) => sig.problem_count > 0)
-            .map(([sid, sig]) => ({ step: c.steps.findIndex((st) => st.id === sid) + 1, reports: sig.problem_count, observed: sig.recent_problems[0]?.observed, variant: sig.variant })),
-          cover: c.steps.find((st) => st.screenshot)?.screenshot ?? null,
-          version: g.current_version, updated_at: g.updated_at, created_at: g.created_at,
-          author: this.authorOf(g),
-          score: Math.round(s * 10) / 10,
-          success_30d: health.success_30d,
-          badge: health.badge,
-          last_verified_at: health.last_verified_any_at,
-          runs_30d: health.runs_30d,
-          success_rate_30d: health.success_rate_30d,
-          distinct_runners: health.distinct_runners,
-          suspect_steps: health.suspect_steps.length,
-          open_proposals: open,
-          helpful: ratings.helpful,
-          uses_30d: usage.uses_30d,
-          agent_reads_30d: usage.agent_reads_30d,
-        },
-      };
+      const item = this.cardOf(g);
+      item.score = Math.round(s * 10) / 10;
+      return { rank: s, folded: item.folded, item };
     });
     if (!includeFolded) items = items.filter((x) => !x.folded);
-    if (q) {
+    if (origin) items = items.filter((x) => x.item.origin === origin);
+    if (sort === 'new') {
+      items.sort((a, b) => Date.parse(b.item.updated_at) - Date.parse(a.item.updated_at));
+    } else if (q && sort !== 'hot') {
       items.sort((a, b) => b.rank - a.rank);
       // 相对阈值：明显比最佳结果弱很多的只是沾边，去掉
       const top = items[0]?.rank ?? 0;
@@ -305,6 +278,53 @@ export class Caiguo {
       items.sort((a, b) => Date.parse(b.item.updated_at) - Date.parse(a.item.updated_at));
     }
     return items.slice(0, Math.min(limit, 100)).map((x) => x.item);
+  }
+
+  // 一篇攻略的卡片数据（搜索结果、瀑布流、收藏、历史共用）。g 是 guides 表的一行（tags/source 已解析）。
+  cardOf(g) {
+    if (typeof g.tags === 'string') g = { ...g, tags: j(g.tags), source: j(g.source) };
+    const runs = this.runsFor(g.id);
+    const { version, health } = this.healthOf(g, runs);
+    const ratings = this.ratingsOf(g.id);
+    const usage = this.usageOf(g.id);
+    const open = this.db.prepare("SELECT COUNT(*) AS n FROM proposals WHERE guide_id = ? AND status = 'open'").get(g.id).n;
+    const c = version.content;
+    return {
+      id: g.id, kind: g.kind, status: g.status, title: g.title, summary: g.summary, tags: g.tags, source: g.source,
+      skill: c.skill, poster: c.poster,
+      origin: c.origin ?? (g.source?.type === 'external' ? 'external' : 'firsthand'),
+      sources: (c.sources ?? []).map((x) => ({ type: x.type, platform: x.platform, title: x.title, author: x.author, url: x.url })),
+      applies_to: c.applies_to,
+      steps: c.steps.length,
+      human_steps: c.steps.filter((st) => st.actor === 'human').length,
+      step_issues: Object.entries(health.steps).filter(([, sig]) => sig.problem_count > 0)
+        .map(([sid, sig]) => ({ step: c.steps.findIndex((st) => st.id === sid) + 1, reports: sig.problem_count, observed: sig.recent_problems[0]?.observed, variant: sig.variant })),
+      cover: c.steps.find((st) => st.screenshot)?.screenshot ?? null,
+      version: g.current_version, updated_at: g.updated_at, created_at: g.created_at,
+      author: this.authorOf(g),
+      success_30d: health.success_30d,
+      badge: health.badge,
+      last_verified_at: health.last_verified_any_at,
+      runs_30d: health.runs_30d,
+      success_rate_30d: health.success_rate_30d,
+      distinct_runners: health.distinct_runners,
+      suspect_steps: health.suspect_steps.length,
+      open_proposals: open,
+      helpful: ratings.helpful,
+      uses_30d: usage.uses_30d,
+      agent_reads_30d: usage.agent_reads_30d,
+      saves: this.saveCount(g.id),
+      folded: ratings.misleading >= 3 && health.others_success === 0,
+    };
+  }
+
+  cardsFor(ids) {
+    const out = [];
+    for (const gid of ids) {
+      const g = this.db.prepare('SELECT * FROM guides WHERE id = ?').get(gid);
+      if (g) out.push(this.cardOf(g));
+    }
+    return out;
   }
 
   authorOf(g) {
@@ -409,11 +429,14 @@ export class Caiguo {
     };
   }
 
-  getGuide(guideId, { viewer, source, presenceOwner } = {}) {
-    this.sweepAutoMerge(guideId);
-    const g = this.guideRow(guideId);
-    if (viewer) this.recordUse(guideId, viewer, source ?? 'agent', { views: 1 });
-    if (presenceOwner && this.settingsOf(presenceOwner).share_presence) {
+  getGuide(guideId, { viewer, source, presenceOwner, ownerView } = {}) {
+    const raw = this.db.prepare('SELECT status, author_owner_id FROM guides WHERE id = ?').get(guideId);
+    const own = Boolean(ownerView && raw && raw.author_owner_id === ownerView);
+    if (raw?.status === 'published') this.sweepAutoMerge(guideId);
+    const g = this.guideRow(guideId, { any: own });
+    if (presenceOwner && g.status === 'published') this.recordHistory(presenceOwner, guideId);
+    if (viewer && g.status === 'published') this.recordUse(guideId, viewer, source ?? 'agent', { views: 1 });
+    if (presenceOwner && g.status === 'published' && this.settingsOf(presenceOwner).share_presence) {
       this.db.prepare(`INSERT INTO presence (owner_id, guide_id, viewed_at) VALUES (?, ?, ?)
         ON CONFLICT (owner_id, guide_id) DO UPDATE SET viewed_at = excluded.viewed_at`).run(presenceOwner, guideId, this.iso());
     }
@@ -435,9 +458,10 @@ export class Caiguo {
       WHERE p.guide_id = ? AND p.status = 'merged' GROUP BY o.handle ORDER BY n DESC`).all(guideId);
     const maintainers = this.db.prepare(`SELECT o.handle, m.reason FROM maintainers m JOIN owners o ON o.id = m.owner_id WHERE m.guide_id = ?`).all(guideId);
     return {
-      id: g.id, title: g.title, summary: g.summary, tags: g.tags, source: g.source,
+      id: g.id, title: g.title, summary: g.summary, tags: g.tags, source: g.source, status: g.status,
       version: g.current_version, created_at: g.created_at, updated_at: g.updated_at,
       author: this.authorOf(g),
+      saves: this.saveCount(g.id),
       content: version.content,
       flags: version.flags,
       health,
@@ -558,7 +582,8 @@ export class Caiguo {
     applyOps(current.content, ops, g.current_version + 1); // 先试应用，失败直接报错
     const risk = classifyRisk(current.content, ops);
     const evidence = input?.evidence;
-    if (!evidence || evidence.outcome !== 'success') {
+    const ownEdit = g.author_owner_id === agent.owner_id || this.isMaintainer(guideId, agent.owner_id);
+    if (!(ownEdit && !evidence) && (!evidence || evidence.outcome !== 'success')) {
       throw new ValidationError('修订必须附上你按新做法实际跑通的证据：evidence = { outcome: "success", env: {...}, note: "..." }');
     }
     const pid = id('p');
@@ -568,14 +593,16 @@ export class Caiguo {
         agent_id, owner_id, from_run_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?)`)
         .run(pid, guideId, base, kind, JSON.stringify(ops), rationale, risk.level, JSON.stringify(risk.reasons),
           agent.id, agent.owner_id, input.from_run_id ?? null, now);
-      const ev = this.normalizeRunInput({ outcome: 'success', env: evidence.env, note: evidence.note ?? '提案人按新做法实测成功' }, current.content);
-      this.insertRun({ guide_id: guideId, version: null, proposal_id: pid, agent, ...ev, created_at: now });
+      if (evidence) {
+        const ev = this.normalizeRunInput({ outcome: 'success', env: evidence.env, note: evidence.note ?? '提案人按新做法实测成功' }, current.content);
+        this.insertRun({ guide_id: guideId, version: null, proposal_id: pid, agent, ...ev, created_at: now });
+      }
     });
     if (g.author_owner_id !== agent.owner_id) {
       this.notify(g.author_owner_id, guideId, 'proposal_new', { proposal_id: pid, by: agent.name, risk: risk.level, rationale });
     }
     // 作者自己提交的修订直接合并（相当于作者自己编辑）
-    if (g.author_owner_id === agent.owner_id || this.isMaintainer(guideId, agent.owner_id)) {
+    if (ownEdit) {
       const merged = this.mergeProposal(pid, { by: agent.owner_id, note: '作者/维护者直接更新' });
       return { proposal_id: pid, status: 'merged', merged_version: merged.version, risk: risk.level };
     }
@@ -957,8 +984,11 @@ export class Caiguo {
         const p = this.proposalView(row);
         return { type: 'open_revision', at: p.created_at, guide_id: p.guide_id, title: row.title, proposal_id: p.id, risk: p.risk, rationale: p.rationale, diff: p.diff, confirmations: p.evaluation?.confirmations, needed: p.evaluation?.needed };
       });
+    } else if (kind === 'saved') {
+      items = this.savedList(agent.owner_id).filter((x) => x.saved_at > after || !since).slice(0, lim)
+        .map((x) => ({ type: 'saved_guide', at: x.saved_at, guide_id: x.id, title: x.title, folder: x.folder_name, summary: x.summary }));
     } else {
-      throw new ValidationError('kind 只能是 mine / new / updated / reports / revisions');
+      throw new ValidationError('kind 只能是 mine / saved / new / updated / reports / revisions');
     }
     items.sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
     items = items.slice(0, lim);
@@ -983,7 +1013,7 @@ export class Caiguo {
         .map(([sid, sig]) => ({ step: stepLabel(version.content, sid), ...sig }));
       if (issues.length) attention.push({ guide_id: gid, title: g.title, issues });
     }
-    const agents = this.db.prepare('SELECT id, name, created_at, revoked FROM agents WHERE owner_id = ? ORDER BY created_at').all(ownerId)
+    const agents = this.db.prepare("SELECT id, name, created_at, revoked FROM agents WHERE owner_id = ? AND kind = 'agent' ORDER BY created_at").all(ownerId)
       .map((a) => ({ ...a, last_active: this.db.prepare('SELECT MAX(created_at) AS t FROM runs WHERE agent_id = ?').get(a.id).t }));
     const reputation = this.rep.summary(ownerId);
     const remaining = {};
@@ -992,7 +1022,325 @@ export class Caiguo {
       handle: o.handle, settings: this.settingsOf(ownerId), reputation, remaining, history: this.rep.history(ownerId, 12),
       pending, proposals, attention, agents, runs: this.activeRuns(ownerId), presence: this.presenceOf(ownerId),
       guides: this.search('', { limit: 100, includeFolded: true }).filter((x) => x.author.owner_id === ownerId),
+      counts: this.libraryCounts(ownerId),
     };
+  }
+
+  // ───────────────────────── 主人本人在网页上操作 ─────────────────────────
+  // 主人在网页上发布、编辑时用一个“本人”身份（不是真的 Agent，没有可用的 key），
+  // 这样作者显示为“某某（本人）”，和 Agent 发布的内容区分开。
+
+  webAgent(ownerId) {
+    const o = this.db.prepare('SELECT * FROM owners WHERE id = ?').get(ownerId);
+    if (!o) throw new HttpError(404, '主人账号不存在');
+    let a = this.db.prepare("SELECT id, name, owner_id FROM agents WHERE owner_id = ? AND kind = 'web'").get(ownerId);
+    if (!a) {
+      a = { id: id('a'), name: `${o.handle}（本人）`, owner_id: ownerId };
+      this.db.prepare("INSERT INTO agents (id, owner_id, name, api_key_hash, created_at, kind) VALUES (?, ?, ?, ?, ?, 'web')")
+        .run(a.id, ownerId, a.name, sha(`web:${randomBytes(24).toString('hex')}`), this.iso());
+    }
+    return { ...a, owner_handle: o.handle };
+  }
+
+  ownGuide(ownerId, gid) {
+    const g = this.db.prepare('SELECT * FROM guides WHERE id = ?').get(gid);
+    if (!g || g.author_owner_id !== ownerId) throw new HttpError(404, '没有这篇攻略，或者它不是你的');
+    return { ...g, tags: j(g.tags), source: j(g.source) };
+  }
+
+  // 草稿 / 待确认内容（还没公开、只有版本 1）：整篇替换
+  updateDraft(ownerId, gid, input) {
+    const g = this.ownGuide(ownerId, gid);
+    if (!['draft', 'pending', 'rejected'].includes(g.status)) throw new HttpError(409, '已公开的攻略请用编辑（会生成新版本）');
+    const old = this.versionRow(gid, 1).content;
+    const { value: redacted, findings } = redactDeep({ ...input, kind: old.kind, skill: input.skill?.name ? input.skill : old.skill });
+    const content = normalizeNewGuide(redacted);
+    const flags = scanForRisks(content);
+    tx(this.db, () => {
+      this.db.prepare('UPDATE guide_versions SET content = ?, flags = ?, created_at = ? WHERE guide_id = ? AND version = 1').run(JSON.stringify(content), JSON.stringify(flags), this.iso(), gid);
+      this.db.prepare(`UPDATE guides SET title = ?, summary = ?, tags = ?, source = ?, search_text = ?, updated_at = ?,
+        status = CASE status WHEN 'rejected' THEN 'draft' ELSE status END WHERE id = ?`)
+        .run(content.title, content.summary, JSON.stringify(content.tags), JSON.stringify(content.source), buildSearchText(content), this.iso(), gid);
+    });
+    return { guide_id: gid, status: this.ownGuide(ownerId, gid).status, redactions: findings, flags };
+  }
+
+  // 主人本人把草稿 / 待确认内容公开
+  publishDraft(ownerId, gid) {
+    const g = this.ownGuide(ownerId, gid);
+    if (!['draft', 'pending', 'rejected'].includes(g.status)) throw new HttpError(409, '这篇攻略已经公开了');
+    const r = this.rep.summary(ownerId);
+    if (r.points < PUBLISH_DEPOSIT) throw new HttpError(402, `贡献分不足：发布需要 ${PUBLISH_DEPOSIT} 分押金（你现在有 ${r.points} 分）`);
+    tx(this.db, () => this.activateGuide(gid));
+    return { guide_id: gid, status: 'published' };
+  }
+
+  // 下架（不再出现在搜索和信息流里，链接对他人失效；可以恢复）
+  archiveGuide(ownerId, gid) {
+    const g = this.ownGuide(ownerId, gid);
+    if (g.status !== 'published') throw new HttpError(409, '只有已公开的攻略可以下架');
+    this.db.prepare("UPDATE guides SET status = 'archived' WHERE id = ?").run(gid);
+    return { guide_id: gid, status: 'archived' };
+  }
+
+  restoreGuide(ownerId, gid) {
+    const g = this.ownGuide(ownerId, gid);
+    if (g.status !== 'archived') throw new HttpError(409, '只有已下架的攻略可以恢复');
+    this.db.prepare("UPDATE guides SET status = 'published' WHERE id = ?").run(gid);
+    return { guide_id: gid, status: 'published' };
+  }
+
+  // 删除：只能删还没公开过的（草稿、待确认、被拒绝）。公开过的只能下架，保留别人的回报记录。
+  deleteGuide(ownerId, gid) {
+    const g = this.ownGuide(ownerId, gid);
+    if (!['draft', 'pending', 'rejected'].includes(g.status)) throw new HttpError(409, '公开过的攻略不能删除，可以下架');
+    tx(this.db, () => {
+      this.db.prepare('DELETE FROM guide_versions WHERE guide_id = ?').run(gid);
+      this.db.prepare('DELETE FROM saves WHERE guide_id = ?').run(gid);
+      this.db.prepare('DELETE FROM guides WHERE id = ?').run(gid);
+    });
+    return { guide_id: gid, status: 'deleted' };
+  }
+
+  // 网页编辑器：把编辑后的整篇攻略和当前版本比较，生成修订。
+  // 作者和维护者直接生效（新版本）；其他人提交为待合并修订，需要声明已经按新做法跑通。
+  editGuide(agent, gid, edited, { rationale, tested = false, env } = {}) {
+    const g = this.guideRow(gid);
+    const cur = this.versionRow(gid, g.current_version).content;
+    const steps = edited.steps ?? [];
+    const pits = edited.pitfalls ?? [];
+    const stripped = {
+      ...edited, kind: cur.kind, skill: cur.skill,
+      steps: steps.map(({ id: _i, rev: _r, ...st }) => st),
+      pitfalls: pits.map(({ id: _i, step_pos, ...p }) => ({ ...p, step_id: step_pos ? String(step_pos) : undefined })),
+    };
+    const norm = normalizeNewGuide(redactDeep(stripped).value);
+    const withIds = {
+      ...norm,
+      steps: norm.steps.map(({ id: _i, rev: _r, ...st }, i) => ({ ...st, id: steps[i].id })),
+      pitfalls: norm.pitfalls.map(({ id: _i, step_id, ...p }, i) => ({ ...p, id: pits[i].id, step_pos: step_id ? Number(step_id.slice(1)) : undefined })),
+    };
+    const ops = diffToOps(cur, withIds);
+    if (!ops.length) throw new ValidationError('没有任何改动');
+    const own = g.author_owner_id === agent.owner_id || this.isMaintainer(gid, agent.owner_id);
+    if (!own && !tested) throw new ValidationError('修订需要你按修改后的做法实际跑通过。还没试过的话，可以先照着做一遍再提交。');
+    const why = String(rationale ?? '').trim() || (own ? '作者在网页上编辑' : '');
+    return this.propose(agent, gid, {
+      rationale: why, kind: 'improve', ops,
+      evidence: own ? undefined : { outcome: 'success', env, note: '在网页上提交，提交人确认已按新做法跑通' },
+    });
+  }
+
+  // ───────────────────────── 收藏 ─────────────────────────
+
+  foldersOf(ownerId) {
+    const total = this.db.prepare('SELECT COUNT(*) AS n FROM saves s JOIN guides g ON g.id = s.guide_id WHERE s.owner_id = ?').get(ownerId).n;
+    const loose = this.db.prepare('SELECT COUNT(*) AS n FROM saves WHERE owner_id = ? AND folder_id IS NULL').get(ownerId).n;
+    const folders = this.db.prepare(`SELECT f.id, f.name, f.created_at, COUNT(s.guide_id) AS n FROM folders f
+      LEFT JOIN saves s ON s.folder_id = f.id WHERE f.owner_id = ? GROUP BY f.id ORDER BY f.created_at`).all(ownerId);
+    return { total, loose, folders };
+  }
+
+  createFolder(ownerId, name) {
+    const n = String(name ?? '').trim().slice(0, 20);
+    if (!n) throw new ValidationError('收藏夹名称不能为空');
+    if (this.db.prepare('SELECT COUNT(*) AS n FROM folders WHERE owner_id = ?').get(ownerId).n >= 30) throw new ValidationError('最多 30 个收藏夹');
+    if (this.db.prepare('SELECT 1 FROM folders WHERE owner_id = ? AND name = ?').get(ownerId, n)) throw new ValidationError('已经有同名的收藏夹');
+    const f = { id: id('f'), name: n };
+    this.db.prepare('INSERT INTO folders (id, owner_id, name, created_at) VALUES (?, ?, ?, ?)').run(f.id, ownerId, n, this.iso());
+    return f;
+  }
+
+  folderRow(ownerId, folderId) {
+    const f = this.db.prepare('SELECT * FROM folders WHERE id = ? AND owner_id = ?').get(folderId, ownerId);
+    if (!f) throw new HttpError(404, '收藏夹不存在');
+    return f;
+  }
+
+  renameFolder(ownerId, folderId, name) {
+    this.folderRow(ownerId, folderId);
+    const n = String(name ?? '').trim().slice(0, 20);
+    if (!n) throw new ValidationError('收藏夹名称不能为空');
+    this.db.prepare('UPDATE folders SET name = ? WHERE id = ?').run(n, folderId);
+  }
+
+  // 删除收藏夹：里面的攻略不会取消收藏，移回“未分类”
+  deleteFolder(ownerId, folderId) {
+    this.folderRow(ownerId, folderId);
+    tx(this.db, () => {
+      this.db.prepare('UPDATE saves SET folder_id = NULL WHERE owner_id = ? AND folder_id = ?').run(ownerId, folderId);
+      this.db.prepare('DELETE FROM folders WHERE id = ?').run(folderId);
+    });
+  }
+
+  saveGuide(ownerId, gid, folderId = null) {
+    const g = this.guideRow(gid);
+    const f = folderId ? this.folderRow(ownerId, folderId) : null;
+    const existed = this.db.prepare('SELECT 1 FROM saves WHERE owner_id = ? AND guide_id = ?').get(ownerId, gid);
+    this.db.prepare(`INSERT INTO saves (owner_id, guide_id, folder_id, created_at) VALUES (?, ?, ?, ?)
+      ON CONFLICT (owner_id, guide_id) DO UPDATE SET folder_id = excluded.folder_id`).run(ownerId, gid, f?.id ?? null, this.iso());
+    if (!existed) this.notify(ownerId, gid, 'human_saved', { title: g.title, folder: f?.name ?? null });
+    return { guide_id: gid, folder: f?.name ?? null };
+  }
+
+  unsaveGuide(ownerId, gid) {
+    this.db.prepare('DELETE FROM saves WHERE owner_id = ? AND guide_id = ?').run(ownerId, gid);
+    return { guide_id: gid, saved: false };
+  }
+
+  saveOf(ownerId, gid) {
+    if (!ownerId) return null;
+    return this.db.prepare(`SELECT s.folder_id, f.name AS folder_name, s.created_at FROM saves s LEFT JOIN folders f ON f.id = s.folder_id
+      WHERE s.owner_id = ? AND s.guide_id = ?`).get(ownerId, gid) ?? null;
+  }
+
+  saveCount(gid) {
+    return this.db.prepare('SELECT COUNT(*) AS n FROM saves WHERE guide_id = ?').get(gid).n;
+  }
+
+  // folder: undefined = 全部；'none' = 未分类；其他 = 收藏夹 id
+  savedList(ownerId, { folder } = {}) {
+    let sql = `SELECT s.guide_id, s.folder_id, s.created_at, f.name AS folder_name FROM saves s LEFT JOIN folders f ON f.id = s.folder_id
+      JOIN guides g ON g.id = s.guide_id WHERE s.owner_id = ?`;
+    const args = [ownerId];
+    if (folder === 'none') sql += ' AND s.folder_id IS NULL';
+    else if (folder) { sql += ' AND s.folder_id = ?'; args.push(folder); }
+    const rows = this.db.prepare(`${sql} ORDER BY s.created_at DESC LIMIT 200`).all(...args);
+    const cards = new Map(this.cardsFor(rows.map((r) => r.guide_id)).map((c) => [c.id, c]));
+    return rows.map((r) => ({ ...cards.get(r.guide_id), saved_at: r.created_at, folder_id: r.folder_id, folder_name: r.folder_name }))
+      .filter((x) => x.id);
+  }
+
+  // ───────────────────────── 浏览历史 ─────────────────────────
+
+  recordHistory(ownerId, gid) {
+    this.db.prepare(`INSERT INTO history (owner_id, guide_id, viewed_at, views) VALUES (?, ?, ?, 1)
+      ON CONFLICT (owner_id, guide_id) DO UPDATE SET viewed_at = excluded.viewed_at, views = views + 1`).run(ownerId, gid, this.iso());
+  }
+
+  historyOf(ownerId, { limit = 100 } = {}) {
+    const rows = this.db.prepare(`SELECT h.guide_id, h.viewed_at, h.views FROM history h JOIN guides g ON g.id = h.guide_id
+      WHERE h.owner_id = ? AND g.status = 'published' ORDER BY h.viewed_at DESC LIMIT ?`).all(ownerId, limit);
+    const cards = new Map(this.cardsFor(rows.map((r) => r.guide_id)).map((c) => [c.id, c]));
+    return rows.map((r) => ({ ...cards.get(r.guide_id), viewed_at: r.viewed_at, views: r.views }));
+  }
+
+  // 你的 Agent 读过、执行过的攻略（来自使用计数，按天）
+  agentTrail(ownerId, { limit = 100 } = {}) {
+    const rows = this.db.prepare(`SELECT u.guide_id, MAX(u.day) AS day, SUM(u.views) AS reads, SUM(u.uses) AS uses FROM usage u
+      JOIN guides g ON g.id = u.guide_id WHERE u.viewer = ? AND u.source = 'agent' AND g.status = 'published'
+      GROUP BY u.guide_id ORDER BY day DESC LIMIT ?`).all(ownerId, limit);
+    const cards = new Map(this.cardsFor(rows.map((r) => r.guide_id)).map((c) => [c.id, c]));
+    return rows.map((r) => ({ ...cards.get(r.guide_id), day: r.day, reads: r.reads, uses: r.uses }));
+  }
+
+  clearHistory(ownerId, gid) {
+    if (gid) this.db.prepare('DELETE FROM history WHERE owner_id = ? AND guide_id = ?').run(ownerId, gid);
+    else this.db.prepare('DELETE FROM history WHERE owner_id = ?').run(ownerId);
+  }
+
+  // ───────────────────────── 我的内容 / 执行记录 / 消息 ─────────────────────────
+
+  myGuides(ownerId) {
+    const rows = this.db.prepare(`SELECT * FROM guides WHERE author_owner_id = ? ORDER BY updated_at DESC`).all(ownerId);
+    return rows.map((g) => {
+      const card = this.cardOf(g);
+      const a = this.db.prepare('SELECT name, kind FROM agents WHERE id = ?').get(g.author_agent_id);
+      return { ...card, by: a?.name, by_web: a?.kind === 'web', approve_key: g.approve_key };
+    });
+  }
+
+  runsOfOwner(ownerId, { limit = 60 } = {}) {
+    const rows = this.db.prepare(`SELECT r.*, g.title, g.status AS guide_status, a.name AS agent FROM runs r JOIN guides g ON g.id = r.guide_id
+      JOIN agents a ON a.id = r.agent_id WHERE r.owner_id = ? AND r.proposal_id IS NULL ORDER BY r.created_at DESC LIMIT ?`).all(ownerId, limit);
+    return rows.map((row) => {
+      const r = parseRun(row);
+      const v = this.versionRow(r.guide_id, r.version);
+      const total = v?.content.steps.length ?? 0;
+      return {
+        id: r.id, guide_id: r.guide_id, title: row.title, agent: row.agent, outcome: r.outcome, rating: r.rating, note: r.note,
+        created_at: r.created_at, finished_at: r.finished_at, version: r.version, total_steps: total,
+        done: r.step_results.length, human_done: r.step_results.filter((x) => x.by === 'human').length,
+        problems: r.step_results.filter((x) => x.status === 'drift' || x.status === 'failed').map((x) => ({ step: stepLabel(v.content, x.step_id), status: x.status, observed: x.observed })),
+        follow_path: r.outcome === 'in_progress' && r.session_key ? `/f/${r.id}?k=${r.session_key}` : null,
+        is_author_run: r.note === '作者发布时的实操',
+      };
+    });
+  }
+
+  // 给人看的消息：别人对你的攻略做了什么、你的修订怎么样了（不含你自己在网页上的动作）
+  messages(ownerId, { limit = 60 } = {}) {
+    return this.db.prepare(`SELECT e.*, g.title FROM events e LEFT JOIN guides g ON g.id = e.guide_id
+      WHERE e.owner_id = ? AND e.kind NOT LIKE 'human_%' ORDER BY e.id DESC LIMIT ?`).all(ownerId, limit)
+      .map((e) => ({ id: e.id, kind: e.kind, guide_id: e.guide_id, title: e.title, created_at: e.created_at, ...j(e.payload) }));
+  }
+
+  unreadCount(ownerId) {
+    const seen = this.db.prepare('SELECT seen_at FROM owners WHERE id = ?').get(ownerId)?.seen_at ?? '';
+    return this.db.prepare(`SELECT COUNT(*) AS n FROM events WHERE owner_id = ? AND kind NOT LIKE 'human_%' AND created_at > ?`).get(ownerId, seen).n;
+  }
+
+  markMessagesSeen(ownerId) {
+    this.db.prepare('UPDATE owners SET seen_at = ? WHERE id = ?').run(this.iso(), ownerId);
+  }
+
+  // 需要主人处理的事：Agent 想发布的内容 + 自己攻略上的待合并修订
+  todoCount(ownerId) {
+    const pending = this.db.prepare("SELECT COUNT(*) AS n FROM guides WHERE author_owner_id = ? AND status = 'pending'").get(ownerId).n;
+    const props = this.db.prepare(`SELECT COUNT(*) AS n FROM proposals p JOIN guides g ON g.id = p.guide_id
+      WHERE p.status = 'open' AND g.status = 'published' AND (g.author_owner_id = ? OR g.id IN (SELECT guide_id FROM maintainers WHERE owner_id = ?))`).get(ownerId, ownerId).n;
+    return pending + props;
+  }
+
+  libraryCounts(ownerId) {
+    const c = (sql, ...a) => this.db.prepare(sql).get(ownerId, ...a).n;
+    return {
+      saved: this.foldersOf(ownerId).total,
+      history: c("SELECT COUNT(*) AS n FROM history h JOIN guides g ON g.id = h.guide_id WHERE h.owner_id = ? AND g.status = 'published'"),
+      runs: c('SELECT COUNT(*) AS n FROM runs WHERE owner_id = ? AND proposal_id IS NULL'),
+      guides: c('SELECT COUNT(*) AS n FROM guides WHERE author_owner_id = ?'),
+      drafts: c("SELECT COUNT(*) AS n FROM guides WHERE author_owner_id = ? AND status IN ('draft', 'pending')"),
+      unread: this.unreadCount(ownerId),
+      todo: this.todoCount(ownerId),
+    };
+  }
+
+  // 给 Agent 的“我的”：mine（我的内容及状态）/ saved（主人收藏）/ history（主人最近看过）/ runs（执行记录）
+  library(agent, { view = 'mine', folder } = {}) {
+    const o = agent.owner_id;
+    if (view === 'mine') return { view, items: this.myGuides(o) };
+    if (view === 'saved') {
+      const f = folder ? this.foldersOf(o).folders.find((x) => x.name === folder || x.id === folder) : null;
+      if (folder && !f) throw new ValidationError(`没有叫「${folder}」的收藏夹`);
+      return { view, folders: this.foldersOf(o), items: this.savedList(o, { folder: f?.id }) };
+    }
+    if (view === 'history') {
+      if (!this.settingsOf(o).share_presence) return { view, items: [], note: '主人关闭了“让 Agent 知道我在看什么”' };
+      return { view, items: this.historyOf(o, { limit: 30 }) };
+    }
+    if (view === 'runs') return { view, items: this.runsOfOwner(o, { limit: 30 }) };
+    throw new ValidationError('view 只能是 mine / saved / history / runs');
+  }
+
+  // Agent 的管理操作：收藏、取消收藏、下架、恢复、删除草稿
+  manage(agent, { action, guide_id, folder } = {}) {
+    const o = agent.owner_id;
+    if (!guide_id) throw new ValidationError('缺少 guide_id');
+    switch (action) {
+      case 'save': {
+        let fid = null;
+        if (folder) {
+          const f = this.foldersOf(o).folders.find((x) => x.name === folder || x.id === folder);
+          fid = f ? f.id : this.createFolder(o, folder).id;
+        }
+        return this.saveGuide(o, guide_id, fid);
+      }
+      case 'unsave': return this.unsaveGuide(o, guide_id);
+      case 'archive': return this.archiveGuide(o, guide_id);
+      case 'restore': return this.restoreGuide(o, guide_id);
+      case 'delete': return this.deleteGuide(o, guide_id);
+      default: throw new ValidationError('action 只能是 save / unsave / archive / restore / delete');
+    }
   }
 
   topContributors(limit = 5) {
@@ -1005,7 +1353,7 @@ export class Caiguo {
     return {
       guides: c("SELECT COUNT(*) AS n FROM guides WHERE status = 'published'"),
       runs: c('SELECT COUNT(*) AS n FROM runs WHERE version IS NOT NULL'),
-      agents: c('SELECT COUNT(*) AS n FROM agents'),
+      agents: c("SELECT COUNT(*) AS n FROM agents WHERE kind = 'agent'"),
       merged: c("SELECT COUNT(*) AS n FROM proposals WHERE status = 'merged'"),
     };
   }

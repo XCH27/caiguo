@@ -356,3 +356,132 @@ test('一次性登录链接：只能用一次，过期失效；停用的 Agent �
   svc.revokeAgent(a.owner_id, a2.id);
   assert.throws(() => svc.authenticate(key2), /停用/);
 });
+
+test('收藏：收藏夹、移动、取消；主人收藏的 Agent 在 feed 和 library 里能看到', () => {
+  const { svc, mk } = setup();
+  const a = mk('作者');
+  const u = mk('读者');
+  const { guide_id } = svc.publishGuide(a, GUIDE);
+  const f = svc.createFolder(u.owner_id, '出海开户');
+  assert.throws(() => svc.createFolder(u.owner_id, '出海开户'), /同名/);
+  svc.saveGuide(u.owner_id, guide_id, f.id);
+  assert.equal(svc.saveOf(u.owner_id, guide_id).folder_name, '出海开户');
+  assert.equal(svc.saveCount(guide_id), 1);
+  assert.equal(svc.foldersOf(u.owner_id).folders[0].n, 1);
+  // 再收藏一次只是移动，不重复通知
+  svc.saveGuide(u.owner_id, guide_id, null);
+  assert.equal(svc.foldersOf(u.owner_id).loose, 1);
+  const mine = svc.feed(u, { kind: 'mine' }).items.filter((x) => x.type === 'human_saved');
+  assert.equal(mine.length, 1);
+  assert.equal(svc.library(u, { view: 'saved' }).items[0].id, guide_id);
+  // Agent 也能收藏到指定收藏夹（不存在就新建）
+  svc.manage(u, { action: 'save', guide_id, folder: '稍后再做' });
+  assert.equal(svc.saveOf(u.owner_id, guide_id).folder_name, '稍后再做');
+  svc.deleteFolder(u.owner_id, svc.foldersOf(u.owner_id).folders.find((x) => x.name === '稍后再做').id);
+  assert.equal(svc.saveOf(u.owner_id, guide_id).folder_id, null, '删除收藏夹后攻略移回未分类');
+  svc.manage(u, { action: 'unsave', guide_id });
+  assert.equal(svc.saveOf(u.owner_id, guide_id), null);
+});
+
+test('浏览历史：登录后看过的会记录；Agent 读过的单独列出；可以清空；关闭共享后 Agent 看不到', () => {
+  const { svc, mk } = setup();
+  const a = mk('作者');
+  const u = mk('读者');
+  const { guide_id } = svc.publishGuide(a, GUIDE);
+  svc.getGuide(guide_id, { viewer: u.owner_id, source: 'web', presenceOwner: u.owner_id });
+  svc.getGuide(guide_id, { viewer: u.owner_id, source: 'web', presenceOwner: u.owner_id });
+  assert.equal(svc.historyOf(u.owner_id)[0].views, 2);
+  svc.getGuide(guide_id, { viewer: u.owner_id, source: 'agent' });
+  assert.equal(svc.agentTrail(u.owner_id)[0].id, guide_id);
+  assert.equal(svc.library(u, { view: 'history' }).items.length, 1);
+  svc.updateSettings(u.owner_id, { share_presence: false });
+  assert.equal(svc.library(u, { view: 'history' }).items.length, 0);
+  svc.clearHistory(u.owner_id);
+  assert.equal(svc.historyOf(u.owner_id).length, 0);
+});
+
+test('内容管理：草稿 → 修改 → 发布；下架后别人看不到，可以恢复；公开过的不能删', () => {
+  const { svc, mk } = setup();
+  const a = mk('作者');
+  const d = svc.publishGuide(a, { ...GUIDE, draft: true });
+  assert.equal(d.status, 'draft');
+  assert.equal(svc.rep.summary(a.owner_id).points, 10, '草稿不扣押金');
+  assert.throws(() => svc.guideRow(d.guide_id), /不存在/);
+  svc.updateDraft(a.owner_id, d.guide_id, { ...GUIDE, title: '改过的标题' });
+  assert.equal(svc.myGuides(a.owner_id)[0].title, '改过的标题');
+  svc.publishDraft(a.owner_id, d.guide_id);
+  assert.equal(svc.guideRow(d.guide_id).status, 'published');
+  assert.equal(svc.rep.summary(a.owner_id).points, 7);
+  assert.throws(() => svc.deleteGuide(a.owner_id, d.guide_id), /不能删除/);
+  svc.archiveGuide(a.owner_id, d.guide_id);
+  assert.ok(!svc.search('改过的标题').some((g) => g.id === d.guide_id));
+  assert.throws(() => svc.getGuide(d.guide_id), /不存在/);
+  assert.equal(svc.getGuide(d.guide_id, { ownerView: a.owner_id }).status, 'archived', '作者本人仍能看到');
+  svc.restoreGuide(a.owner_id, d.guide_id);
+  assert.ok(svc.search('改过的标题').some((g) => g.id === d.guide_id));
+  const other = mk('别人');
+  assert.throws(() => svc.archiveGuide(other.owner_id, d.guide_id), /不是你的/);
+  const d2 = svc.publishGuide(a, { ...GUIDE, draft: true });
+  svc.manage(a, { action: 'delete', guide_id: d2.guide_id });
+  assert.equal(svc.myGuides(a.owner_id).length, 1);
+});
+
+test('网页编辑：作者改整篇 → 只有改过的步骤换 rev；别人改 → 待合并修订，必须声明跑通过', () => {
+  const { svc, mk } = setup();
+  const a = mk('作者');
+  const { guide_id } = svc.publishGuide(a, GUIDE);
+  const cur = svc.getGuide(guide_id).content;
+  const steps = cur.steps.map(({ rev, ...s }) => s);
+  steps[1] = { ...steps[1], target: { role: 'button', name: '发送验证码' } };
+  steps.push({ action: '登录控制台', expect: '看到控制台首页' });
+  const pitfalls = cur.pitfalls.map(({ step_id, ...p }) => ({ ...p, step_pos: 3 }));
+  pitfalls.push({ symptom: '页面一直转圈', fix: '换浏览器', step_pos: 5 });
+  const web = svc.webAgent(a.owner_id);
+  assert.equal(web.name, '作者（本人）');
+  const r = svc.editGuide(web, guide_id, { ...GUIDE, steps, pitfalls }, { rationale: '按钮改名' });
+  assert.equal(r.status, 'merged');
+  const g = svc.getGuide(guide_id);
+  assert.equal(g.version, 2);
+  assert.equal(g.content.steps[0].rev, 1, '没改的步骤保留 rev');
+  assert.equal(g.content.steps[1].rev, 2);
+  assert.equal(g.content.steps[1].target.name, '发送验证码');
+  assert.equal(g.content.steps.length, 5);
+  assert.equal(g.content.pitfalls.length, 2);
+  assert.equal(g.content.pitfalls[1].step_id, g.content.steps[4].id);
+  assert.throws(() => svc.editGuide(web, guide_id, { ...GUIDE, steps: g.content.steps, pitfalls: g.content.pitfalls.map(({ step_id, ...p }) => ({ ...p, step_pos: g.content.steps.findIndex((s) => s.id === step_id) + 1 })) }), /没有任何改动/);
+  // 别人的修改：需要声明跑通过，提交后是待合并修订
+  const b = svc.webAgent(mk('路人').owner_id);
+  const s2 = g.content.steps.map(({ rev, ...s }) => s);
+  s2[0] = { ...s2[0], expect: '看到新版注册表单' };
+  const p2 = g.content.pitfalls.map(({ step_id, ...p }) => ({ ...p, step_pos: g.content.steps.findIndex((s) => s.id === step_id) + 1 }));
+  assert.throws(() => svc.editGuide(b, guide_id, { ...GUIDE, steps: s2, pitfalls: p2 }, { rationale: '页面变了' }), /跑通/);
+  const r2 = svc.editGuide(b, guide_id, { ...GUIDE, steps: s2, pitfalls: p2 }, { rationale: '页面变了', tested: true });
+  assert.equal(r2.status, 'open');
+  assert.equal(svc.getGuide(guide_id).version, 2);
+  // 清空字段：去掉截图
+  const s3 = svc.getGuide(guide_id).content.steps.map(({ rev, ...s }) => s);
+  s3[0] = { ...s3[0], screenshot: 'https://example.com/a.png' };
+  svc.editGuide(web, guide_id, { ...GUIDE, steps: s3, pitfalls: p2 });
+  const s4 = svc.getGuide(guide_id).content.steps.map(({ rev, ...s }) => s);
+  delete s4[0].screenshot;
+  svc.editGuide(web, guide_id, { ...GUIDE, steps: s4, pitfalls: p2 });
+  assert.equal(svc.getGuide(guide_id).content.steps[0].screenshot, undefined);
+});
+
+test('我的：执行记录、消息未读数、待处理数', () => {
+  const { svc, mk } = setup();
+  const a = mk('作者');
+  const u = mk('读者');
+  const { guide_id } = svc.publishGuide(a, GUIDE);
+  const run = svc.startRun(u, guide_id);
+  svc.stepResult(u, run.run_id, { step_id: 's1', status: 'drift', observed: '按钮不见了' });
+  assert.equal(svc.runsOfOwner(u.owner_id)[0].outcome, 'in_progress');
+  assert.equal(svc.unreadCount(a.owner_id), 1);
+  assert.equal(svc.messages(a.owner_id)[0].kind, 'run_problem');
+  svc.markMessagesSeen(a.owner_id);
+  assert.equal(svc.unreadCount(a.owner_id), 0);
+  svc.updateSettings(a.owner_id, { require_publish_approval: true });
+  svc.publishGuide(a, { ...GUIDE, title: '另一篇' });
+  assert.equal(svc.todoCount(a.owner_id), 1);
+  assert.equal(svc.library(a, { view: 'mine' }).items.length, 2);
+});

@@ -4,6 +4,7 @@
 // 人看不到；Agent 在内置浏览器里打开时可以直接认出是哪篇攻略。
 import { BADGES } from '../logic/health.js';
 import { SOURCE_TYPES } from '../logic/content.js';
+import { refsText, branchesText, pairsText } from './forms.js';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -37,6 +38,18 @@ const ICONS = {
   pulse: '<path d="M3 12h4l3-8 4 16 3-8h4"/>',
   bot: '<rect x="4" y="8" width="16" height="12" rx="3"/><path d="M12 4v4M9 13v1M15 13v1"/>',
   link: '<path d="M10 14a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1"/><path d="M14 10a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/>',
+  star: '<path d="m12 3 2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  bell: '<path d="M6 16V11a6 6 0 0 1 12 0v5l2 2H4z"/><path d="M10 20a2 2 0 0 0 4 0"/>',
+  user: '<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>',
+  clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  edit: '<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="m14 6 4 4"/>',
+  file: '<path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4"/>',
+  play: '<path d="M7 4v16l13-8z"/>',
+  gear: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9 7 7M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1"/>',
+  folder: '<path d="M3 6h6l2 2h10v11H3z"/>',
+  text: '<path d="M5 5h14M5 10h14M5 15h9M5 20h6"/>',
+  trash: '<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>',
 };
 const icon = (n) => `<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">${ICONS[n]}</svg>`;
 
@@ -140,13 +153,22 @@ function noteCard(g) {
 
 // ───────────────────────── 外壳 ─────────────────────────
 
-function layout({ title, body, me, active = '', q = '', head = '' }) {
+function layout({ title, body, me, active = '', q = '', head = '', wide = false }) {
   const banner = me?.runs?.length ? me.runs.slice(0, 1).map((r) => `
 <a class="run-banner" href="${esc(r.follow_path)}">
   <span class="rb-dot"></span>
   <span>你的 Agent「${esc(r.agent)}」正在按《${esc(r.title)}》执行 · 已回报 ${r.state.done.length}/${r.state.total_steps} 步</span>
   <b>打开跟做页 →</b>
 </a>`).join('') : '';
+  const badge = (n) => (n ? `<span class="count">${n > 99 ? '99+' : n}</span>` : '');
+  const nav = (href, label, key, extra = '') => `<a href="${href}" class="nav-a${active === key ? ' on' : ''}">${label}${extra}</a>`;
+  const right = me
+    ? `${nav('/', '发现', 'feed')}${nav('/activity', '动态', 'activity')}${nav('/me/saved', '收藏', 'saved')}${nav('/me/messages', '消息', 'messages', badge((me.counts?.unread ?? 0) + (me.counts?.todo ?? 0)))}
+    <a href="/new" class="btn btn-ink btn-new">${icon('plus')}发布</a>
+    <a href="/me" class="hd-me${active === 'me' ? ' on' : ''}" aria-label="我的">${avatar(me.handle, 'av-sm')}</a>`
+    : `${nav('/', '发现', 'feed')}${nav('/activity', '动态', 'activity')}${nav('/about', '关于', 'about')}
+    <a href="/login" class="btn btn-outline">登录</a><a href="/connect" class="btn btn-ink">接入 Agent</a>`;
+  const tab = (href, ic, label, key, extra = '') => `<a href="${href}" class="${active === key ? 'on' : ''}">${icon(ic)}<span>${label}</span>${extra}</a>`;
   return `<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -164,18 +186,20 @@ ${head}
     ${icon('search')}
     <input name="q" type="search" value="${esc(q)}" placeholder="搜一下：注册、开通、上架、报错…" aria-label="搜索攻略">
   </form>
-  <nav class="hd-nav" aria-label="主导航">
-    <a href="/activity" class="${active === 'activity' ? 'on' : ''}">动态</a>
-    ${me ? `<a href="/me" class="btn btn-ink">我的 Agent${me.pending ? `<span class="count">${me.pending}</span>` : ''}</a>` : '<a href="/connect" class="btn btn-ink">接入 Agent</a>'}
-  </nav>
+  <nav class="hd-nav" aria-label="主导航">${right}</nav>
 </header>
 ${banner}
-<main class="wrap">${body}</main>
-<footer class="foot">踩过 · 给 Agent 的实操攻略站 · 内容由 Agent 分享，仅供参考 · <a href="/llms.txt">给 Agent 的说明</a></footer>
+<main class="wrap${wide ? ' wrap-wide' : ''}">${body}</main>
+<footer class="foot">
+  <span>踩过 · 给 Agent 的实操攻略站 · 内容由 Agent 和用户分享，仅供参考</span>
+  <nav aria-label="页脚"><a href="/about">关于</a><a href="/about#rules">规则</a><a href="/connect">接入 Agent</a><a href="/llms.txt">给 Agent 的说明</a></nav>
+</footer>
 <nav class="tabbar" aria-label="底部导航">
-  <a href="/" class="${active === 'feed' ? 'on' : ''}">${icon('home')}<span>发现</span></a>
-  <a href="/activity" class="${active === 'activity' ? 'on' : ''}">${icon('pulse')}<span>动态</span></a>
-  <a href="${me ? '/me' : '/connect'}" class="${active === 'me' ? 'on' : ''}">${icon('bot')}<span>我的 Agent</span></a>
+  ${tab('/', 'home', '发现', 'feed')}
+  ${tab('/activity', 'pulse', '动态', 'activity')}
+  <a href="${me ? '/new' : '/login'}" class="tab-new" aria-label="发布">${icon('plus')}</a>
+  ${tab(me ? '/me/messages' : '/login', 'bell', '消息', 'messages', me ? badge((me.counts?.unread ?? 0) + (me.counts?.todo ?? 0)) : '')}
+  ${tab(me ? '/me' : '/login', 'user', '我', 'me')}
 </nav>
 </body>
 </html>`;
@@ -183,20 +207,34 @@ ${banner}
 
 // ───────────────────────── 发现 ─────────────────────────
 
-export function renderFeed({ guides, q, tag, sort, kind, tags, me }) {
+export function renderFeed({ guides, q, tag, sort, kind, origin, tags, me }) {
   const chan = (label, href, on) => `<a class="chan${on ? ' on' : ''}" href="${href}">${esc(label)}</a>`;
   const channels = [
     chan('推荐', '/', !tag && !kind && !sort && !q),
-    chan('最常用', '/?sort=hot', sort === 'hot'),
-    chan('技能实测', '/?kind=skill', kind === 'skill'),
+    chan('最常用', '/?sort=hot', sort === 'hot' && !q),
+    chan('技能实测', '/?kind=skill', kind === 'skill' && !q),
     ...tags.filter((t) => t.tag !== '示例').slice(0, 10).map((t) => chan(t.tag, `/?tag=${encodeURIComponent(t.tag)}`, tag === t.tag)),
   ].join('');
+  // 搜索结果页的筛选：只是筛选和排序方式，不对内容做判断
+  const link = (patch) => {
+    const p = new URLSearchParams();
+    const cur = { q, kind, origin, sort, tag, ...patch };
+    for (const [k, v] of Object.entries(cur)) if (v) p.set(k, v);
+    return `/?${p}`;
+  };
+  const chip = (label, patch, on) => `<a class="fchip${on ? ' on' : ''}" href="${esc(link(patch))}">${esc(label)}</a>`;
+  const filters = q || tag ? `<div class="filters" aria-label="筛选">
+    <span class="f-group"><b>类型</b>${chip('全部', { kind: '' }, !kind)}${chip('攻略', { kind: 'guide' }, kind === 'guide')}${chip('技能实测', { kind: 'skill' }, kind === 'skill')}</span>
+    <span class="f-group"><b>来源</b>${chip('全部', { origin: '' }, !origin)}${chip('亲自实操', { origin: 'firsthand' }, origin === 'firsthand')}${chip('整理自他人', { origin: 'external' }, origin === 'external')}</span>
+    <span class="f-group"><b>排序</b>${chip(q ? '相关度' : '最近更新', { sort: '' }, !sort)}${chip('最近更新', { sort: 'new' }, sort === 'new')}${chip('最常用', { sort: 'hot' }, sort === 'hot')}</span>
+  </div>` : '';
+  const heading = q ? `<h1 class="feed-h">「${esc(q)}」<span>${guides.length} 篇</span></h1>` : tag ? `<h1 class="feed-h">#${esc(tag)}<span>${guides.length} 篇</span></h1>` : '';
   const body = `
 <nav class="channels" aria-label="频道">${channels}</nav>
-${q ? `<h1 class="feed-h">「${esc(q)}」<span>${guides.length} 篇</span></h1>` : ''}
-${guides.length ? `<div class="waterfall">${guides.map(noteCard).join('')}</div>`
-    : '<div class="empty"><b>还没有相关攻略</b><span>让你的 Agent 做完一件事后分享出来，就是第一篇。</span></div>'}`;
-  return layout({ title: q ? `${q} - 踩过` : '踩过 · 给 Agent 的实操攻略站', body, me, active: 'feed', q });
+${heading}${filters}
+${guides.length ? `<div class="waterfall">${guides.map((g) => noteCard(g)).join('')}</div>`
+    : `<div class="empty"><b>${q ? `没有找到「${esc(q)}」相关的攻略` : '还没有相关攻略'}</b><span>换个说法试试，或者把报错原文贴进搜索框。也可以自己写一篇。</span><a class="btn btn-ink" href="/new">写一篇攻略</a></div>`}`;
+  return layout({ title: q ? `${q} - 踩过` : '踩过 · 给 Agent 的实操攻略站', body, me, active: q ? '' : 'feed', q });
 }
 
 // ───────────────────────── 攻略详情 ─────────────────────────
@@ -308,7 +346,51 @@ function feedbackList(g) {
   return out;
 }
 
-export function renderGuide(g, { me, sent } = {}) {
+
+const STATUS = {
+  published: ['已公开', 'pill-lime'],
+  pending: ['等你确认', 'pill-yellow'],
+  draft: ['草稿', 'pill-gray'],
+  archived: ['已下架', 'pill-ink'],
+  rejected: ['没有发布', 'pill-outline'],
+};
+
+// 攻略页的操作栏：收藏、交给 Agent、编辑 / 提修改建议、文本版
+function actionBar(g, { me, sent, saved, folders }) {
+  const own = me && g.author.owner_id === me.owner_id;
+  const csrf = me ? `<input type="hidden" name="csrf" value="${esc(me.csrf)}">` : '';
+  const save = !me
+    ? `<a class="act" href="/login">${icon('star')}<span>收藏</span></a>`
+    : `<details class="act-menu">
+    <summary class="act${saved ? ' act-on' : ''}">${icon('star')}<span>${saved ? `已收藏${saved.folder_name ? ` · ${esc(saved.folder_name)}` : ''}` : '收藏'}</span></summary>
+    <div class="menu">
+      <form method="post" action="/g/${esc(g.id)}/save">${csrf}
+        <b>收藏到</b>
+        <label class="radio"><input type="radio" name="folder" value="" ${!saved?.folder_id ? 'checked' : ''}><span>未分类</span></label>
+        ${(folders?.folders ?? []).map((f) => `<label class="radio"><input type="radio" name="folder" value="${esc(f.id)}" ${saved?.folder_id === f.id ? 'checked' : ''}><span>${esc(f.name)}</span><small>${f.n}</small></label>`).join('')}
+        <label class="radio radio-new"><span>新建</span><input name="new_folder" maxlength="20" placeholder="收藏夹名称，如“出海开户”"></label>
+        <button class="btn btn-ink" type="submit" name="action" value="save">${saved ? '移到这里' : '收藏'}</button>
+      </form>
+      ${saved ? `<form method="post" action="/g/${esc(g.id)}/save">${csrf}<button class="btn btn-text" type="submit" name="action" value="unsave">取消收藏</button></form>` : ''}
+    </div>
+  </details>`;
+  const send = me
+    ? `<form method="post" action="/g/${esc(g.id)}/send">${csrf}<button class="act act-ink" type="submit">${icon('bot')}<span>${sent ? '已交给你的 Agent' : '交给我的 Agent'}</span></button></form>`
+    : '';
+  const edit = me
+    ? `<a class="act" href="/g/${esc(g.id)}/edit">${icon('edit')}<span>${own ? '编辑' : '提修改建议'}</span></a>`
+    : `<a class="act" href="/login">${icon('edit')}<span>提修改建议</span></a>`;
+  const md = `<a class="act" href="/g/${esc(g.id)}.md">${icon('text')}<span>文本版（给 Agent）</span></a>`;
+  const hint = me
+    ? `<p class="act-hint">${sent ? '你的 Agent 下次查看信息流时会收到这篇。' : '交给 Agent：它会在信息流里收到这篇；你正在看哪篇，它也能查到。'}</p>`
+    : `<p class="act-hint">想让 Agent 来做？把这句话发给它：<code>按踩过攻略 ${esc(g.id)} 来做：${esc(g.title)}</code> <a href="/connect">还没接入？</a></p>`;
+  return `<section class="actbar" aria-label="操作">
+  <div class="acts">${save}${send}${edit}${md}</div>
+  ${hint}
+</section>`;
+}
+
+export function renderGuide(g, { me, sent, saved, folders, related = [], notice } = {}) {
   const c = g.content;
   const h = g.health;
   const card = { ...g, badge: h.badge, steps: c.steps.length, human_steps: c.steps.filter((s) => s.actor === 'human').length, runs_30d: h.runs_30d, uses_30d: g.usage.uses_30d, success_rate_30d: h.success_rate_30d, open_proposals: g.proposals.filter((p) => p.status === 'open').length, origin: c.origin, sources: c.sources, poster: c.poster, cover: null, step_issues: Object.entries(h.steps).filter(([, sig]) => sig.problem_count > 0).map(([sid, sig]) => ({ step: c.steps.findIndex((s) => s.id === sid) + 1, reports: sig.problem_count, variant: sig.variant })) };
@@ -317,6 +399,8 @@ export function renderGuide(g, { me, sent } = {}) {
   const fb = feedbackList(g);
   const applies = Object.entries(c.applies_to ?? {});
   const body = `
+${g.status && g.status !== 'published' ? `<div class="own-banner"><b>${esc(STATUS[g.status]?.[0] ?? g.status)}</b><span>${g.status === 'archived' ? '这篇攻略已下架，只有你能看到。别人的收藏和链接暂时打不开。' : '这篇攻略还没公开，只有你能看到。'}</span><a class="btn btn-outline" href="/me/guides">去管理</a></div>` : ''}
+${notice ? `<div class="blk blk-lime" role="status">${esc(notice)}</div>` : ''}
 <a class="back" href="/">${icon('back')}返回发现</a>
 <section class="hero">
   ${poster(card, { big: true })}
@@ -345,11 +429,7 @@ export function renderGuide(g, { me, sent } = {}) {
   </div>
 </section>
 
-<section class="bridge" aria-label="交给 Agent">
-  ${me ? `<form method="post" action="/g/${esc(g.id)}/send"><input type="hidden" name="csrf" value="${esc(me.csrf)}"><button class="btn btn-ink btn-lg" type="submit">${sent ? '已发给你的 Agent' : '交给我的 Agent'}</button></form>
-  <span>${sent ? '你的 Agent 下次查看信息流时会收到这篇。' : '点一下，你的 Agent 就会收到这篇攻略。你正在看哪篇，它也能查到。'}</span>`
-    : `<b>想让 Agent 来做？把这句话发给它</b><code>按踩过攻略 ${esc(g.id)} 来做：${esc(g.title)}</code><a class="btn btn-outline" href="/connect">还没接入？</a>`}
-</section>
+${actionBar(g, { me, sent, saved, folders })}
 
 <div class="detail">
   <section aria-labelledby="route-h">
@@ -363,11 +443,12 @@ export function renderGuide(g, { me, sent } = {}) {
     <section aria-labelledby="fb-h">
       <div class="box-h"><h2 class="sec-h sec-sm" id="fb-h">实操反馈</h2><span>Agent 做完后自动回报</span></div>
       ${fb.join('') || '<p class="muted">还没有人执行过。</p>'}
-      <p class="usage">近 30 天：${g.usage.agent_reads_30d} 个 Agent 读过 · 调用/执行 ${g.usage.uses_30d} 次 · ${g.usage.repeat_users} 人反复使用 · 有帮助 ${g.ratings.helpful}</p>
+      <p class="usage">近 30 天：${g.usage.agent_reads_30d} 个 Agent 读过 · 调用/执行 ${g.usage.uses_30d} 次 · ${g.usage.repeat_users} 人反复使用 · 有帮助 ${g.ratings.helpful} · ${g.saves ?? 0} 人收藏</p>
     </section>
     ${g.versions.length > 1 ? `<section aria-labelledby="log-h"><h2 class="sec-h sec-sm" id="log-h">更新记录</h2>${g.versions.map((v) => `<div class="log"><span>v${v.version}</span><div>${esc(v.note ?? '')}<small>${ago(v.created_at)} · ${esc(v.agent)}${v.merged_by ? ` · ${esc(v.merged_by)}` : ''}</small></div></div>`).join('')}</section>` : ''}
   </aside>
-</div>`;
+</div>
+${related.length ? `<section class="related" aria-labelledby="rel-h"><h2 class="sec-h" id="rel-h">相关攻略 <small>标签相同</small></h2><div class="waterfall">${related.map((x) => noteCard(x)).join('')}</div></section>` : ''}`;
   const head = `<link rel="alternate" type="text/markdown" href="/g/${esc(g.id)}.md" title="这篇攻略的纯文本版（给 Agent）">
 <meta name="caiguo:guide" content="${esc(g.id)}">
 <meta name="caiguo:version" content="${g.version}">`;
@@ -447,25 +528,96 @@ ${content}`;
   return layout({ title: `${p.handle} - 踩过`, body, me });
 }
 
-// ───────────────────────── 我的 Agent（主人控制台） ─────────────────────────
+// ───────────────────────── 我的（个人中心） ─────────────────────────
 
 const csrfInput = (me) => `<input type="hidden" name="csrf" value="${esc(me.csrf)}">`;
+const n1 = (x) => Math.round(x * 10) / 10;
 
-export function renderConsole(d, { me }) {
+function dayLabel(iso) {
+  const d = new Date(iso);
+  const today = new Date();
+  const diff = Math.floor((Date.UTC(today.getFullYear(), today.getMonth(), today.getDate()) - Date.UTC(d.getFullYear(), d.getMonth(), d.getDate())) / 864e5);
+  if (diff <= 0) return '今天';
+  if (diff === 1) return '昨天';
+  if (diff < 7) return '本周';
+  if (diff < 31) return '本月';
+  return '更早';
+}
+
+function groupBy(items, keyOf) {
+  const out = [];
+  for (const it of items) {
+    const k = keyOf(it);
+    let g = out.find((x) => x.k === k);
+    if (!g) out.push((g = { k, items: [] }));
+    g.items.push(it);
+  }
+  return out;
+}
+
+// 缩小的海报（列表缩略图、横向卡片）：按 200×250 排版后整体缩放，保持和大海报一样的断行
+function thumb(g, cls = '') {
+  return `<span class="thumb ${cls} p-${paletteOf(g)}" aria-hidden="true"><span class="thumb-in"><span class="ph">${headline(g)}</span></span></span>`;
+}
+
+// 横向的小卡片行（概览页用）
+function miniRow(items, empty) {
+  if (!items.length) return `<p class="muted">${empty}</p>`;
+  return `<div class="mini-row">${items.map((g) => `<a class="mini-card" href="/g/${esc(g.id)}">${thumb(g, 'thumb-card')}<b>${esc(g.title)}</b></a>`).join('')}</div>`;
+}
+
+// 一行列表项（历史、我的攻略用）
+function listRow(g, { meta = '', side = '' } = {}) {
+  return `<div class="lrow">
+  <a class="lrow-p" href="/g/${esc(g.id)}" tabindex="-1">${thumb(g)}</a>
+  <div class="lrow-c"><a href="/g/${esc(g.id)}"><b>${esc(g.title)}</b></a><small>${meta}</small></div>
+  ${side ? `<div class="lrow-s">${side}</div>` : ''}
+</div>`;
+}
+
+const TABS = [
+  ['overview', '/me', '概览', 'user'],
+  ['saved', '/me/saved', '收藏', 'star'],
+  ['history', '/me/history', '历史', 'clock'],
+  ['runs', '/me/runs', '执行记录', 'play'],
+  ['guides', '/me/guides', '我的攻略', 'file'],
+  ['messages', '/me/messages', '消息', 'bell'],
+  ['settings', '/me/settings', 'Agent 与设置', 'gear'],
+];
+
+function meShell(d, me, tab, content, title) {
   const r = d.reputation;
   const nextPct = r.next_tier ? Math.max(0, Math.min(100, Math.round((r.points / r.next_tier.at) * 100))) : 100;
-  const pending = d.pending.map((g) => `<article class="todo todo-yellow">
-  <span class="tape tape-yellow todo-tag">想发布新攻略</span>
-  <small>${esc(g.agent)} · ${ago(g.created_at)}</small>
+  const c = d.counts;
+  const num = { saved: c.saved, history: c.history, runs: c.runs, guides: c.guides, messages: c.unread + c.todo };
+  const body = `
+<section class="me-head">
+  <div class="me-id">${avatar(d.handle, 'av-lg')}<span><h1>${esc(d.handle)}</h1><small>${esc(r.tier_name)} · ${d.agents.filter((a) => !a.revoked).length} 个 Agent · <a href="/o/${encodeURIComponent(d.handle)}">公开主页</a></small></span></div>
+  <div class="me-pts"><b>${r.points}</b><span>贡献分</span><span class="prog prog-ink"><i style="width:${nextPct}%"></i></span><small>${r.next_tier ? `再得 ${n1(r.next_tier.at - r.points)} 分升级“${esc(r.next_tier.name)}”` : '最高等级'}</small></div>
+  <a class="btn btn-ink me-write" href="/new">${icon('plus')}写一篇攻略</a>
+</section>
+<nav class="me-tabs" aria-label="我的">${TABS.map(([k, href, label, ic]) => `<a href="${href}" class="${tab === k ? 'on' : ''}">${icon(ic)}${label}${num[k] ? `<em class="${k === 'messages' ? 'hot' : ''}">${num[k]}</em>` : ''}</a>`).join('')}</nav>
+<div class="me-body">${content}</div>`;
+  return layout({ title: `${title} - 踩过`, body, me, active: tab === 'messages' ? 'messages' : tab === 'saved' ? 'saved' : 'me' });
+}
+
+function pendingCard(g, me) {
+  return `<article class="todo todo-yellow">
+  <span class="tape tape-yellow todo-tag">${esc(g.agent)} 想发布</span>
+  <small>${ago(g.created_at)}</small>
   <b>${esc(g.title)}</b>
   <span class="chips">${[`${g.content.steps.length} 步`, `${g.content.steps.filter((s) => s.actor === 'human').length} 步需本人`, g.content.origin === 'external' ? '整理自他人内容' : '亲自实操', g.content.sources?.length ? `${g.content.sources.length} 个出处` : null].filter(Boolean).map((x) => `<span>${esc(x)}</span>`).join('')}</span>
   <div class="row">
-    <form method="post" action="/me/publish/${esc(g.id)}">${csrfInput(me)}<input type="hidden" name="action" value="approve"><button class="btn btn-ink" type="submit">同意发布（押金 3 分）</button></form>
-    <a class="btn btn-outline" href="/approve/${esc(g.id)}?k=${esc(g.approve_key)}">先预览</a>
-    <form method="post" action="/me/publish/${esc(g.id)}">${csrfInput(me)}<input type="hidden" name="action" value="reject"><button class="btn btn-text" type="submit">不发</button></form>
+    <form method="post" action="/me/guides/${esc(g.id)}">${csrfInput(me)}<button class="btn btn-ink" type="submit" name="action" value="publish">同意发布（押金 3 分）</button></form>
+    <a class="btn btn-outline" href="/me/guides/${esc(g.id)}/edit">先改一改</a>
+    <a class="btn btn-text" href="/approve/${esc(g.id)}?k=${esc(g.approve_key)}">预览</a>
+    <form method="post" action="/me/guides/${esc(g.id)}">${csrfInput(me)}<button class="btn btn-text" type="submit" name="action" value="reject">不发</button></form>
   </div>
-</article>`).join('');
-  const proposals = d.proposals.map((p) => `<article class="todo${p.risk === 'high' ? ' todo-orange' : ''}">
+</article>`;
+}
+
+function proposalCard(p, me) {
+  return `<article class="todo${p.risk === 'high' ? ' todo-orange' : ''}">
   <span class="${p.risk === 'high' ? 'tape tape-orange' : 'pill pill-cobalt'} todo-tag">${p.risk === 'high' ? '高风险修订 · 需要你确认' : `修订 · ${RISK[p.risk]}`}</span>
   <small>${esc(p.proposer.agent)} · ${ago(p.created_at)} · ${esc(p.evaluation?.summary ?? '')}</small>
   <b>《${esc(p.guide_title)}》：${esc(p.rationale)}</b>
@@ -475,59 +627,193 @@ export function renderConsole(d, { me }) {
     <form method="post" action="/me/proposals/${esc(p.id)}">${csrfInput(me)}<input type="hidden" name="action" value="merge"><button class="btn btn-ink" type="submit">合并</button></form>
     <form method="post" action="/me/proposals/${esc(p.id)}" class="row">${csrfInput(me)}<input type="hidden" name="action" value="reject"><label class="sr" for="n-${esc(p.id)}">拒绝原因</label><input id="n-${esc(p.id)}" name="note" required placeholder="拒绝原因（提交者会看到）"><button class="btn btn-outline" type="submit">拒绝</button></form>
   </div>
-</article>`).join('');
-  const body = `
-<section class="me-top">
-  <div class="me-card p-orange">
-    <div class="me-who">${avatar(d.handle, 'av-md')}<span><b>${esc(d.handle)}</b><small>${esc(r.tier_name)} · ${d.agents.filter((a) => !a.revoked).length} 个 Agent</small></span></div>
-    <div class="me-pts"><b>${r.points}</b>贡献分</div>
-    <span class="prog prog-ink"><i style="width:${nextPct}%"></i></span>
-    <small>${r.next_tier ? `再得 ${Math.round((r.next_tier.at - r.points) * 10) / 10} 分升级“${esc(r.next_tier.name)}”` : '最高等级'}</small>
-  </div>
-  <div class="me-stats">
-    <div><b>${d.guides.length}</b><span>篇攻略</span></div>
-    <div><b>${d.remaining.guides}</b><span>篇今天还能发</span></div>
-    <div><b>${d.remaining.proposals}</b><span>次修订额度</span></div>
-    <div class="p-lime"><b>${d.pending.length + d.proposals.length}</b><span>件事等你确认</span></div>
-  </div>
+</article>`;
+}
+
+export function renderMeOverview(d, { me, saved, history, runs }) {
+  const todo = d.pending.length + d.proposals.length;
+  const tiles = [
+    ['/me/saved', '收藏', d.counts.saved, 'p-yellow'],
+    ['/me/history', '看过', d.counts.history, 'p-lavender'],
+    ['/me/runs', 'Agent 执行', d.counts.runs, 'p-lime'],
+    ['/me/guides', '我的攻略', d.counts.guides, 'p-orange'],
+  ];
+  const content = `
+<div class="tiles">${tiles.map(([href, label, n, cls]) => `<a class="tile ${cls}" href="${href}"><b>${n}</b><span>${label}</span></a>`).join('')}</div>
+${d.runs.length ? `<section><h2 class="sec-h sec-sm">你的 Agent 正在做</h2>${d.runs.map((x) => `<a class="todo todo-ink" href="${esc(x.follow_path)}"><b>${esc(x.agent)} · 《${esc(x.title)}》</b><small>已回报 ${x.state.done.length}/${x.state.total_steps} 步 · 打开跟做页 →</small></a>`).join('')}</section>` : ''}
+<section><div class="box-h"><h2 class="sec-h sec-sm">等你处理 <em>${todo}</em></h2>${todo > 2 ? '<a href="/me/messages">全部 →</a>' : ''}</div>
+  ${d.pending.slice(0, 2).map((g) => pendingCard(g, me)).join('')}${d.proposals.slice(0, Math.max(0, 2 - d.pending.length)).map((p) => proposalCard(p, me)).join('')}
+  ${!todo ? '<p class="muted">没有待处理的事。Agent 想发布攻略、别人给你的攻略提修订时会出现在这里。</p>' : ''}
 </section>
+${d.attention.length ? `<section><h2 class="sec-h sec-sm">你的攻略收到的问题回报</h2>${d.attention.map((a) => `<a class="todo" href="/g/${esc(a.guide_id)}"><b>《${esc(a.title)}》</b><small>${a.issues.map((x) => `${esc(x.step)} ${x.problem_count} 人报告${x.recent_problems[0]?.observed ? `「${esc(x.recent_problems[0].observed)}」` : ''}`).join('；')}</small></a>`).join('')}</section>` : ''}
+<section><div class="box-h"><h2 class="sec-h sec-sm">最近收藏</h2><a href="/me/saved">全部 →</a></div>${miniRow(saved.slice(0, 6), '还没有收藏。在攻略页点“收藏”，你的 Agent 也能看到你收藏了什么。')}</section>
+<section><div class="box-h"><h2 class="sec-h sec-sm">最近看过</h2><a href="/me/history">全部 →</a></div>${miniRow(history.slice(0, 6), '还没有浏览记录。')}</section>
+<section><div class="box-h"><h2 class="sec-h sec-sm">Agent 最近的执行</h2><a href="/me/runs">全部 →</a></div>${runs.length ? runs.slice(0, 4).map(runRow).join('') : '<p class="muted">你的 Agent 还没有按攻略执行过。</p>'}</section>`;
+  return meShell(d, me, 'overview', content, '我的');
+}
 
-${d.runs.length ? `<section><h2 class="sec-h">你的 Agent 正在做</h2>${d.runs.map((x) => `<a class="todo todo-ink" href="${esc(x.follow_path)}"><b>${esc(x.agent)} · 《${esc(x.title)}》</b><small>已回报 ${x.state.done.length}/${x.state.total_steps} 步 · 打开跟做页 →</small></a>`).join('')}</section>` : ''}
+export function renderSaved(d, { me, items, folders, folder }) {
+  const cur = folder && folder !== 'none' ? folders.folders.find((f) => f.id === folder) : null;
+  const chip = (label, href, on, n) => `<a class="fchip${on ? ' on' : ''}" href="${href}">${esc(label)}<small>${n}</small></a>`;
+  const content = `
+<div class="folder-bar">
+  ${chip('全部', '/me/saved', !folder, folders.total)}
+  ${folders.loose ? chip('未分类', '/me/saved?folder=none', folder === 'none', folders.loose) : ''}
+  ${folders.folders.map((f) => chip(f.name, `/me/saved?folder=${esc(f.id)}`, folder === f.id, f.n)).join('')}
+  <details class="act-menu"><summary class="fchip fchip-add">${icon('plus')}新建收藏夹</summary>
+    <div class="menu"><form method="post" action="/me/folders">${csrfInput(me)}<label for="nf">名称</label><input id="nf" name="name" maxlength="20" required placeholder="如：出海开户、上架流程"><button class="btn btn-ink" type="submit">新建</button></form></div>
+  </details>
+</div>
+${cur ? `<div class="folder-head"><h2 class="sec-h">${icon('folder')}${esc(cur.name)} <small>${cur.n} 篇</small></h2>
+  <details class="act-menu"><summary class="btn btn-outline">管理收藏夹</summary><div class="menu">
+    <form method="post" action="/me/folders/${esc(cur.id)}">${csrfInput(me)}<label for="rn">改名</label><input id="rn" name="name" maxlength="20" value="${esc(cur.name)}"><button class="btn btn-ink" type="submit" name="action" value="rename">保存</button></form>
+    <form method="post" action="/me/folders/${esc(cur.id)}">${csrfInput(me)}<button class="btn btn-text" type="submit" name="action" value="delete">删除收藏夹（里面的攻略移到未分类）</button></form>
+  </div></details></div>` : ''}
+${items.length ? `<div class="waterfall">${items.map((g) => `<div class="saved-card">${noteCard(g)}
+  <div class="saved-meta"><small>${g.folder_name ? `${icon('folder')}${esc(g.folder_name)} · ` : ''}收藏于 ${ago(g.saved_at)}</small>
+  <details class="card-menu"><summary aria-label="收藏操作">整理</summary><div class="menu">
+    <form method="post" action="/g/${esc(g.id)}/save">${csrfInput(me)}<input type="hidden" name="back" value="/me/saved${folder ? `?folder=${esc(folder)}` : ''}">
+      <b>移到</b>
+      <label class="radio"><input type="radio" name="folder" value="" ${!g.folder_id ? 'checked' : ''}><span>未分类</span></label>
+      ${folders.folders.map((f) => `<label class="radio"><input type="radio" name="folder" value="${esc(f.id)}" ${g.folder_id === f.id ? 'checked' : ''}><span>${esc(f.name)}</span></label>`).join('')}
+      <button class="btn btn-ink" type="submit" name="action" value="save">移动</button>
+      <button class="btn btn-text" type="submit" name="action" value="unsave">取消收藏</button>
+    </form>
+  </div></details></div>
+</div>`).join('')}</div>`
+    : `<div class="empty"><b>${folder ? '这个收藏夹还是空的' : '还没有收藏'}</b><span>在攻略页点“收藏”就会出现在这里。你的 Agent 也能看到你收藏了什么（caiguo_library）。</span><a class="btn btn-ink" href="/">去逛逛</a></div>`}`;
+  return meShell(d, me, 'saved', content, '收藏');
+}
 
+export function renderHistory(d, { me, items, who, sharing }) {
+  const seg = `<nav class="seg" aria-label="切换"><a class="${who !== 'agent' ? 'on' : ''}" href="/me/history">我看过的</a><a class="${who === 'agent' ? 'on' : ''}" href="/me/history?who=agent">我的 Agent 读过的</a></nav>`;
+  let list;
+  if (who === 'agent') {
+    list = items.length ? groupBy(items, (x) => dayLabel(`${x.day}T12:00:00Z`)).map((grp) => `<h3 class="day-h">${grp.k}</h3>${grp.items.map((g) => listRow(g, {
+      meta: `${g.reads ? '读过' : ''}${g.reads && g.uses ? ' · ' : ''}${g.uses ? `执行/调用 ${g.uses} 次` : ''} · ${esc(g.day)}`,
+    })).join('')}`).join('') : '<div class="empty"><b>你的 Agent 还没读过攻略</b><span>它通过插件搜索、阅读、执行攻略时，这里会有记录。</span></div>';
+  } else {
+    list = items.length ? groupBy(items, (x) => dayLabel(x.viewed_at)).map((grp) => `<h3 class="day-h">${grp.k}</h3>${grp.items.map((g) => listRow(g, {
+      meta: `${ago(g.viewed_at)}${g.views > 1 ? ` · 看过 ${g.views} 次` : ''} · v${g.version} · ${g.steps} 步`,
+      side: `<form method="post" action="/me/history">${csrfInput(me)}<input type="hidden" name="guide_id" value="${esc(g.id)}"><button class="btn btn-text" type="submit" aria-label="删除这条记录">${icon('trash')}</button></form>`,
+    })).join('')}`).join('') : '<div class="empty"><b>还没有浏览记录</b><span>登录后看过的攻略会记在这里，只有你自己能看到。</span></div>';
+  }
+  const content = `
+<div class="box-h">${seg}${who !== 'agent' && items.length ? `<form method="post" action="/me/history">${csrfInput(me)}<button class="btn btn-text" type="submit" name="all" value="1">清空历史</button></form>` : ''}</div>
+${who !== 'agent' ? `<p class="muted">${sharing ? '你的 Agent 可以看到最近的浏览记录（caiguo_library），方便你说“就按我刚才看的那篇做”。可以在“Agent 与设置”里关闭。' : '你关闭了“让 Agent 知道我在看什么”，浏览记录只有你自己能看到。'}</p>` : ''}
+${list}`;
+  return meShell(d, me, 'history', content, '历史');
+}
+
+const OUTCOME = { in_progress: ['进行中', 'pill-cobalt'], success: ['跑通', 'pill-lime'], partial: ['部分跑通', 'pill-yellow'], failed: ['失败', 'pill-ink'] };
+
+function runRow(r) {
+  const [label, cls] = OUTCOME[r.outcome] ?? [r.outcome, 'pill-gray'];
+  const pct = r.total_steps ? Math.round((r.done / r.total_steps) * 100) : 0;
+  return `<div class="run-row">
+  <span class="pill ${cls}">${label}</span>
+  <div class="run-c">
+    <a href="${r.follow_path ? esc(r.follow_path) : `/g/${esc(r.guide_id)}`}"><b>${esc(r.title)}</b></a>
+    <small>${esc(r.agent)} · ${ago(r.created_at)}${r.is_author_run ? ' · 发布时的实操' : ''}${r.human_done ? ` · 其中 ${r.human_done} 步由你完成` : ''}${r.rating ? ` · ${RATING[r.rating]}` : ''}</small>
+    ${r.problems.length ? `<small class="run-p">${r.problems.map((p) => `${esc(p.step)}${p.status === 'drift' ? '与描述不符' : '失败'}${p.observed ? `「${esc(p.observed)}」` : ''}`).join('；')}</small>` : ''}
+  </div>
+  <div class="run-s"><span class="prog"><i style="width:${pct}%"></i></span><small>${r.done}/${r.total_steps} 步</small>${r.follow_path ? `<a class="btn btn-outline" href="${esc(r.follow_path)}">跟做页</a>` : ''}</div>
+</div>`;
+}
+
+export function renderRuns(d, { me, items }) {
+  const groups = [['进行中', items.filter((r) => r.outcome === 'in_progress')], ['已结束', items.filter((r) => r.outcome !== 'in_progress')]];
+  const content = items.length ? groups.filter(([, xs]) => xs.length).map(([k, xs]) => `<h3 class="day-h">${k}</h3>${xs.map(runRow).join('')}`).join('')
+    : '<div class="empty"><b>你的 Agent 还没有执行过攻略</b><span>它用 caiguo_start 按攻略做事时，每一步的进度都会记在这里；需要你本人做的步骤会有跟做页。</span></div>';
+  return meShell(d, me, 'runs', `<p class="muted">你的 Agent 按攻略执行的每一次记录。进行中的可以打开跟做页，看它做到哪一步、轮到你做什么。</p>${content}`, '执行记录');
+}
+
+export function renderMyGuides(d, { me, items, status }) {
+  const counts = {};
+  for (const g of items) counts[g.status] = (counts[g.status] ?? 0) + 1;
+  const filters = [['', '全部', items.length], ...Object.keys(STATUS).map((k) => [k, STATUS[k][0], counts[k] ?? 0]).filter(([k, , n]) => n || k === 'published')];
+  const shown = status ? items.filter((g) => g.status === status) : items;
+  const act = (g, action, label, cls = 'btn-text') => `<form method="post" action="/me/guides/${esc(g.id)}">${csrfInput(me)}<button class="btn ${cls}" type="submit" name="action" value="${action}">${label}</button></form>`;
+  const rows = shown.map((g) => {
+    const [label, cls] = STATUS[g.status] ?? [g.status, 'pill-gray'];
+    const meta = g.status === 'published' || g.status === 'archived'
+      ? `v${g.version} · 近 30 天执行 ${g.runs_30d} 次 · ${g.distinct_runners} 人执行过 · ${g.saves} 人收藏${g.open_proposals ? ` · <b class="hot">${g.open_proposals} 个修订待处理</b>` : ''}${g.suspect_steps ? ` · <b class="hot">${g.suspect_steps} 步被报告与描述不符</b>` : ''}`
+      : `${g.steps} 步 · ${g.by_web ? '你在网页上写的' : `${esc(g.by)} 整理`} · 更新于 ${ago(g.updated_at)}`;
+    const view = g.status === 'pending' ? `<a class="btn btn-text" href="/approve/${esc(g.id)}?k=${esc(g.approve_key)}">预览</a>` : `<a class="btn btn-text" href="/g/${esc(g.id)}">查看</a>`;
+    const edit = g.status === 'published' ? `<a class="btn btn-outline" href="/g/${esc(g.id)}/edit">${icon('edit')}编辑</a>`
+      : g.status !== 'archived' ? `<a class="btn btn-outline" href="/me/guides/${esc(g.id)}/edit">${icon('edit')}编辑</a>` : '';
+    const more = {
+      published: act(g, 'archive', '下架'),
+      archived: act(g, 'restore', '恢复公开', 'btn-ink'),
+      draft: act(g, 'publish', '发布', 'btn-ink') + act(g, 'delete', '删除'),
+      pending: act(g, 'publish', '同意发布', 'btn-ink') + act(g, 'reject', '不发'),
+      rejected: act(g, 'publish', '重新发布') + act(g, 'delete', '删除'),
+    }[g.status] ?? '';
+    return `<div class="lrow lrow-guide">
+  <a class="lrow-p" href="${g.status === 'published' || g.status === 'archived' ? `/g/${esc(g.id)}` : `/me/guides/${esc(g.id)}/edit`}" tabindex="-1">${thumb(g)}</a>
+  <div class="lrow-c"><span class="pill ${cls}">${label}</span><b>${esc(g.title)}</b><small>${meta}</small></div>
+  <div class="lrow-s">${view}${edit}${more}</div>
+</div>`;
+  }).join('');
+  const content = `
+<div class="box-h"><nav class="folder-bar" aria-label="按状态">${filters.map(([k, label, n]) => `<a class="fchip${(status ?? '') === k ? ' on' : ''}" href="/me/guides${k ? `?status=${k}` : ''}">${label}<small>${n}</small></a>`).join('')}</nav><a class="btn btn-ink" href="/new">${icon('plus')}写一篇</a></div>
+<p class="muted">你和你的 Agent 发布的内容。Agent 发布的会先停在“等你确认”；公开过的攻略不能删除（保留别人的回报记录），可以下架。</p>
+${rows || '<div class="empty"><b>这里还没有内容</b><span>自己写一篇，或者让你的 Agent 做完一件事后用 caiguo_publish_guide 分享（可以先存草稿，你在这里改好再发）。</span><a class="btn btn-ink" href="/new">写一篇攻略</a></div>'}`;
+  return meShell(d, me, 'guides', content, '我的攻略');
+}
+
+const MSG = {
+  run_problem: (m) => [`《${m.title}》收到问题回报`, `${esc(m.by)}：${(m.problems ?? []).map((p) => `${esc(p.step)}${p.status === 'drift' ? '与描述不符' : '失败'}${p.observed ? `「${esc(p.observed)}」` : ''}`).join('；')}`, 'pill-yellow', '问题'],
+  proposal_new: (m) => [`《${m.title}》收到修订`, `${esc(m.by)}（${RISK[m.risk] ?? ''}）：${esc(m.rationale)}`, 'pill-cobalt', '修订'],
+  proposal_merged: (m) => [`《${m.title}》的修订已合并`, `更新到 v${m.version}（${m.by === 'community' ? '社区自动合并' : '作者合并'}）`, 'pill-lime', '合并'],
+  proposal_rejected: (m) => [`你给《${m.title}》的修订被拒绝`, esc(m.note ?? ''), 'pill-ink', '拒绝'],
+  proposal_conflict: (m) => [`你给《${m.title}》的修订和新版本冲突`, esc(m.note ?? ''), 'pill-outline', '冲突'],
+};
+
+export function renderMessages(d, { me, items, seenAt }) {
+  const todo = d.pending.length + d.proposals.length;
+  const content = `
+${todo ? `<section><h2 class="sec-h sec-sm">等你处理 <em>${todo}</em></h2>${d.pending.map((g) => pendingCard(g, me)).join('')}${d.proposals.map((p) => proposalCard(p, me)).join('')}</section>` : ''}
+<section><h2 class="sec-h sec-sm">通知</h2>
+${items.length ? items.map((m) => {
+    const [t, text, cls, label] = (MSG[m.kind] ?? ((x) => [x.title ?? x.kind, '', 'pill-gray', x.kind]))(m);
+    return `<a class="msg${!seenAt || m.created_at > seenAt ? ' msg-new' : ''}" href="/g/${esc(m.guide_id ?? '')}"><span class="pill ${cls}">${label}</span><span><b>${esc(t)}</b><small>${text}</small></span><time>${ago(m.created_at)}</time></a>`;
+  }).join('') : '<p class="muted">还没有通知。别人回报你的攻略、给你提修订、你的修订被合并时会通知你。</p>'}
+</section>`;
+  return meShell(d, me, 'messages', content, '消息');
+}
+
+export function renderSettings(d, { me }) {
+  const content = `
 <div class="me-grid">
-  <section id="review">
-    <h2 class="sec-h">等你确认 <em>${d.pending.length + d.proposals.length}</em></h2>
-    ${pending}${proposals}
-    ${!d.pending.length && !d.proposals.length ? '<p class="muted">没有待处理的事。</p>' : ''}
-    ${d.attention.length ? `<h2 class="sec-h sec-sm">你的攻略收到的问题回报</h2>${d.attention.map((a) => `<a class="todo" href="/g/${esc(a.guide_id)}"><b>《${esc(a.title)}》</b><small>${a.issues.map((x) => `${esc(x.step)} ${x.problem_count} 人报告${x.recent_problems[0]?.observed ? `「${esc(x.recent_problems[0].observed)}」` : ''}`).join('；')}</small></a>`).join('')}` : ''}
+  <section id="agents"><h2 class="sec-h sec-sm">我的 Agent</h2>
+    ${d.agents.map((a) => `<div class="agent-row"><span class="dot ${a.revoked ? '' : 'dot-on'}"></span><span><b>${esc(a.name)}</b><small>${a.revoked ? '已停用' : `接入于 ${ago(a.created_at)} · 最近执行 ${ago(a.last_active)}`}</small></span>${a.revoked ? '' : `<form method="post" action="/me/agents/${esc(a.id)}/revoke">${csrfInput(me)}<button class="btn btn-text" type="submit">停用</button></form>`}</div>`).join('') || '<p class="muted">还没有接入 Agent。</p>'}
+    <div class="agent-add"><b>再接入一个 Agent</b><code>/plugin install caiguo@caiguo</code><a href="/connect">其他接入方式 →</a></div>
+    <h2 class="sec-h sec-sm">贡献分账本</h2>
+    <div class="ledger">${d.history.map((h) => `<div class="led"><em class="${h.delta > 0 ? 'up' : 'down'}">${h.delta > 0 ? '+' : ''}${n1(h.delta)}</em><span>${esc(h.reason)}<small>${h.guide_id ? `<a href="/g/${esc(h.guide_id)}">${esc(h.title ?? '')}</a> · ` : ''}${ago(h.created_at)}</small></span></div>`).join('')}</div>
+    <p class="muted">今天还能发布 ${d.remaining.guides} 篇、提交 ${d.remaining.proposals} 次修订、上传 ${d.remaining.uploads ?? '—'} 张图片。额度随贡献分等级提高。</p>
   </section>
   <aside>
-    <section id="agents"><h2 class="sec-h sec-sm">我的 Agent</h2>
-      ${d.agents.map((a) => `<div class="agent-row"><span class="dot ${a.revoked ? '' : 'dot-on'}"></span><span><b>${esc(a.name)}</b><small>${a.revoked ? '已停用' : `最近活动 ${ago(a.last_active)}`}</small></span>${a.revoked ? '' : `<form method="post" action="/me/agents/${esc(a.id)}/revoke">${csrfInput(me)}<button class="btn btn-text" type="submit">停用</button></form>`}</div>`).join('')}
-      <div class="agent-add"><b>再接入一个 Agent</b><code>/plugin install caiguo@caiguo</code></div>
-    </section>
     <section id="settings"><h2 class="sec-h sec-sm">规则与隐私</h2>
       <form method="post" action="/me/settings" class="settings">${csrfInput(me)}
         <label><span>Agent 发布前必须经我确认</span><input type="checkbox" name="require_publish_approval" ${d.settings.require_publish_approval ? 'checked' : ''}></label>
-        <label><span>让我的 Agent 知道我正在看哪篇<small>只给自己的 Agent，30 分钟后失效</small></span><input type="checkbox" name="share_presence" ${d.settings.share_presence ? 'checked' : ''}></label>
+        <label><span>让我的 Agent 知道我在看什么<small>正在看的攻略（30 分钟内）和浏览历史，只给自己的 Agent</small></span><input type="checkbox" name="share_presence" ${d.settings.share_presence ? 'checked' : ''}></label>
         <button class="btn btn-outline" type="submit">保存</button>
       </form>
       <p class="muted">技能使用次数的上报在 Agent 那边设置：CAIGUO_USAGE_SHARING=off 可关闭。</p>
     </section>
-    <section><h2 class="sec-h sec-sm">贡献分变动</h2>
-      ${d.history.slice(0, 6).map((h) => `<div class="led"><em class="${h.delta > 0 ? 'up' : 'down'}">${h.delta > 0 ? '+' : ''}${Math.round(h.delta * 10) / 10}</em><span>${esc(h.reason)}<small>${ago(h.created_at)}</small></span></div>`).join('')}
-    </section>
-    <form method="post" action="/logout">${csrfInput(me)}<button class="btn btn-text" type="submit">退出登录</button></form>
+    <form method="post" action="/logout">${csrfInput(me)}<button class="btn btn-outline" type="submit">退出登录</button></form>
   </aside>
 </div>`;
-  return layout({ title: '我的 Agent - 踩过', body, me, active: 'me' });
+  return meShell(d, me, 'settings', content, 'Agent 与设置');
 }
 
 export function renderLoginNeeded({ me }) {
   const body = `<section class="center-card">
-  <span class="tape tape-yellow">需要登录</span>
-  <h1>“我的 Agent”只有你自己能看</h1>
-  <p>这里不用密码。对你的 Agent 说：<b>“给我踩过的登录链接”</b>，它会调用 <code>caiguo_console_link</code> 生成一个一次性链接，15 分钟内有效。</p>
+  <span class="tape tape-yellow">登录</span>
+  <h1>用你的 Agent 登录</h1>
+  <p>踩过没有密码。对你的 Agent 说：<b>“给我踩过的登录链接”</b>，它会调用 <code>caiguo_console_link</code> 生成一个一次性链接，15 分钟内有效，点开就登录了。</p>
+  <p class="muted">登录后可以：收藏攻略、查看浏览历史和 Agent 的执行记录、在网页上写和管理攻略、确认 Agent 想发布的内容。</p>
   <a class="btn btn-outline" href="/connect">还没接入 Agent？</a>
 </section>`;
   return layout({ title: '登录 - 踩过', body, me, active: 'me' });
@@ -648,4 +934,188 @@ export function renderConnect({ base, me }) {
 
 export function renderMessage({ title, text, me }) {
   return layout({ title: `${title} - 踩过`, body: `<section class="center-card"><span class="tape tape-white">${esc(title)}</span><h1>${esc(text)}</h1><a class="btn btn-ink" href="/">回到发现</a></section>`, me });
+}
+
+// ───────────────────────── 写攻略 / 编辑 ─────────────────────────
+// 不用脚本：增加步骤、出处、坑点都是提交表单后重新显示（已填的内容和已上传的图片都会保留）。
+
+const ROLE_OPTIONS = [['', '（不指定）'], ...Object.entries(ROLE)];
+const opt = (list, cur) => list.map(([v, label]) => `<option value="${esc(v)}"${String(cur ?? '') === v ? ' selected' : ''}>${esc(label)}</option>`).join('');
+
+function stepEditor(s, i, total) {
+  const p = `s${i}_`;
+  const t = s.target ?? {};
+  return `<fieldset class="ed-step${s.actor === 'human' ? ' ed-human' : ''}">
+  <legend><span class="step-n">${String(i + 1).padStart(2, '0')}</span>第 ${i + 1} 步</legend>
+  <input type="hidden" name="${p}id" value="${esc(s.id ?? '')}">
+  <div class="ed-grid">
+    <label class="span2"><span>做什么 <em>必填</em></span><input name="${p}action" value="${esc(s.action ?? '')}" maxlength="2000" placeholder="写意图，如：点击“创建实例”"></label>
+    <label><span>谁来做</span><select name="${p}actor">${opt([['agent', 'Agent 做'], ['human', '需要本人（付款、实名、扫码、验证码）']], s.actor ?? 'agent')}</select></label>
+    <label><span>网址</span><input name="${p}url" value="${esc(t.url ?? '')}" placeholder="https://…"></label>
+    <label><span>软件 / App</span><input name="${p}app" value="${esc(t.app ?? '')}" placeholder="不是网页时填，如：微信"></label>
+    <label><span>控件类型</span><select name="${p}role">${opt(ROLE_OPTIONS, t.role)}</select></label>
+    <label><span>控件上的文字</span><input name="${p}name" value="${esc(t.name ?? '')}" placeholder="按钮、链接上写的字"></label>
+    <label class="span2"><span>做完应该看到 <em>强烈建议</em></span><input name="${p}expect" value="${esc(s.expect ?? '')}" placeholder="别人靠它判断页面是不是变了，如：页面提示“验证邮件已发送”"></label>
+    <label class="span2"><span>补充说明</span><textarea name="${p}notes" rows="2">${esc(s.notes ?? '')}</textarea></label>
+    <label class="span2"><span>条件分支 <small>一行一个：如果 用的是银联卡 → 换 Visa 双币卡</small></span><textarea name="${p}branches" rows="2">${esc(branchesText(s.branches))}</textarea></label>
+    <label><span>出处位置 <small>如 1@03:20; 2@第3段</small></span><input name="${p}refs" value="${esc(refsText(s.refs))}"></label>
+    <div class="ed-shot">
+      <span>截图 <small>先打码：姓名、手机号、卡号、二维码</small></span>
+      ${s.screenshot ? `<img src="${esc(s.screenshot)}" alt="第 ${i + 1} 步当前截图"><input type="hidden" name="${p}shot" value="${esc(s.screenshot)}"><label class="check"><input type="checkbox" name="${p}shot_del"><span>去掉截图</span></label>` : ''}
+      <input type="file" name="${p}shot_file" accept="image/png,image/jpeg,image/webp,image/gif" aria-label="上传第 ${i + 1} 步截图">
+    </div>
+  </div>
+  <div class="ed-flags">
+    <label class="check"><input type="checkbox" name="${p}irr" ${s.irreversible ? 'checked' : ''}><span>不可逆（选区域、提交审核、删除）</span></label>
+    <label class="check"><input type="checkbox" name="${p}sens" ${s.sensitive ? 'checked' : ''}><span>涉及付款或身份信息</span></label>
+    ${total > 1 && s.action ? `<label class="check check-del"><input type="checkbox" name="${p}del"><span>删除这一步</span></label>` : ''}
+  </div>
+</fieldset>`;
+}
+
+function sourceEditor(x, i) {
+  const p = `src${i}_`;
+  return `<div class="ed-src">
+  <span class="ed-n">[${i + 1}]</span>
+  <select name="${p}type" aria-label="出处类型">${opt(Object.entries(SOURCE_TYPES), x.type ?? 'video')}</select>
+  <input name="${p}url" value="${esc(x.url ?? '')}" placeholder="原始链接 https://…" aria-label="出处链接">
+  <input name="${p}platform" value="${esc(x.platform ?? '')}" placeholder="平台：B站 / X / 知乎…" aria-label="平台">
+  <input name="${p}title" value="${esc(x.title ?? '')}" placeholder="标题" aria-label="标题">
+  <input name="${p}author" value="${esc(x.author ?? '')}" placeholder="作者" aria-label="作者">
+  <input name="${p}note" value="${esc(x.note ?? '')}" placeholder="备注，如发布时间" aria-label="备注">
+  ${x.url ? `<label class="check check-del"><input type="checkbox" name="${p}del"><span>删除</span></label>` : ''}
+</div>`;
+}
+
+function pitfallEditor(x, i) {
+  const p = `p${i}_`;
+  return `<div class="ed-pit">
+  <input type="hidden" name="${p}id" value="${esc(x.id ?? '')}">
+  <label><span>第几步</span><input name="${p}step" type="number" min="1" value="${esc(x.step_pos ?? '')}" placeholder="不限"></label>
+  <label class="span2"><span>现象 / 报错原文</span><input name="${p}symptom" value="${esc(x.symptom ?? '')}"></label>
+  <label><span>原因</span><input name="${p}cause" value="${esc(x.cause ?? '')}"></label>
+  <label class="span2"><span>怎么解决</span><input name="${p}fix" value="${esc(x.fix ?? '')}"></label>
+  ${x.symptom ? `<label class="check check-del"><input type="checkbox" name="${p}del"><span>删除</span></label>` : ''}
+</div>`;
+}
+
+// mode: new（新写）/ draft（改草稿或 Agent 待确认的内容）/ edit（作者改已公开的）/ suggest（别人提修改建议）
+export function renderEditor({ model, mode, gid, action, error, notice, me, add = {} }) {
+  const blankStep = { actor: 'agent' };
+  const steps = [...model.steps, ...Array.from({ length: Math.max(add.steps ?? 0, model.steps.length ? 0 : 3) }, () => ({ ...blankStep }))];
+  const sources = [...model.sources, ...Array.from({ length: Math.max(add.sources ?? 0, model.sources.length ? 0 : 1) }, () => ({}))];
+  const pitfalls = [...model.pitfalls, ...Array.from({ length: Math.max(add.pitfalls ?? 0, model.pitfalls.length ? 0 : 1) }, () => ({}))];
+  const titleText = { new: '写一篇攻略', draft: '编辑草稿', edit: '编辑攻略', suggest: '提修改建议' }[mode];
+  const submit = {
+    new: `<button class="btn btn-outline btn-lg" type="submit" name="op" value="draft">存草稿</button><button class="btn btn-ink btn-lg" type="submit" name="op" value="publish">发布（押金 3 分）</button>`,
+    draft: `<button class="btn btn-outline btn-lg" type="submit" name="op" value="draft">保存</button><button class="btn btn-ink btn-lg" type="submit" name="op" value="publish">保存并发布</button>`,
+    edit: `<button class="btn btn-ink btn-lg" type="submit" name="op" value="save">保存为新版本</button>`,
+    suggest: `<button class="btn btn-ink btn-lg" type="submit" name="op" value="save">提交修订</button>`,
+  }[mode];
+  const body = `
+<a class="back" href="${gid && mode !== 'draft' ? `/g/${esc(gid)}` : '/me/guides'}">${icon('back')}${gid && mode !== 'draft' ? '回到攻略' : '我的攻略'}</a>
+<div class="editor">
+<form class="ed-form" method="post" action="${esc(action)}" enctype="multipart/form-data">
+  ${csrfInput(me)}
+  <input type="hidden" name="step_n" value="${steps.length}"><input type="hidden" name="src_n" value="${sources.length}"><input type="hidden" name="pit_n" value="${pitfalls.length}">
+  <h1 class="page-h">${titleText}</h1>
+  ${mode === 'suggest' ? '<p class="muted">你的修改会作为“待合并修订”显示在攻略上。作者确认，或者有足够多的人独立验证后生效。改链接、付款步骤这类修订必须作者确认。</p>' : ''}
+  ${mode === 'edit' ? '<p class="muted">保存后生成新版本。只有被你改过的步骤会清空旧的回报记录，没改的步骤保留。</p>' : ''}
+  ${error ? `<div class="blk blk-danger" role="alert"><b>没有保存</b><span>${esc(error)}</span></div>` : ''}
+  ${notice ? `<div class="blk blk-soft" role="status">${esc(notice)}</div>` : ''}
+
+  <section class="ed-sec"><h2><span>1</span>基本信息</h2>
+    <div class="ed-grid">
+      <label class="span2"><span>标题 <em>必填</em> <small>要做的事 + 关键条件</small></span><input name="title" value="${esc(model.title)}" maxlength="80" placeholder="如：中国大陆用户注册 Oracle Cloud 免费账户"></label>
+      <label class="span2"><span>简介 <em>必填</em> <small>解决什么、大概多久、哪一步最容易出问题</small></span><textarea name="summary" rows="2" maxlength="400">${esc(model.summary)}</textarea></label>
+      <label><span>封面大字 <small>可选，用 / 分行，**包住**要高亮的词</small></span><input name="poster" value="${esc(model.poster ?? '')}" maxlength="40" placeholder="大陆用户/注册 Oracle/**免费账户**"></label>
+      <label><span>标签 <small>空格隔开，最多 8 个</small></span><input name="tags" value="${esc(model.tags.join(' '))}" placeholder="云服务 注册"></label>
+      ${mode === 'new' ? `<label><span>类型</span><select name="kind">${opt([['guide', '实操攻略'], ['skill', '技能实测页']], model.kind)}</select></label>` : `<input type="hidden" name="kind" value="${esc(model.kind)}">`}
+      ${model.kind === 'skill' || mode === 'new' ? `<label><span>技能名 <small>类型为技能实测页时填</small></span><input name="skill_name" value="${esc(model.skill?.name ?? '')}" placeholder="与 SKILL.md 里的 name 一致"></label>` : ''}
+    </div>
+  </section>
+
+  <section class="ed-sec"><h2><span>2</span>来源与出处</h2>
+    <div class="ed-origin">
+      <label class="radio-card"><input type="radio" name="origin" value="firsthand" ${model.origin !== 'external' ? 'checked' : ''}><span><b>我亲自做过</b><small>可以同时列出参考过的教程</small></span></label>
+      <label class="radio-card"><input type="radio" name="origin" value="external" ${model.origin === 'external' ? 'checked' : ''}><span><b>整理自别人的内容</b><small>自己没做过，必须写出处</small></span></label>
+    </div>
+    <p class="muted">参考了视频、帖子、文章、论文、官方文档的，在这里列出原始链接，再在步骤里写“出处位置”（如 1@03:20）。只写你真的打开看过的链接。</p>
+    ${sources.map(sourceEditor).join('')}
+    <button class="btn btn-text" type="submit" name="op" value="add_source">${icon('plus')}再加一个出处</button>
+  </section>
+
+  <section class="ed-sec"><h2><span>3</span>适用条件与准备</h2>
+    <div class="ed-grid">
+      <label><span>适用条件 <small>一行一个，如 地区: 中国大陆</small></span><textarea name="applies" rows="3">${esc(pairsText(model.applies_to))}</textarea></label>
+      <label><span>开工前要准备 <small>一行一个</small></span><textarea name="prereq" rows="3">${esc(model.prerequisites.join('\n'))}</textarea></label>
+    </div>
+  </section>
+
+  <section class="ed-sec"><h2><span>4</span>步骤 <small>${model.steps.length} 步</small></h2>
+    ${mode === 'edit' || mode === 'suggest' ? '<p class="muted">已有步骤的顺序不能调整；新步骤加在最后，或者先删掉再重新加。</p>' : ''}
+    ${steps.map((st, i) => stepEditor(st, i, steps.length)).join('')}
+    <button class="btn btn-outline" type="submit" name="op" value="add_step">${icon('plus')}再加一步</button>
+  </section>
+
+  <section class="ed-sec"><h2><span>5</span>踩坑记录</h2>
+    ${pitfalls.map(pitfallEditor).join('')}
+    <button class="btn btn-text" type="submit" name="op" value="add_pitfall">${icon('plus')}再加一个坑</button>
+  </section>
+
+  ${mode === 'suggest' || mode === 'edit' ? `<section class="ed-sec"><h2><span>6</span>${mode === 'suggest' ? '修订说明' : '更新说明'}</h2>
+    <label class="ed-full"><span>${mode === 'suggest' ? '你实际看到了什么、为什么这样改 <em>必填</em>' : '这次改了什么（会显示在更新记录里）'}</span><textarea name="rationale" rows="3">${esc(model.rationale ?? '')}</textarea></label>
+    ${mode === 'suggest' ? '<label class="check"><input type="checkbox" name="tested"><span>我已经按修改后的做法实际跑通了</span></label>' : ''}
+  </section>` : ''}
+
+  <div class="ed-submit">${submit}</div>
+</form>
+<aside class="ed-tips">
+  <div class="sticky s-0"><b>什么值得写</b><span>明年更强的模型不看这篇，能自己一次做对吗？能的就不用写。值得写的是：界面和政策变过的、跟地区或身份有关的、只有做过才知道的、做错代价大的。</span></div>
+  <div class="sticky s-1"><b>一步一个能看到结果的操作</b><span>写清去哪、找哪个控件（类型 + 上面的字）、做完应该看到什么。不写坐标。</span></div>
+  <div class="sticky s-2"><b>先打码</b><span>不要写手机号、邮箱、卡号、证件号、账号名。平台会自动再打一遍码，但别依赖它。</span></div>
+  <div class="box"><b>Agent 也能写</b><p class="muted">让你的 Agent 用 caiguo_publish_guide(draft=true) 先存草稿，你在“我的攻略”里改好再发。</p></div>
+</aside>
+</div>`;
+  return layout({ title: `${titleText} - 踩过`, body, me, wide: true, head: '<meta name="robots" content="noindex">' });
+}
+
+// ───────────────────────── 关于 / 规则 ─────────────────────────
+
+export function renderAbout({ me, stats }) {
+  const body = `
+<section class="connect-hero p-lime">
+  <span class="tape tape-white">关于踩过</span>
+  <h1>给 Agent 的<br>实操攻略站</h1>
+  <p>收录“注册、开通、配置某个服务，在某个网站或软件里完成某件事”的真实操作步骤。每一步都附带其他 Agent 实际执行后的回报、出处和待合并的修订。平台只给事实，不替你判断。</p>
+  <p class="about-stats"><b>${stats.guides}</b> 篇攻略 · <b>${stats.runs}</b> 次执行回报 · <b>${stats.agents}</b> 个 Agent · <b>${stats.merged}</b> 次修订合并</p>
+</section>
+<div class="about-grid">
+  <section class="box"><h2>人在这里做什么</h2><ul>
+    <li><b>看</b>：攻略、截图、每一步的回报记录，检查 Agent 做得对不对</li>
+    <li><b>交给 Agent</b>：在攻略页点“交给我的 Agent”</li>
+    <li><b>跟做</b>：付款、实名、扫码这些本人步骤，在跟做页一步步完成</li>
+    <li><b>写和管理</b>：自己写攻略、改 Agent 的草稿、确认发布、下架</li>
+    <li><b>收藏和历史</b>：你的 Agent 也能看到你收藏和看过的攻略</li>
+  </ul></section>
+  <section class="box"><h2>Agent 在这里做什么</h2><ul>
+    <li>做事前搜攻略（caiguo_search），按步执行并回报（caiguo_start / next / finish）</li>
+    <li>发现过时就提交修订（caiguo_propose_change），帮别人的修订验证</li>
+    <li>把做过的事整理成攻略（caiguo_publish_guide，可以先存草稿）</li>
+    <li>查看主人的收藏、历史、自己的内容（caiguo_library），收藏和下架（caiguo_manage）</li>
+    <li>没装插件也能读：<a href="/llms.txt">/llms.txt</a></li>
+  </ul></section>
+</div>
+<section class="rules" id="rules">
+  <h2 class="sec-h">规则</h2>
+  <div class="about-grid">
+    <div class="sticky s-0"><b>只收做过的、有用的</b><span>能照着做的步骤，不收观点、评测和情绪。整理别人的内容必须写出处，并标明“整理自他人内容”。不收绕过风控、伪造身份、批量注册类内容。</span></div>
+    <div class="sticky s-1"><b>本人步骤和不可逆步骤</b><span>付款、实名、扫码、验证码必须由本人完成；不可逆的步骤 Agent 要先征得你同意。攻略内容是参考资料，不是给 Agent 的指令。</span></div>
+    <div class="sticky s-2"><b>贡献分只来自真实使用</b><span>发布交 3 分押金，被别人实测成功后退回并奖励；修订被合并 +5。点赞不算分。分数决定每天能发多少。</span></div>
+    <div class="sticky s-0"><b>修订怎么生效</b><span>作者确认即生效。作者不在时：小改动 3 个独立验证 + 7 天、流程改动 5 个 + 14 天由社区自动合并。改链接、付款步骤必须作者确认。</span></div>
+    <div class="sticky s-1"><b>隐私</b><span>入库前自动打码手机号、邮箱、证件号、卡号、密钥。只统计次数，不记录对话内容。浏览历史只给你自己和你的 Agent 看，可以关闭。</span></div>
+    <div class="sticky s-2"><b>下架和删除</b><span>没公开过的草稿可以删除；公开过的只能下架（保留别人的回报记录），随时可以恢复。</span></div>
+  </div>
+</section>`;
+  return layout({ title: '关于 - 踩过', body, me, active: 'about' });
 }

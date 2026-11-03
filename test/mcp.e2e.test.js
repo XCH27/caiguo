@@ -54,7 +54,7 @@ test('本地 stdio 插件：标准 MCP 客户端可以完成完整闭环', async
 
   const { tools } = await A.client.listTools();
   assert.deepEqual(tools.map((t) => t.name).sort(), [
-    'caiguo_console_link', 'caiguo_feed', 'caiguo_finish', 'caiguo_get_guide', 'caiguo_next', 'caiguo_propose_change', 'caiguo_publish_guide',
+    'caiguo_console_link', 'caiguo_feed', 'caiguo_finish', 'caiguo_get_guide', 'caiguo_library', 'caiguo_manage', 'caiguo_next', 'caiguo_propose_change', 'caiguo_publish_guide',
     'caiguo_report_run', 'caiguo_review_change', 'caiguo_search', 'caiguo_start', 'caiguo_upload_image', 'caiguo_verify_change',
   ]);
   assert.match(A.client.getInstructions() ?? '', /实操攻略/);
@@ -166,7 +166,7 @@ test('远程 HTTP MCP 端点（/mcp）可被标准客户端连接', async () => 
   const client = new Client({ name: 'remote-test', version: '1.0.0' });
   await client.connect(transport);
   const { tools } = await client.listTools();
-  assert.equal(tools.length, 13);
+  assert.equal(tools.length, 15);
   const r = text(await client.callTool({ name: 'caiguo_feed', arguments: { kind: 'new' } }));
   assert.match(r, /信息流 new/);
   const link = text(await client.callTool({ name: 'caiguo_console_link', arguments: {} }));
@@ -175,9 +175,76 @@ test('远程 HTTP MCP 端点（/mcp）可被标准客户端连接', async () => 
   assert.equal(login.status, 303);
   const cookie = login.headers.get('set-cookie').split(';')[0];
   const me = await (await fetch(`${base}/me`, { headers: { cookie } })).text();
-  assert.match(me, /等你确认/);
+  assert.match(me, /等你处理/);
   assert.equal((await fetch(loginUrl, { redirect: 'manual' })).status, 403); // 只能用一次
   await client.close();
+});
+
+test('网页：主人登录后写攻略（带截图）→ 存草稿 → 发布 → 收藏 → 编辑出新版本；“我的”各页都能打开；Agent 能看到收藏', async () => {
+  const reg = svc.registerAgent({ name: '网页测试Agent', owner_handle: 'webber' });
+  const agent = svc.authenticate(reg.api_key);
+  const { path } = svc.createLoginLink(agent);
+  const login = await fetch(base + path, { redirect: 'manual' });
+  const cookie = login.headers.get('set-cookie').split(';')[0];
+  const get = (p) => fetch(base + p, { headers: { cookie }, redirect: 'manual' });
+  const csrf = (await (await get('/new')).text()).match(/name="csrf" value="([a-f0-9]+)"/)[1];
+  const png = Buffer.from('89504e470d0a1a0a0000000d4948445200000001000000010806000000', 'hex');
+  const fd = (fields, file) => {
+    const f = new FormData();
+    for (const [k, v] of Object.entries(fields)) f.append(k, v);
+    if (file) f.append(file, new Blob([png], { type: 'image/png' }), 'shot.png');
+    return f;
+  };
+  const fields = {
+    csrf, step_n: '3', src_n: '1', pit_n: '1', title: '网页上写的测试攻略', summary: '测试用', tags: '测试 网页', origin: 'firsthand',
+    s0_action: '打开设置页', s0_actor: 'agent', s0_url: 'https://example.com/settings', s0_expect: '看到设置页',
+    s1_action: '扫码登录', s1_actor: 'human', s1_expect: '登录成功',
+    src0_type: 'video', src0_url: 'https://www.bilibili.com/video/BV1xx', src0_platform: 'B站',
+    s0_refs: '1@03:20', p0_step: '2', p0_symptom: '二维码过期', p0_fix: '刷新页面',
+  };
+  // “再加一步”只是重新显示表单，已上传的截图保留
+  const more = await fetch(`${base}/new`, { method: 'POST', headers: { cookie }, body: fd({ ...fields, op: 'add_step' }, 's0_shot_file') });
+  const moreHtml = await more.text();
+  assert.equal(more.status, 200);
+  assert.match(moreHtml, /name="s3_action"/);
+  const shot = moreHtml.match(/name="s0_shot" value="(\/u\/[a-f0-9]+\.png)"/)[1];
+  // 存草稿
+  const draft = await fetch(`${base}/new`, { method: 'POST', headers: { cookie }, body: fd({ ...fields, s0_shot: shot, op: 'draft' }), redirect: 'manual' });
+  assert.equal(draft.headers.get('location'), '/me/guides?status=draft');
+  const gid = svc.myGuides(agent.owner_id)[0].id;
+  assert.equal(svc.myGuides(agent.owner_id)[0].status, 'draft');
+  assert.equal(svc.versionRow(gid, 1).content.steps[0].screenshot, shot);
+  assert.deepEqual(svc.versionRow(gid, 1).content.steps[0].refs, [{ source: 1, at: '03:20' }]);
+  // 改草稿并发布
+  const pub = await fetch(`${base}/me/guides/${gid}/edit`, { method: 'POST', headers: { cookie }, body: fd({ ...fields, s0_shot: shot, title: '网页上写的测试攻略（改）', op: 'publish' }), redirect: 'manual' });
+  assert.equal(pub.headers.get('location'), `/g/${gid}?published=1`);
+  const page = await (await get(`/g/${gid}`)).text();
+  assert.match(page, /（改）/);
+  assert.match(page, /webber（本人）/);
+  // 收藏到新收藏夹
+  const save = await fetch(`${base}/g/${gid}/save`, { method: 'POST', headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ csrf, action: 'save', new_folder: '测试夹' }), redirect: 'manual' });
+  assert.equal(save.status, 303);
+  assert.match(await (await get('/me/saved')).text(), /测试夹/);
+  assert.match((await (await fetch(`${base}/api/library?view=saved`, { headers: { authorization: `Bearer ${reg.api_key}` } })).json()).items[0].folder_name, /测试夹/);
+  // 编辑已公开的攻略 → 新版本
+  const edited = { ...fields, s0_id: 's1', s1_id: 's2', s0_shot: shot, s1_expect: '登录成功，跳到首页', p0_id: 'p1', op: 'save', rationale: '补充预期' };
+  const ed = await fetch(`${base}/g/${gid}/edit`, { method: 'POST', headers: { cookie }, body: fd(edited), redirect: 'manual' });
+  assert.equal(ed.headers.get('location'), `/g/${gid}?updated=1`);
+  const g = svc.getGuide(gid);
+  assert.equal(g.version, 2);
+  assert.equal(g.content.steps[0].rev, 1);
+  assert.equal(g.content.steps[1].rev, 2);
+  // “我的”各页
+  for (const p of ['/me', '/me/saved', '/me/history', '/me/history?who=agent', '/me/runs', '/me/guides', '/me/messages', '/me/settings', `/g/${gid}/edit`, '/about', '/login']) {
+    assert.equal((await get(p)).status, 200, p);
+  }
+  assert.match(await (await get('/me/history')).text(), /网页上写的测试攻略/);
+  // 下架后别人打不开，本人能看到
+  await fetch(`${base}/me/guides/${gid}`, { method: 'POST', headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ csrf, action: 'archive' }), redirect: 'manual' });
+  assert.equal((await fetch(`${base}/g/${gid}`)).status, 404);
+  assert.equal((await get(`/g/${gid}`)).status, 200);
+  // 没有 csrf 的表单被拒绝
+  assert.equal((await fetch(`${base}/me/guides/${gid}`, { method: 'POST', headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' }, body: 'action=restore', redirect: 'manual' })).status, 403);
 });
 
 test('反馈闭环钩子：读过攻略没回报会提醒一次，回报过或已提醒过则放行', () => {

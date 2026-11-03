@@ -345,6 +345,29 @@ const pending = svc.publishGuide(ajie, {
   ],
 });
 svc.getGuide(oracle.guide_id, { presenceOwner: ajie.owner_id });
+
+// 10. 阿杰的收藏夹、浏览历史、网页上写了一半的草稿
+const abroad = svc.createFolder(ajie.owner_id, '出海开户');
+const later = svc.createFolder(ajie.owner_id, '有空再做');
+for (const [g, f, d] of [[oracle, abroad, 9], [apple, abroad, 6], [gha, later, 4], [cf, null, 2], [skill, later, 1]]) {
+  at(d, 15);
+  svc.saveGuide(ajie.owner_id, g.guide_id, f?.id ?? null);
+}
+for (const [g, d, h] of [[icp, 3, 20], [apple, 2, 11], [wx, 1, 21], [gha, 1, 9], [cf, 0.2, 10], [oracle, 0.05, 12]]) {
+  at(d, h);
+  svc.getGuide(g.guide_id, { viewer: ajie.owner_id, source: 'web', presenceOwner: ajie.owner_id });
+}
+at(0.1, 12);
+svc.publishGuide(svc.webAgent(ajie.owner_id), {
+  draft: true,
+  title: '用国内手机号注册 Telegram 并开启两步验证',
+  summary: '还没写完：收验证码那一步不同运营商表现不一样，等多试几次再发。',
+  tags: ['注册', '示例'],
+  steps: [
+    { action: '在 App 里选择 +86，输入手机号', target: { app: 'Telegram', role: 'textbox', name: 'Phone number' }, expect: '提示验证码已发送' },
+    { actor: 'human', action: '输入短信验证码', expect: '进入聊天列表' },
+  ],
+});
 console.log(`演示：待确认发布 ${pending.approve_path}；进行中的执行跟做页 ${liveRun.follow_path}`);
 console.log(`演示：阿杰的控制台登录链接（15 分钟有效）在服务启动后运行 node scripts/login-link.js 阿杰 生成`);
 

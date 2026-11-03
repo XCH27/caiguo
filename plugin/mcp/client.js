@@ -99,6 +99,14 @@ export class HttpClient {
   }
   consoleLink() { return this.request('POST', '/api/login-links', {}); }
 
+  library({ view, folder }) {
+    const p = new URLSearchParams({ view });
+    if (folder) p.set('folder', folder);
+    return this.request('GET', `/api/library?${p}`);
+  }
+
+  manage(body) { return this.request('POST', '/api/manage', body); }
+
   // 图文攻略：本地插件可以直接读取截图文件上传（远程 MCP 则传 base64）
   async upload({ file_path, data, mime }) {
     if (file_path) {

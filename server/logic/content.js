@@ -15,7 +15,7 @@ export class ValidationError extends Error {
 
 const LIMITS = { title: 80, summary: 400, text: 2000, steps: 80, pitfalls: 50, tags: 8, prereq: 20 };
 
-const STEP_FIELDS = ['actor', 'action', 'target', 'expect', 'irreversible', 'sensitive', 'notes', 'screenshot', 'branches', 'refs'];
+export const STEP_FIELDS = ['actor', 'action', 'target', 'expect', 'irreversible', 'sensitive', 'notes', 'screenshot', 'branches', 'refs'];
 export const SOURCE_TYPES = { video: '视频', post: '帖子', article: '文章', paper: '论文', doc: '官方文档', repo: '代码仓库', other: '其他' };
 const TARGET_FIELDS = ['url', 'app', 'role', 'name', 'text', 'selector', 'shortcut'];
 

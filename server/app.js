@@ -12,6 +12,7 @@ import { createMcpHandler } from '../plugin/mcp/protocol.js';
 import { TOOLS, INSTRUCTIONS, callTool, formatGuide, formatSearch, formatFeed } from '../plugin/mcp/tools.js';
 import * as V from './web/views.js';
 import { llmsTxt } from './agent-text.js';
+import { parseMultipart, guideFromForm, guideToModel, publishInput, editInput } from './web/forms.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const CSS = readFileSync(join(here, 'web', 'style.css'), 'utf8');
@@ -26,18 +27,58 @@ export function createApp(svc, { publicUrl } = {}) {
 
   const routes = [
     // ───────────── 给人看的网页 ─────────────
-    ['GET', /^\/$/, (req, res, m, url) => page(req, res, (me) => V.renderFeed({
-      guides: svc.search(url.searchParams.get('q') ?? '', { tag: url.searchParams.get('tag') || undefined, kind: url.searchParams.get('kind') || undefined, limit: 60, sort: url.searchParams.get('sort') || undefined }),
-      q: url.searchParams.get('q') ?? '', tag: url.searchParams.get('tag') ?? '', sort: url.searchParams.get('sort') ?? '', kind: url.searchParams.get('kind') ?? '',
-      tags: svc.tags(), stats: svc.stats(), me,
-    }))],
+    ['GET', /^\/$/, (req, res, m, url) => page(req, res, (me) => {
+      const p = (k) => url.searchParams.get(k) || '';
+      return V.renderFeed({
+        guides: svc.search(p('q'), { tag: p('tag') || undefined, kind: p('kind') || undefined, origin: p('origin') || undefined, limit: 60, sort: p('sort') || undefined }),
+        q: p('q'), tag: p('tag'), sort: p('sort'), kind: p('kind'), origin: p('origin'), tags: svc.tags(), stats: svc.stats(), me,
+      });
+    })],
     ['GET', /^\/g\/([\w-]+)\.md$/, (req, res, m) => markdown(res, guideMarkdown(req, m[1]))],
     ['GET', /^\/g\/([\w-]+)$/, (req, res, m, url) => {
       if (url.searchParams.get('format') === 'agent' || wantsMarkdown(req)) return markdown(res, guideMarkdown(req, m[1]));
       const me = meInfo(req);
-      const g = svc.getGuide(m[1], { viewer: me ? me.owner_id : anonViewer(req, 'web'), source: 'web', presenceOwner: me?.owner_id });
-      return html(res, V.renderGuide(g, { me, sent: url.searchParams.has('sent') }));
+      const g = svc.getGuide(m[1], { viewer: me ? me.owner_id : anonViewer(req, 'web'), source: 'web', presenceOwner: me?.owner_id, ownerView: me?.owner_id });
+      const related = g.tags.filter((t) => t !== '示例').length
+        ? svc.search('', { limit: 100 }).filter((x) => x.id !== g.id && x.tags.some((t) => t !== '示例' && g.tags.includes(t))).slice(0, 8) : [];
+      const notice = url.searchParams.has('updated') ? '已保存为新版本。' : url.searchParams.has('proposed') ? '修订已提交，等作者确认或其他人验证。' : url.searchParams.has('published') ? '已发布。' : null;
+      return html(res, V.renderGuide(g, {
+        me, sent: url.searchParams.has('sent'), related, notice,
+        saved: me ? svc.saveOf(me.owner_id, g.id) : null, folders: me ? svc.foldersOf(me.owner_id) : null,
+      }));
     }],
+    ['POST', /^\/g\/([\w-]+)\/save$/, async (req, res, m) => {
+      const f = await form(req);
+      const me = requireMe(req, f);
+      if (f.action === 'unsave') svc.unsaveGuide(me.owner_id, m[1]);
+      else {
+        const folder = f.new_folder?.trim() ? svc.createFolder(me.owner_id, f.new_folder).id : (f.folder || null);
+        svc.saveGuide(me.owner_id, m[1], folder);
+      }
+      redirect(res, safeBack(f.back) ?? `/g/${m[1]}`);
+    }],
+    ['GET', /^\/g\/([\w-]+)\/edit$/, (req, res, m) => {
+      const me = meInfo(req);
+      if (!me) return html(res, V.renderLoginNeeded({ me: null }));
+      const g = svc.getGuide(m[1], { ownerView: me.owner_id });
+      if (g.status !== 'published') return redirect(res, `/me/guides/${m[1]}/edit`);
+      const own = g.author.owner_id === me.owner_id || g.maintainers.some((x) => x.handle === me.handle);
+      return html(res, V.renderEditor({ model: guideToModel(g.content), mode: own ? 'edit' : 'suggest', gid: g.id, action: `/g/${g.id}/edit`, me }));
+    }],
+    ['POST', /^\/g\/([\w-]+)\/edit$/, (req, res, m) => {
+      const g = svc.guideRow(m[1]);
+      const me = meInfo(req);
+      const own = me && (g.author_owner_id === me.owner_id || svc.isMaintainer(g.id, me.owner_id));
+      return editorPost(req, res, { mode: own ? 'edit' : 'suggest', gid: m[1], action: `/g/${m[1]}/edit` });
+    }],
+    ['GET', /^\/new$/, (req, res) => {
+      const me = meInfo(req);
+      if (!me) return html(res, V.renderLoginNeeded({ me: null }));
+      return html(res, V.renderEditor({ model: guideFromForm({}), mode: 'new', action: '/new', me }));
+    }],
+    ['POST', /^\/new$/, (req, res) => editorPost(req, res, { mode: 'new', action: '/new' })],
+    ['GET', /^\/login$/, (req, res) => page(req, res, (me) => V.renderLoginNeeded({ me }))],
+    ['GET', /^\/about$/, (req, res) => page(req, res, (me) => V.renderAbout({ me, stats: svc.stats() }))],
     ['POST', /^\/g\/([\w-]+)\/send$/, async (req, res, m) => {
       const me = requireMe(req, await form(req));
       svc.sendToAgent(me.owner_id, m[1], null);
@@ -65,33 +106,98 @@ export function createApp(svc, { publicUrl } = {}) {
       res.writeHead(303, { location: '/', 'set-cookie': `${COOKIE}=; Path=/; Max-Age=0` });
       res.end();
     }],
-    ['GET', /^\/me$/, (req, res) => {
+    ['GET', /^\/me(?:\/(saved|history|runs|guides|messages|settings))?$/, (req, res, m, url) => {
       const me = meInfo(req);
       if (!me) return html(res, V.renderLoginNeeded({ me: null }));
-      return html(res, V.renderConsole(svc.consoleData(me.owner_id), { me }));
+      const d = svc.consoleData(me.owner_id);
+      const o = me.owner_id;
+      switch (m[1]) {
+        case 'saved': {
+          const folder = url.searchParams.get('folder') || undefined;
+          return html(res, V.renderSaved(d, { me, folder, folders: svc.foldersOf(o), items: svc.savedList(o, { folder }) }));
+        }
+        case 'history': {
+          const who = url.searchParams.get('who') === 'agent' ? 'agent' : 'me';
+          return html(res, V.renderHistory(d, { me, who, sharing: d.settings.share_presence, items: who === 'agent' ? svc.agentTrail(o) : svc.historyOf(o) }));
+        }
+        case 'runs': return html(res, V.renderRuns(d, { me, items: svc.runsOfOwner(o) }));
+        case 'guides': return html(res, V.renderMyGuides(d, { me, items: svc.myGuides(o), status: url.searchParams.get('status') || '' }));
+        case 'messages': {
+          const seenAt = svc.db.prepare('SELECT seen_at FROM owners WHERE id = ?').get(o).seen_at;
+          const pageHtml = V.renderMessages(d, { me, items: svc.messages(o), seenAt });
+          svc.markMessagesSeen(o);
+          return html(res, pageHtml);
+        }
+        case 'settings': return html(res, V.renderSettings(d, { me }));
+        default: return html(res, V.renderMeOverview(d, { me, saved: svc.savedList(o), history: svc.historyOf(o, { limit: 6 }), runs: svc.runsOfOwner(o, { limit: 4 }) }));
+      }
     }],
     ['POST', /^\/me\/settings$/, async (req, res) => {
       const f = await form(req);
       const me = requireMe(req, f);
       svc.updateSettings(me.owner_id, { require_publish_approval: f.require_publish_approval === 'on', share_presence: f.share_presence === 'on' });
-      redirect(res, '/me#settings');
+      redirect(res, '/me/settings');
     }],
     ['POST', /^\/me\/agents\/([\w-]+)\/revoke$/, async (req, res, m) => {
       const me = requireMe(req, await form(req));
       svc.revokeAgent(me.owner_id, m[1]);
-      redirect(res, '/me#agents');
+      redirect(res, '/me/settings');
     }],
     ['POST', /^\/me\/publish\/([\w-]+)$/, async (req, res, m) => {
       const f = await form(req);
       const me = requireMe(req, f);
       svc.reviewPublish(m[1], { ownerId: me.owner_id, action: f.action });
-      redirect(res, f.action === 'approve' ? `/g/${m[1]}` : '/me');
+      redirect(res, f.action === 'approve' ? `/g/${m[1]}` : '/me/guides');
     }],
+    ['POST', /^\/me\/guides\/([\w-]+)$/, async (req, res, m) => {
+      const f = await form(req);
+      const me = requireMe(req, f);
+      const o = me.owner_id;
+      const gid = m[1];
+      const done = {
+        publish: () => { svc.publishDraft(o, gid); return `/g/${gid}?published=1`; },
+        reject: () => { svc.reviewPublish(gid, { ownerId: o, action: 'reject' }); return '/me/guides'; },
+        archive: () => { svc.archiveGuide(o, gid); return '/me/guides?status=archived'; },
+        restore: () => { svc.restoreGuide(o, gid); return `/g/${gid}`; },
+        delete: () => { svc.deleteGuide(o, gid); return '/me/guides'; },
+      }[f.action];
+      if (!done) throw new HttpError(400, '未知操作');
+      redirect(res, done());
+    }],
+    ['GET', /^\/me\/guides\/([\w-]+)\/edit$/, (req, res, m) => {
+      const me = meInfo(req);
+      if (!me) return html(res, V.renderLoginNeeded({ me: null }));
+      const g = svc.ownGuide(me.owner_id, m[1]);
+      if (g.status === 'published') return redirect(res, `/g/${m[1]}/edit`);
+      if (g.status === 'archived') throw new HttpError(409, '已下架的攻略要先恢复公开才能编辑');
+      const v = svc.versionRow(m[1], 1);
+      return html(res, V.renderEditor({ model: guideToModel(v.content), mode: 'draft', gid: m[1], action: `/me/guides/${m[1]}/edit`, me }));
+    }],
+    ['POST', /^\/me\/guides\/([\w-]+)\/edit$/, (req, res, m) => editorPost(req, res, { mode: 'draft', gid: m[1], action: `/me/guides/${m[1]}/edit` })],
     ['POST', /^\/me\/proposals\/([\w-]+)$/, async (req, res, m) => {
       const f = await form(req);
       const me = requireMe(req, f);
       svc.reviewProposal({ owner_id: me.owner_id, name: `${me.handle}（网页）` }, m[1], { action: f.action, note: f.note });
-      redirect(res, '/me#review');
+      redirect(res, '/me/messages');
+    }],
+    ['POST', /^\/me\/folders$/, async (req, res) => {
+      const f = await form(req);
+      const me = requireMe(req, f);
+      const folder = svc.createFolder(me.owner_id, f.name);
+      redirect(res, `/me/saved?folder=${folder.id}`);
+    }],
+    ['POST', /^\/me\/folders\/([\w-]+)$/, async (req, res, m) => {
+      const f = await form(req);
+      const me = requireMe(req, f);
+      if (f.action === 'delete') { svc.deleteFolder(me.owner_id, m[1]); return redirect(res, '/me/saved'); }
+      svc.renameFolder(me.owner_id, m[1], f.name);
+      redirect(res, `/me/saved?folder=${m[1]}`);
+    }],
+    ['POST', /^\/me\/history$/, async (req, res) => {
+      const f = await form(req);
+      const me = requireMe(req, f);
+      svc.clearHistory(me.owner_id, f.all ? null : f.guide_id);
+      redirect(res, '/me/history');
     }],
 
     // 发布确认链接（Agent 发给主人）
@@ -160,6 +266,8 @@ export function createApp(svc, { publicUrl } = {}) {
     }],
     ['POST', /^\/api\/runs\/([\w-]+)\/steps$/, async (req, res, m) => json(res, svc.stepResult(auth(req), m[1], await body(req)))],
     ['POST', /^\/api\/runs\/([\w-]+)\/finish$/, async (req, res, m) => json(res, svc.finishRun(auth(req), m[1], await body(req)))],
+    ['GET', /^\/api\/library$/, (req, res, m, url) => json(res, svc.library(auth(req), { view: url.searchParams.get('view') ?? 'mine', folder: url.searchParams.get('folder') || undefined }))],
+    ['POST', /^\/api\/manage$/, async (req, res) => json(res, svc.manage(auth(req), await body(req)))],
     ['POST', /^\/api\/login-links$/, (req, res) => json(res, svc.createLoginLink(auth(req)), 201)],
     ['POST', /^\/api\/uploads$/, async (req, res) => {
       const up = svc.saveUpload(auth(req), await body(req, 2.2 * 1024 * 1024));
@@ -206,7 +314,55 @@ export function createApp(svc, { publicUrl } = {}) {
     const me = svc.sessionOwner(cookie(req, COOKIE));
     if (!me) return null;
     const pending = svc.db.prepare("SELECT COUNT(*) AS n FROM guides WHERE author_owner_id = ? AND status = 'pending'").get(me.owner_id).n;
-    return { ...me, runs: svc.activeRuns(me.owner_id), pending };
+    return { ...me, runs: svc.activeRuns(me.owner_id), pending, counts: svc.libraryCounts(me.owner_id) };
+  }
+
+  // 攻略编辑器的提交：新写、改草稿、编辑已公开的、提修改建议共用。带图片上传（multipart）。
+  async function editorPost(req, res, { mode, gid, action }) {
+    const raw = await readRaw(req, 12 * 1024 * 1024);
+    const ct = req.headers['content-type'] ?? '';
+    const { fields: f, files } = ct.startsWith('multipart/') ? parseMultipart(raw, ct) : { fields: Object.fromEntries(new URLSearchParams(raw.toString('utf8'))), files: {} };
+    const me = requireMe(req, f);
+    const web = svc.webAgent(me.owner_id);
+    const problems = [];
+    for (const [name, file] of Object.entries(files)) {
+      const mm = /^s(\d+)_shot_file$/.exec(name);
+      if (!mm) continue;
+      try {
+        const up = svc.saveUpload(web, { data: file.data.toString('base64'), mime: file.mime });
+        f[`s${mm[1]}_shot`] = up.path;
+        delete f[`s${mm[1]}_shot_del`];
+      } catch (e) {
+        problems.push(`第 ${Number(mm[1]) + 1} 步的截图没有上传：${e.message}`);
+      }
+    }
+    const model = guideFromForm(f);
+    model.rationale = f.rationale;
+    const full = meInfo(req);
+    const again = (extra = {}) => html(res, V.renderEditor({ model, mode, gid, action, me: full, ...extra, notice: extra.notice ?? (problems.join('；') || null) }), extra.error ? 400 : 200);
+    // 重新显示表单时保留原来的空行，再按需要多加一行
+    const blanks = (k, n) => Math.max(0, (Number(f[k]) || 0) - n);
+    const add = { steps: blanks('step_n', model.steps.length), sources: blanks('src_n', model.sources.length), pitfalls: blanks('pit_n', model.pitfalls.length) };
+    if (f.op === 'add_step') return again({ add: { ...add, steps: add.steps + 1 } });
+    if (f.op === 'add_source') return again({ add: { ...add, sources: add.sources + 1 } });
+    if (f.op === 'add_pitfall') return again({ add: { ...add, pitfalls: add.pitfalls + 1 } });
+    if (problems.length) return again({ error: problems.join('；'), add });
+    try {
+      if (mode === 'new') {
+        const r = svc.publishGuide(web, { ...publishInput(model), draft: f.op === 'draft' }, { direct: true });
+        return redirect(res, r.status === 'draft' ? '/me/guides?status=draft' : `/g/${r.guide_id}?published=1`);
+      }
+      if (mode === 'draft') {
+        svc.updateDraft(me.owner_id, gid, publishInput(model));
+        if (f.op === 'publish') { svc.publishDraft(me.owner_id, gid); return redirect(res, `/g/${gid}?published=1`); }
+        return redirect(res, '/me/guides');
+      }
+      const r = svc.editGuide(web, gid, editInput(model), { rationale: f.rationale, tested: Boolean(f.tested) });
+      return redirect(res, `/g/${gid}?${r.status === 'merged' ? 'updated' : 'proposed'}=1`);
+    } catch (e) {
+      if (e.status && e.status < 500) return again({ error: e.message, add });
+      throw e;
+    }
   }
 
   function requireMe(req, f) {
@@ -250,8 +406,10 @@ export function createApp(svc, { publicUrl } = {}) {
       review: async (pid, b) => svc.reviewProposal(agent(), pid, b),
       feed: async (o) => svc.feed(agent(), o),
       consoleLink: async () => svc.createLoginLink(agent()),
+      library: async (o) => svc.library(agent(), o),
+      manage: async (b) => svc.manage(agent(), b),
     };
-    return createMcpHandler({ name: 'caiguo', version: '0.2.0', instructions: INSTRUCTIONS, tools: TOOLS, call: (n, a) => callTool(client, n, a) });
+    return createMcpHandler({ name: 'caiguo', version: '0.4.0', instructions: INSTRUCTIONS, tools: TOOLS, call: (n, a) => callTool(client, n, a) });
   }
 
   return async function handler(req, res) {
@@ -310,6 +468,28 @@ function html(res, pageHtml, status = 200) {
 function redirect(res, location) {
   res.writeHead(303, { location });
   res.end();
+}
+
+function safeBack(p) {
+  return typeof p === 'string' && /^\/[\w/?=&%-]*$/.test(p) && !p.startsWith('//') ? p : null;
+}
+
+function readRaw(req, max) {
+  return new Promise((resolve, reject) => {
+    let size = 0;
+    const chunks = [];
+    req.on('data', (c) => {
+      size += c.length;
+      if (size > max) {
+        reject(new HttpError(413, '内容太大（图片每张最多 1.5MB）'));
+        req.destroy();
+        return;
+      }
+      chunks.push(c);
+    });
+    req.on('end', () => resolve(Buffer.concat(chunks)));
+    req.on('error', reject);
+  });
 }
 
 function readBody(req, max) {

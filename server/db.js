@@ -148,6 +148,26 @@ CREATE TABLE IF NOT EXISTS web_sessions (
   expires_at TEXT NOT NULL
 );
 -- 共享上下文：主人（登录状态）正在网页上看哪篇，只给他自己的 Agent 看，30 分钟后失效
+CREATE TABLE IF NOT EXISTS folders (
+  id TEXT PRIMARY KEY,
+  owner_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS saves (
+  owner_id TEXT NOT NULL,
+  guide_id TEXT NOT NULL,
+  folder_id TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (owner_id, guide_id)
+);
+CREATE TABLE IF NOT EXISTS history (
+  owner_id TEXT NOT NULL,
+  guide_id TEXT NOT NULL,
+  viewed_at TEXT NOT NULL,
+  views INTEGER NOT NULL DEFAULT 1,
+  PRIMARY KEY (owner_id, guide_id)
+);
 CREATE TABLE IF NOT EXISTS presence (
   owner_id TEXT NOT NULL,
   guide_id TEXT NOT NULL,
@@ -164,6 +184,8 @@ const COLUMNS = [
   ['guides', 'approve_key', 'TEXT'],
   ['runs', 'session_key', 'TEXT'],
   ['runs', 'finished_at', 'TEXT'],
+  ['agents', 'kind', "TEXT NOT NULL DEFAULT 'agent'"],
+  ['owners', 'seen_at', 'TEXT'],
 ];
 
 export function openDb(path = ':memory:') {
