@@ -74,7 +74,8 @@ export const TOOLS = [
       properties: {
         query: { type: 'string', description: '要做的事、要测评的工具名，或报错原文' }, tag: { type: 'string' },
         kind: { type: 'string', enum: ['guide', 'pitfall', 'review', 'list', 'news', 'ask', 'skill'], description: '只看某类笔记' },
-        limit: { type: 'number', default: 5 },
+        limit: { type: 'number', default: 5, description: '一次最多 50 篇' },
+        offset: { type: 'number', default: 0, description: '从第几篇开始（翻页用：上一次的 offset + limit）' },
       },
       required: ['query'],
     },
@@ -476,10 +477,12 @@ function commentLine(cm) {
   return `[${tag}] ${cm.agent}${cm.step ? `（${cm.step}）` : ''}：${cm.body}${Object.keys(cm.env ?? {}).length ? `（${envText(cm.env)}）` : ''}${cm.image ? ` 截图: ${cm.image}` : ''}${diff} · 有帮助 ${cm.helpful} · ${ago(cm.created_at)} · ${cm.id}`;
 }
 
-export function formatSearch(list, query) {
-  if (!list.length) return `没有找到与「${query}」相关的笔记。可以用 caiguo_publish_guide(kind="ask") 发一条求助。`;
-  const L = [`「${query}」共 ${list.length} 篇（按文字相关度排序）`];
-  list.forEach((g, i) => {
+export function formatSearch(page, query) {
+  const { items: list, total, offset = 0 } = Array.isArray(page) ? { items: page, total: page.length } : page;
+  if (!list.length) return total ? `「${query}」共 ${total} 篇，已经翻到底了。` : `没有找到与「${query}」相关的笔记。可以用 caiguo_publish_guide(kind="ask") 发一条求助。`;
+  const L = [`「${query}」共 ${total} 篇（按文字相关度排序），这是第 ${offset + 1}–${offset + list.length} 篇`];
+  list.forEach((g, j) => {
+    const i = offset + j;
     const origin = g.origin === 'external' ? '整理自他人内容' : '亲自实操';
     L.push(`${i + 1}. [${KIND_NAME[g.kind] ?? '攻略'}${g.kind === 'ask' ? (g.solved ? '·已解决' : '·待回答') : ''}] ${g.title} [${g.id}]`);
     const shape = g.kind === 'review' && g.subject ? `测 ${SUBJECT_NAME[g.subject.type] ?? ''} ${g.subject.name}` : g.kind === 'list' ? `${g.items_count} 条` : g.kind === 'pitfall' ? `${g.pitfalls_count} 个坑` : g.steps ? `${g.steps} 步（本人 ${g.human_steps}）` : '正文';
@@ -488,6 +491,7 @@ export function formatSearch(list, query) {
     if (g.step_issues?.length) L.push(`   问题回报: ${g.step_issues.map((x) => `第 ${x.step} 步 ${x.reports} 人${x.observed ? `（「${x.observed}」）` : ''}`).join('；')}`);
     L.push(`   简介: ${g.summary}`);
   });
+  if (offset + list.length < total) L.push(`还有 ${total - offset - list.length} 篇：caiguo_search(query="${query}", offset=${offset + list.length})`);
   return L.join('\n');
 }
 
@@ -593,7 +597,7 @@ export function formatFeed(f) {
 export async function callTool(client, name, args) {
   switch (name) {
     case 'caiguo_search':
-      return formatSearch(await client.search({ q: args.query, tag: args.tag, kind: args.kind, limit: args.limit ?? 5 }), args.query);
+      return formatSearch(await client.search({ q: args.query, tag: args.tag, kind: args.kind, limit: args.limit ?? 5, offset: args.offset ?? 0 }), args.query);
     case 'caiguo_get_guide':
       return formatGuide(await client.getGuide(args.guide_id), client);
     case 'caiguo_start': {

@@ -95,6 +95,7 @@ test('本地 stdio 插件：标准 MCP 客户端可以完成完整闭环', async
   // B 搜索并读取
   const s = text(await B.client.callTool({ name: 'caiguo_search', arguments: { query: '开通服务 API' } }));
   assert.match(s, new RegExp(gid));
+  assert.match(s, /共 \d+ 篇（按文字相关度排序），这是第 1–\d+ 篇/);
   const g = text(await B.client.callTool({ name: 'caiguo_get_guide', arguments: { guide_id: gid } }));
   assert.match(g, /<<踩过攻略 开始>>/);
   assert.match(g, /找: 按钮「创建密钥」/);
@@ -191,6 +192,9 @@ test('远程 HTTP MCP 端点（/mcp）可被标准客户端连接', async () => 
   assert.match(await call('caiguo_feed', { kind: 'following' }), /测评：某 MCP 文件服务/);
   assert.match(await call('caiguo_feed', { kind: 'for_you' }), /推荐理由/);
   assert.match(await call('caiguo_search', { query: 'files-mcp' }), /\[测评\]/);
+  const all = await call('caiguo_search', { query: '', limit: 1 });
+  assert.match(all, /还有 \d+ 篇：caiguo_search\(query="", offset=1\)/);
+  assert.match(await call('caiguo_search', { query: '', limit: 1, offset: 1 }), /这是第 2–2 篇/);
   const link = text(await client.callTool({ name: 'caiguo_console_link', arguments: {} }));
   const loginUrl = link.match(/(http\S+\/login\/[a-f0-9]+)/)[1];
   const login = await fetch(loginUrl, { redirect: 'manual' });

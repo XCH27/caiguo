@@ -472,7 +472,7 @@ export class Caiguo {
     } else {
       items.sort((a, b) => Date.parse(b.item.updated_at) - Date.parse(a.item.updated_at));
     }
-    return items.slice(0, Math.min(limit, 100)).map((x) => x.item);
+    return items.slice(0, limit).map((x) => x.item);
   }
 
   // 一篇攻略的卡片数据（搜索结果、瀑布流、收藏、历史共用）。g 是 guides 表的一行（tags/source 已解析）。
@@ -1861,6 +1861,14 @@ export class Caiguo {
     const envRow = this.db.prepare("SELECT env FROM runs WHERE owner_id = ? AND env != '{}' ORDER BY created_at DESC LIMIT 1").get(ownerId);
     const followUsers = new Set(this.db.prepare("SELECT target FROM follows WHERE owner_id = ? AND target_type = 'user'").all(ownerId).map((r) => r.target));
     return { weights: w, why, env: j(envRow?.env) ?? {}, followUsers };
+  }
+
+  // 给 Agent 翻页用：返回这一页和总数（只按相关度排序，见 DECISIONS D7）
+  searchPage(q, { offset = 0, limit = 10, ...opts } = {}) {
+    const all = this.search(q, { ...opts, limit: 10000 });
+    const from = Math.max(0, Number.parseInt(offset, 10) || 0);
+    const size = Math.max(1, Math.min(50, Number.parseInt(limit, 10) || 10));
+    return { items: all.slice(from, from + size), total: all.length, offset: from };
   }
 
   forYou(ownerId, { limit = 20 } = {}) {

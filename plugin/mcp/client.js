@@ -77,13 +77,14 @@ export class HttpClient {
     return data;
   }
 
-  search({ q, tag, kind, limit }) {
+  search({ q, tag, kind, limit, offset }) {
     const qs = new URLSearchParams();
     if (q) qs.set('q', q);
     if (tag) qs.set('tag', tag);
     if (kind) qs.set('kind', kind);
     if (limit) qs.set('limit', String(limit));
-    return this.request('GET', `/api/guides?${qs}`, undefined, false).then((r) => r.guides);
+    if (offset) qs.set('offset', String(offset));
+    return this.request('GET', `/api/guides?${qs}`, undefined, false).then((r) => ({ items: r.guides, total: r.total ?? r.guides.length, offset: r.offset ?? 0 }));
   }
 
   getGuide(id) { return this.request('GET', `/api/guides/${encodeURIComponent(id)}`, undefined, false); }

@@ -374,7 +374,7 @@ export function createApp(svc, { publicUrl, feedPage = 40 } = {}) {
     ['GET', /^\/llms\.txt$/, (req, res) => markdown(res, llmsTxt(baseUrl(req), svc.stats(), svc.tags()))],
     ['GET', /^\/search\.md$/, (req, res, m, url) => {
       const q = url.searchParams.get('q') ?? '';
-      markdown(res, formatSearch(svc.search(q, { limit: Number(url.searchParams.get('limit') ?? 10) }), q));
+      markdown(res, formatSearch(svc.searchPage(q, { limit: url.searchParams.get('limit') ?? 10, offset: url.searchParams.get('offset') ?? 0 }), q));
     }],
     ['GET', /^\/feed\.md$/, (req, res, m, url) => {
       const kind = url.searchParams.get('kind') ?? 'new';
@@ -384,9 +384,10 @@ export function createApp(svc, { publicUrl, feedPage = 40 } = {}) {
 
     // ───────────── 接口 ─────────────
     ['GET', /^\/api\/stats$/, (req, res) => json(res, svc.stats())],
-    ['GET', /^\/api\/guides$/, (req, res, m, url) => json(res, {
-      guides: svc.search(url.searchParams.get('q') ?? '', { tag: url.searchParams.get('tag') || undefined, kind: url.searchParams.get('kind') || undefined, limit: Number(url.searchParams.get('limit') ?? 20) }),
-    })],
+    ['GET', /^\/api\/guides$/, (req, res, m, url) => {
+      const r = svc.searchPage(url.searchParams.get('q') ?? '', { tag: url.searchParams.get('tag') || undefined, kind: url.searchParams.get('kind') || undefined, limit: url.searchParams.get('limit') ?? 20, offset: url.searchParams.get('offset') ?? 0 });
+      json(res, { guides: r.items, total: r.total, offset: r.offset });
+    }],
     ['GET', /^\/api\/guides\/([\w-]+)$/, (req, res, m) => json(res, svc.getGuide(m[1], { viewer: optionalOwner(req) ?? anonViewer(req, 'api'), source: 'agent' }))],
     ['GET', /^\/api\/profiles\/([^/]+)$/, (req, res, m) => json(res, svc.profile(decodeURIComponent(m[1])))],
     ['GET', /^\/api\/proposals\/([\w-]+)$/, (req, res, m) => json(res, svc.getProposal(m[1]))],
@@ -550,7 +551,7 @@ export function createApp(svc, { publicUrl, feedPage = 40 } = {}) {
     const viewer = () => { try { return agent().owner_id; } catch { return anonViewer(req, 'api'); } };
     const client = {
       webUrl: (p) => base + p,
-      search: async ({ q, tag, kind, limit }) => svc.search(q, { tag, kind, limit }),
+      search: async ({ q, tag, kind, limit, offset }) => svc.searchPage(q, { tag, kind, limit, offset }),
       getGuide: async (id) => svc.getGuide(id, { viewer: viewer(), source: 'agent' }),
       start: async (gid, env) => svc.startRun(agent(), gid, { env }),
       next: async (rid, b) => svc.stepResult(agent(), rid, b),

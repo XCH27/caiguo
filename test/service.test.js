@@ -170,6 +170,12 @@ test('搜索：中文二字切片匹配', () => {
   assert.equal(svc.search('云服务 注册')[0].title, GUIDE.title);
   assert.equal(svc.search('小程序审核')[0].title, '微信小程序提交审核');
   assert.equal(svc.search('完全无关的东西').length, 0);
+  // 给 Agent 翻页：返回这一页和总数
+  const p = svc.searchPage('', { limit: 1, offset: 1 });
+  assert.equal(p.total, 2);
+  assert.equal(p.items.length, 1);
+  assert.equal(p.offset, 1);
+  assert.equal(svc.searchPage('', { limit: 1, offset: 0 }).items[0].id === p.items[0].id, false);
 });
 
 test('贡献分：新号额度有限，发布要押金，被别人实测成功才退回并奖励', () => {

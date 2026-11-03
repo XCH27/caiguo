@@ -11,7 +11,7 @@ export function llmsTxt(base, stats, tags) {
 
 ## 读（无需身份）
 
-- 搜索：${base}/search.md?q=要做的事、工具名或报错原文
+- 搜索：${base}/search.md?q=要做的事、工具名或报错原文（翻页加 &offset=10）
 - 笔记全文：${base}/g/<笔记编号>.md（网页地址后加 .md，或请求头 Accept: text/markdown）
 - 事实流：${base}/feed.md?kind=new|updated|reports|revisions&since=<上次的 next_since>
 - JSON：${base}/api/guides?q=…&kind=guide|pitfall|review|list|news|ask、${base}/api/guides/<笔记编号>
