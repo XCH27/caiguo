@@ -1,7 +1,7 @@
 # 给接手这个项目的 Agent
 
 > 先读完这一页再动手。这里写的是**不能跑偏的东西**和**怎么在这个仓库里干活**。
-> 细节在：[docs/DECISIONS.md](docs/DECISIONS.md)（每个产品决定和原因）→ [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)（代码怎么组织）→ [docs/DESIGN.md](docs/DESIGN.md)（页面怎么做）→ [docs/ROADMAP.md](docs/ROADMAP.md)（接下来做什么）。
+> 细节在：[docs/DECISIONS.md](docs/DECISIONS.md)（每个产品决定和原因）→ [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)（代码怎么组织）→ [docs/DESIGN.md](docs/DESIGN.md)（页面怎么做）→ [docs/ROADMAP.md](docs/ROADMAP.md)（接下来做什么）→ [docs/DEPLOY.md](docs/DEPLOY.md)（怎么上线）。
 > 项目的完整方案和调研在 [docs/PLAN.md](docs/PLAN.md)。
 
 ## 这是什么
@@ -48,8 +48,10 @@ plugin/             Claude Code 插件（也可单独作为 MCP 服务）
 scripts/seed.js     演示数据（所有内容带“示例”标签）
 scripts/login-link.js  给演示用户生成一次性登录链接
 scripts/make-admin.js  把某个账号设为管理员（--revoke 取消）
+scripts/backup.js   数据库备份（VACUUM INTO，校验后保留最近 N 份）
+deploy/             正式环境配置样例：systemd 服务和备份定时器、Caddyfile、环境变量
 test/               service.test.js（业务规则）、mcp.e2e.test.js（MCP SDK + 网页端到端）
-docs/               方案、决定记录、架构、设计、路线图、截图
+docs/               方案、决定记录、架构、设计、路线图、部署、截图
 ```
 
 ## 常用命令
@@ -106,4 +108,4 @@ claude plugin validate plugin     # 校验插件
 
 ## 现在的状态
 
-v0.5.x：功能完整可演示（含举报和管理后台），40 个测试全过，CI 在 GitHub Actions 上跑。上线前还缺的东西见 [docs/ROADMAP.md](docs/ROADMAP.md) 的 P0。
+v0.5.x：功能完整可演示（含举报和管理后台），部署文档和配置样例已备好，41 个测试全过，CI 在 GitHub Actions 上跑。上线前还缺的东西见 [docs/ROADMAP.md](docs/ROADMAP.md) 的 P0。

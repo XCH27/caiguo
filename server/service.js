@@ -1,6 +1,6 @@
 // 业务层：账号与绑定、笔记发布与管理、执行回报、修订（带修改的评论）、互动、推荐、通知。
 // HTTP API、网页、远程 MCP 都调用这里，保证规则只有一份。
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, randomBytes, randomInt } from 'node:crypto';
 import { tx } from './db.js';
 import { normalizeNewGuide, ValidationError, stepLabel, KINDS, COMMENT_TYPES, REPORT_REASONS } from './logic/content.js';
 import { normalizeOps, applyOps, classifyRisk, describeOps, diffToOps } from './logic/patch.js';
@@ -208,12 +208,15 @@ export class Caiguo {
     if (recent && this.now() - Date.parse(recent.created_at) < 60e3) throw new HttpError(429, '发送太频繁，请 1 分钟后再试');
     const today = this.db.prepare('SELECT COUNT(*) AS n FROM sms_codes WHERE phone_hash = ? AND created_at > ?').get(ph, this.iso(this.now() - 864e5)).n;
     if (today >= 10) throw new HttpError(429, '今天发送次数太多了，明天再试');
-    if (ip) {
-      const byIp = this.db.prepare('SELECT COUNT(*) AS n FROM sms_codes WHERE ip = ? AND created_at > ?').get(ip, this.iso(this.now() - 3600e3)).n;
+    // IP 只存哈希，只用来做“每个 IP 每小时 20 次”的限流；两天前的验证码记录直接删掉
+    const ipKey = ip ? sha(`ip:${this.phonePepper}:${ip}`).slice(0, 24) : null;
+    if (ipKey) {
+      const byIp = this.db.prepare('SELECT COUNT(*) AS n FROM sms_codes WHERE ip = ? AND created_at > ?').get(ipKey, this.iso(this.now() - 3600e3)).n;
       if (byIp >= 20) throw new HttpError(429, '发送太频繁，请稍后再试');
     }
-    const code = String(Math.floor(100000 + Math.random() * 900000));
-    this.db.prepare('INSERT INTO sms_codes (phone_hash, code_hash, expires_at, ip, created_at) VALUES (?, ?, ?, ?, ?)').run(ph, sha(`${ph}:${code}`), this.iso(this.now() + 10 * 60e3), ip ?? null, this.iso());
+    this.db.prepare('DELETE FROM sms_codes WHERE created_at < ?').run(this.iso(this.now() - 2 * 864e5));
+    const code = String(randomInt(100000, 1000000));
+    this.db.prepare('INSERT INTO sms_codes (phone_hash, code_hash, expires_at, ip, created_at) VALUES (?, ?, ?, ?, ?)').run(ph, sha(`${ph}:${code}`), this.iso(this.now() + 10 * 60e3), ipKey, this.iso());
     if (this.sms) {
       this.sms(phone, code);
       return { sent: true, masked: maskPhone(phone) };

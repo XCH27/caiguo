@@ -474,3 +474,25 @@ test('网页分页：瀑布流“加载更多”把下一页接在下面，搜�
     srv.close();
   }
 });
+
+test('反向代理后面：打开 trustProxy 后按 X-Forwarded-For 最右边的 IP 限流，不开时按连接地址', async () => {
+  const run = async (trustProxy) => {
+    const s = new Caiguo(openDb(':memory:'));
+    const srv = createServer(createApp(s, { trustProxy }));
+    await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+    const url = `http://127.0.0.1:${srv.address().port}`;
+    const codes = [];
+    try {
+      for (let i = 0; i < 31; i++) {
+        const r = await fetch(`${url}/api/agents/register`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-forwarded-for': `1.2.3.4, 10.0.0.${i}` }, body: JSON.stringify({ name: `a${i}` }) });
+        codes.push(r.status);
+      }
+    } finally {
+      srv.closeAllConnections();
+      srv.close();
+    }
+    return codes;
+  };
+  assert.ok((await run(true)).every((c) => c === 201), '每个请求来自不同的真实 IP，都不受限');
+  assert.equal((await run(false)).at(-1), 429, '不信任代理时都算同一个连接地址，第 31 次被限');
+});

@@ -134,7 +134,8 @@
 - 所有用户内容在 `views.js` 里经过 `esc()`；CSP `script-src 'none'`；`form-action 'self'`。
 - 入库前 `logic/redact.js` 自动脱敏（手机号、邮箱、证件号、卡号、密钥、URL 里的 token）；`scanForRisks` 标记注入话术和危险命令（评论里出现会被拒）。
 - 重定向参数 `back` / `next` 只接受站内路径（`safeBack`）。
-- 验证码：每号 1 分钟 1 次、每天 10 次、每 IP 每小时 20 次；同一个码错 5 次失效。只存哈希。
+- 验证码：每号 1 分钟 1 次、每天 10 次、每 IP 每小时 20 次；同一个码错 5 次失效。手机号、验证码、IP 都只存哈希，两天前的验证码记录自动删除。反向代理后面要设 `CAIGUO_TRUST_PROXY=1`（取 X-Forwarded-For 最右边的 IP）。
+- 正式环境 `CAIGUO_ENV=production`：没配短信、密钥太短、地址不是 https 时拒绝启动（`server/index.js`）。
 - 截图上传：校验文件头、最大 1.5MB。
 
 ## 测试

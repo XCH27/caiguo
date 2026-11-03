@@ -1,0 +1,10 @@
+# /etc/systemd/system/caiguo-backup.timer
+[Unit]
+Description=每天备份踩过数据库
+
+[Timer]
+OnCalendar=*-*-* 04:17:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

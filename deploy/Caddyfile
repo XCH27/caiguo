@@ -1,0 +1,9 @@
+# /etc/caddy/Caddyfile —— Caddy 自动申请和续期 HTTPS 证书
+caiguo.example.cn {
+	encode gzip
+	# 上传截图最大 1.5MB，网页编辑器一次最多 12MB
+	request_body {
+		max_size 13MB
+	}
+	reverse_proxy 127.0.0.1:8787
+}

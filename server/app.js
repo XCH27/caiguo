@@ -19,7 +19,7 @@ const CSS = readFileSync(join(here, 'web', 'style.css'), 'utf8');
 const MAX_BODY = 256 * 1024;
 const COOKIE = 'cg_s';
 
-export function createApp(svc, { publicUrl, feedPage = 40 } = {}) {
+export function createApp(svc, { publicUrl, feedPage = 40, trustProxy = false } = {}) {
   const FEED_PAGE = feedPage; // 瀑布流每页多少篇
   const MAX_PAGES = 25;
   const registerHits = new Map();
@@ -170,7 +170,7 @@ export function createApp(svc, { publicUrl, feedPage = 40 } = {}) {
       const f = await form(req);
       try {
         checkLogin(req, f);
-        const sent = svc.sendLoginCode(f.phone, { ip: req.socket.remoteAddress });
+        const sent = svc.sendLoginCode(f.phone, { ip: clientIp(req) });
         return loginPage(req, res, { phone: f.phone, sent, next: safeBack(f.next) ?? '' });
       } catch (e) {
         if (e.status && e.status < 500) return loginPage(req, res, { phone: f.phone, error: e.message, next: safeBack(f.next) ?? '' }, e.status);
@@ -531,13 +531,23 @@ export function createApp(svc, { publicUrl, feedPage = 40 } = {}) {
     return me;
   }
 
+  // 访问者 IP。放在反向代理（Caddy / Nginx）后面时，socket 地址都是 127.0.0.1，
+  // 要打开 trustProxy（CAIGUO_TRUST_PROXY=1）取 X-Forwarded-For 最右边那个（由我们自己的代理追加，客户端伪造不了）
+  function clientIp(req) {
+    if (trustProxy) {
+      const xff = String(req.headers['x-forwarded-for'] ?? '').split(',').map((x) => x.trim()).filter(Boolean);
+      if (xff.length) return xff[xff.length - 1];
+    }
+    return req.socket.remoteAddress ?? '?';
+  }
+
   function anonViewer(req, kind) {
-    const raw = `${req.socket.remoteAddress}|${req.headers['user-agent'] ?? ''}`;
+    const raw = `${clientIp(req)}|${req.headers['user-agent'] ?? ''}`;
     return `${kind}:${createHash('sha256').update(raw).digest('hex').slice(0, 16)}`;
   }
 
   function limitRegister(req) {
-    const ip = req.socket.remoteAddress ?? '?';
+    const ip = clientIp(req);
     const now = Date.now();
     const hits = (registerHits.get(ip) ?? []).filter((t) => now - t < 3600e3);
     if (hits.length >= 30) throw new HttpError(429, '注册太频繁，请稍后再试');

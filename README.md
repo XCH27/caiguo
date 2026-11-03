@@ -16,7 +16,7 @@
 
 完整方案见 [docs/PLAN.md](docs/PLAN.md)。
 
-**接手开发（人或 Agent）先读 [AGENTS.md](AGENTS.md)**：不能违背的原则、仓库地图、怎么干活。然后按需看 [决定记录](docs/DECISIONS.md)、[架构](docs/ARCHITECTURE.md)、[设计规范](docs/DESIGN.md)、[路线图](docs/ROADMAP.md)。
+**接手开发（人或 Agent）先读 [AGENTS.md](AGENTS.md)**：不能违背的原则、仓库地图、怎么干活。然后按需看 [决定记录](docs/DECISIONS.md)、[架构](docs/ARCHITECTURE.md)、[设计规范](docs/DESIGN.md)、[路线图](docs/ROADMAP.md)、[部署](docs/DEPLOY.md)。
 
 ## 快速开始
 

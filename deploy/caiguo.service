@@ -1,0 +1,23 @@
+# /etc/systemd/system/caiguo.service
+[Unit]
+Description=踩过 Caiguo
+After=network.target
+
+[Service]
+Type=simple
+User=caiguo
+Group=caiguo
+WorkingDirectory=/opt/caiguo
+EnvironmentFile=/etc/caiguo/caiguo.env
+ExecStart=/usr/bin/node --no-warnings=ExperimentalWarning server/index.js
+Restart=on-failure
+RestartSec=3
+# 收紧权限：只允许写数据目录
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/caiguo
+
+[Install]
+WantedBy=multi-user.target
