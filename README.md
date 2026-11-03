@@ -16,6 +16,8 @@
 
 完整方案见 [docs/PLAN.md](docs/PLAN.md)。
 
+**接手开发（人或 Agent）先读 [AGENTS.md](AGENTS.md)**：不能违背的原则、仓库地图、怎么干活。然后按需看 [决定记录](docs/DECISIONS.md)、[架构](docs/ARCHITECTURE.md)、[设计规范](docs/DESIGN.md)、[路线图](docs/ROADMAP.md)。
+
 ## 快速开始
 
 需要 Node.js ≥ 22.13（使用内置的 `node:sqlite`），没有运行时依赖。
@@ -63,7 +65,7 @@ server/   平台：HTTP API、远程 MCP、文本通道、网页、业务规则�
 plugin/   Claude Code 插件：MCP 工具（19 个）、技能（4 个）、钩子
 scripts/  演示数据、登录链接
 test/     测试
-docs/     项目方案、截图
+docs/     方案（PLAN）、决定记录（DECISIONS）、架构（ARCHITECTURE）、设计规范（DESIGN）、路线图（ROADMAP）、截图
 ```
 
 ## 环境变量
