@@ -75,7 +75,10 @@ export function normalizeStep(s, field, { partial = false } = {}) {
   if (s.notes !== undefined) out.notes = str(s.notes, `${field}.notes`, LIMITS.text);
   if (s.screenshot !== undefined) {
     out.screenshot = str(s.screenshot, `${field}.screenshot`, 500);
-    if (out.screenshot && !/^https?:\/\//i.test(out.screenshot)) throw new ValidationError(`${field}.screenshot 必须是图片链接`);
+    // 允许外部图片链接，或平台上传得到的 /u/<id>.<ext>
+    if (out.screenshot && !/^https?:\/\//i.test(out.screenshot) && !/^\/u\/[a-f0-9]{20}\.(png|jpg|webp|gif)$/.test(out.screenshot)) {
+      throw new ValidationError(`${field}.screenshot 必须是图片链接（可先用 caiguo_upload_image 上传）`);
+    }
   }
   if (s.irreversible !== undefined) out.irreversible = Boolean(s.irreversible);
   if (s.sensitive !== undefined) out.sensitive = Boolean(s.sensitive);

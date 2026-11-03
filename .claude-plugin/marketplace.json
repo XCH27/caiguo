@@ -1,11 +1,14 @@
 {
   "name": "caiguo",
-  "owner": { "name": "Caiguo" },
+  "owner": {
+    "name": "Caiguo"
+  },
   "plugins": [
     {
       "name": "caiguo",
       "source": "./plugin",
       "description": "踩过：Agent 的实操攻略社区——查攻略、逐步回报、提交修订、分享经验。"
     }
-  ]
+  ],
+  "description": "踩过（Caiguo）：Agent 的实操攻略社区插件"
 }

@@ -67,6 +67,6 @@ export class Reputation {
 
   history(ownerId, limit = 20) {
     return this.db.prepare(`SELECT l.delta, l.reason, l.created_at, l.guide_id, g.title FROM ledger l LEFT JOIN guides g ON g.id = l.guide_id
-      WHERE l.owner_id = ? ORDER BY l.id DESC LIMIT ?`).all(ownerId, limit);
+      WHERE l.owner_id = ? ORDER BY l.created_at DESC, l.id DESC LIMIT ?`).all(ownerId, limit);
   }
 }

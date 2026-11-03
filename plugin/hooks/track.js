@@ -66,6 +66,26 @@ if (mode === 'post') {
   process.exit(0);
 }
 
+// 读了攻略之后，Agent 有没有真的动手（执行命令、操作浏览器/电脑、访问网页、改文件）？
+// 读不到会话记录时默认认为动过手（宁可多提醒一次）。
+const PASSIVE = new Set(['ToolSearch', 'TodoWrite', 'TaskCreate', 'TaskUpdate', 'TaskList', 'Read', 'Grep', 'Glob', 'Skill', 'AskUserQuestion', 'LS']);
+function actedAfterReading(transcriptPath) {
+  if (!transcriptPath) return true;
+  let lines;
+  try { lines = readFileSync(transcriptPath, 'utf8').split('\n'); } catch { return true; }
+  const tools = [];
+  for (const line of lines) {
+    let e;
+    try { e = JSON.parse(line); } catch { continue; }
+    const content = e?.message?.content;
+    if (e?.type !== 'assistant' || !Array.isArray(content)) continue;
+    for (const c of content) if (c?.type === 'tool_use') tools.push(String(c.name));
+  }
+  const lastRead = tools.findLastIndex((n) => n.endsWith('caiguo_get_guide'));
+  if (lastRead < 0) return true;
+  return tools.slice(lastRead + 1).some((n) => !n.includes('caiguo') && !PASSIVE.has(n));
+}
+
 async function flushUsage() {
   if (process.env.CAIGUO_USAGE_SHARING === 'off') return;
   const items = Object.entries(usage.pending).map(([skill_name, count]) => ({ skill_name, count }));
@@ -95,7 +115,8 @@ if (mode === 'stop') {
   const reasons = [];
 
   const pending = Object.entries(session.read).filter(([id]) => !session.reported.includes(id) && !session.reminded.includes(id));
-  if (pending.length) {
+  // 只读了攻略、没有实际动手（只是回答问题）时不提醒，避免打扰
+  if (pending.length && actedAfterReading(input.transcript_path)) {
     session.reminded.push(...pending.map(([id]) => id));
     const list = pending.map(([id, title]) => `《${title}》(${id})`).join('、');
     reasons.push(`本次会话读取了攻略 ${list}，但还没有回报执行结果。如果你照着它做了（哪怕只做了一部分），请调用 caiguo_report_run 逐步回报 ok / drift / failed / skipped，并给出 rating。如果只是看了看、没有执行，不需要回报。`);

@@ -153,6 +153,18 @@ test('反馈闭环钩子：读过攻略没回报会提醒一次，回报过或�
   assert.equal(JSON.parse(first.stdout).decision, 'block');
   assert.match(first.stdout, /某攻略/);
   assert.equal(call('stop', {}).stdout, ''); // 只提醒一次
+  // 只读攻略、回答问题（没动手）→ 不提醒；读完后跑了命令 → 提醒
+  const tr = (names) => {
+    const f = join(tmp, `tr-${names.join('-')}.jsonl`);
+    writeFileSync(f, names.map((name) => JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name, input: {} }] } })).join('\n'));
+    return f;
+  };
+  for (const [names, expectBlock] of [[['mcp__x__caiguo_search', 'mcp__x__caiguo_get_guide'], false], [['mcp__x__caiguo_get_guide', 'Read', 'Bash'], true]]) {
+    const sidT = `${sid}-${names.length}`;
+    const callT = (mode, input) => spawnSync(process.execPath, [hook, mode], { input: JSON.stringify({ session_id: sidT, ...input }), encoding: 'utf8', env });
+    callT('post', { tool_name: 'mcp__x__caiguo_get_guide', tool_input: { guide_id: 'g_t' } });
+    assert.equal(callT('stop', { transcript_path: tr(names) }).stdout !== '', expectBlock);
+  }
   // 新会话：回报过就不提醒
   const sid2 = `${sid}b`;
   const call2 = (mode, input) => spawnSync(process.execPath, [hook, mode], { input: JSON.stringify({ session_id: sid2, ...input }), encoding: 'utf8', env });
