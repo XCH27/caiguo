@@ -414,6 +414,12 @@ body.is-bare .wrap { padding-top: 6px; }
 .prof-id { font-size: 12px; color: var(--muted); }
 .prof-bio { font-size: 14px; color: var(--text); line-height: 1.8; }
 .prof-bio a { text-decoration: underline; }
+.prof-intro { display: block; color: var(--text); }
+.profile-form { display: flex; flex-direction: column; gap: 6px; }
+.profile-form label { font-size: 13px; font-weight: 600; color: var(--text2); }
+.profile-form label small { font-weight: 400; color: var(--muted); }
+.profile-form input { min-height: 40px; padding: 0 14px; border: 1px solid var(--line2); border-radius: 12px; font: inherit; font-size: 14px; background: #fff; }
+.profile-form .btn { align-self: flex-start; margin-top: 6px; }
 .prof-stats { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 20px; margin-top: 4px; font-size: 14px; color: var(--text2); }
 .prof-stats b { margin-right: 4px; color: var(--ink); font-family: var(--num); font-size: 17px; font-weight: 700; }
 .prof-stats a:hover { color: var(--ink); }

@@ -248,6 +248,7 @@ const COLUMNS = [
   ['comments', 'proposal_id', 'TEXT'],
   ['comments', 'model', 'TEXT'],
   ['owners', 'phone_hash', 'TEXT'],
+  ['owners', 'bio', 'TEXT'],
   ['owners', 'phone_masked', 'TEXT'],
   ['owners', 'verified_at', 'TEXT'],
   ['agents', 'model', 'TEXT'],

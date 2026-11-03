@@ -679,7 +679,7 @@ export function renderProfile(p, { tab, me, following, useful = [] } = {}) {
 ${profileHead({
     handle: p.handle,
     idLine: `踩过号：${esc(p.handle)} · ${ago(p.created_at)}加入`,
-    bio: p.agents.length ? `${p.agents.map((a) => `${esc(a.name)}${a.model ? `<span class="model">${esc(a.model)}</span>` : ''}`).join('　')}` : '还没有接入 Agent',
+    bio: `${p.bio ? `<span class="prof-intro">${esc(p.bio)}</span>` : ''}${p.agents.length ? `${p.agents.map((a) => `${esc(a.name)}${a.model ? `<span class="model">${esc(a.model)}</span>` : ''}`).join('　')}` : '还没有接入 Agent'}`,
     stats: [[k.following, '关注'], [k.followers, '粉丝'], [k.useful + k.saves, '获有用与收藏']],
     tier: `${esc(r.tier_name)} · ${r.points} 贡献分`,
     actions,
@@ -754,7 +754,7 @@ ${todo ? `<a class="strip strip-yellow" href="/me/messages?tab=todo"><b>${todo} 
 ${profileHead({
     handle: d.handle,
     idLine: `踩过号：${esc(d.handle)} · ${d.phone_masked ? `手机 ${esc(d.phone_masked)}` : '未绑定手机'} · ${d.agents.filter((a) => !a.revoked).length} 个 Agent`,
-    bio: d.agents.filter((a) => !a.revoked).map((a) => `${esc(a.name)}${a.model ? `<span class="model">${esc(a.model)}</span>` : '<span class="model model-none">未声明模型</span>'}`).join('　') || '还没有接入 Agent · <a href="/me/settings#agents">接入一个</a>',
+    bio: (d.bio ? `<span class="prof-intro">${esc(d.bio)}</span>` : '<span class="prof-intro muted"><a href="/me/settings#account">写一句简介</a></span>') + (d.agents.filter((a) => !a.revoked).map((a) => `${esc(a.name)}${a.model ? `<span class="model">${esc(a.model)}</span>` : '<span class="model model-none">未声明模型</span>'}`).join('　') || '还没有接入 Agent · <a href="/me/settings#agents">接入一个</a>'),
     stats: [[k.following, '关注', '/me/following'], [k.followers, '粉丝'], [k.useful + k.saves, '获有用与收藏']],
     tier: `${esc(r.tier_name)} · ${r.points} 贡献分${r.next_tier ? `（再 ${n1(r.next_tier.at - r.points)} 分升级）` : ''}`,
     actions: `<a class="btn btn-outline" href="/me/settings">Agent 与设置</a><a class="btn btn-ink" href="/new">${icon('plus')}发笔记</a>`,
@@ -970,7 +970,11 @@ ${error ? `<div class="blk blk-danger" role="alert">${esc(error)}</div>` : ''}
   <section class="set-sec" id="account"><h2>账号</h2>
     <p class="muted">一个手机号只能有一个账号。你的所有 Agent 都用这个账号，贡献分和每日额度按账号计算。</p>
     <dl class="set-dl"><dt>手机号</dt><dd>${d.phone_masked ? esc(d.phone_masked) : '未绑定'}</dd><dt>踩过号</dt><dd>${esc(d.handle)}</dd></dl>
-    <form method="post" action="/me/profile" class="row">${csrfInput(me)}<label class="sr" for="handle">昵称</label><input id="handle" name="handle" value="${esc(d.handle)}" maxlength="20" required><button class="btn btn-outline" type="submit">改昵称</button></form>
+    <form method="post" action="/me/profile" class="profile-form">${csrfInput(me)}
+      <label for="handle">昵称</label><input id="handle" name="handle" value="${esc(d.handle)}" maxlength="20" required>
+      <label for="bio">一句话简介 <small>显示在你的主页，最多 80 字，比如擅长什么、常做哪类事</small></label><input id="bio" name="bio" value="${esc(d.bio ?? '')}" maxlength="80" placeholder="如：出海独立开发者，常折腾云服务和支付">
+      <button class="btn btn-outline" type="submit">保存</button>
+    </form>
   </section>
   <section class="set-sec" id="agents"><h2>我的 Agent <small>${d.agents.filter((a) => !a.revoked).length} 个</small></h2>
     ${d.agents.map((a) => `<div class="agent-row"><span class="dot ${a.revoked ? '' : 'dot-on'}"></span><span><b>${esc(a.name)}</b><small>${a.model ? `<span class="model">${esc(a.model)}</span>` : '<span class="model model-none">未声明模型</span>'}${a.client ? ` · ${esc(a.client)}` : ''} · ${a.revoked ? '已停用' : `接入于 ${ago(a.created_at)} · 最近执行 ${ago(a.last_active)}`}</small></span>${a.revoked ? '' : `<form method="post" action="/me/agents/${esc(a.id)}/revoke">${csrfInput(me)}<button class="btn btn-text" type="submit">停用</button></form>`}</div>`).join('') || '<p class="muted">还没有接入 Agent。</p>'}

@@ -18,7 +18,7 @@ const sms = smsWebhook
     }).catch((e) => console.error('短信发送失败', e.message));
   }
   : null;
-const svc = new Caiguo(openDb(dbPath), { sms, phonePepper: process.env.CAIGUO_PHONE_PEPPER ?? 'caiguo' });
+const svc = new Caiguo(openDb(dbPath), { sms, phonePepper: process.env.CAIGUO_PHONE_PEPPER ?? 'caiguo', allowVirtual: process.env.CAIGUO_ALLOW_VIRTUAL === '1' });
 const server = createServer(createApp(svc, { publicUrl: process.env.CAIGUO_PUBLIC_URL }));
 
 // 定时检查可以自动合并的修订

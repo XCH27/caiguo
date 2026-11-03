@@ -651,3 +651,18 @@ test('额度：草稿不占当天的发布额度，草稿真正发布时才算',
   assert.throws(() => svc.publishDraft(a.owner_id, drafts[1].id), /额度已用完/, '新手每天 2 篇，第 3 篇被挡住');
   assert.doesNotThrow(() => svc.publishGuide(a, { ...GUIDE, title: '还能继续存草稿', draft: true }));
 });
+
+test('注册风控：默认不接受虚拟运营商号段；主人可以写一句简介（会脱敏）', () => {
+  const svc = new Caiguo(openDb(':memory:'));
+  assert.throws(() => svc.sendLoginCode('17012345678'), /虚拟运营商/);
+  assert.throws(() => svc.sendLoginCode('+8616512345678'), /虚拟运营商/);
+  assert.ok(svc.sendLoginCode('13512345678').dev_code);
+  const loose = new Caiguo(openDb(':memory:'), { allowVirtual: true });
+  assert.ok(loose.sendLoginCode('17012345678').dev_code, '配置放开后可以');
+  const s = svc.sendLoginCode('13612345678');
+  const { owner_id } = svc.loginWithCode('13612345678', s.dev_code);
+  svc.updateProfile(owner_id, { bio: '出海独立开发者，联系我 13812345678' });
+  const bio = svc.consoleData(owner_id).bio;
+  assert.ok(bio.startsWith('出海独立开发者'));
+  assert.ok(!bio.includes('13812345678'), '简介里的手机号被打码');
+});

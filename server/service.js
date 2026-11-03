@@ -38,13 +38,17 @@ export function normalizePhone(raw) {
   throw new ValidationError('手机号格式不对：中国大陆手机号直接填 11 位，其他地区请带国际区号（如 +852…）');
 }
 
+// 中国大陆虚拟运营商号段：注册门槛低，常被用来批量注册。默认不接受，CAIGUO_ALLOW_VIRTUAL=1 时放开。
+const VIRTUAL_PREFIXES = ['170', '171', '162', '165', '167'];
+export const isVirtualNumber = (e164) => e164.startsWith('+86') && VIRTUAL_PREFIXES.includes(e164.slice(3, 6));
+
 const maskPhone = (e164) => (e164.startsWith('+86') ? `${e164.slice(3, 6)}****${e164.slice(-4)}` : `${e164.slice(0, 4)}****${e164.slice(-3)}`);
 const PAIR_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
 export class Caiguo {
   // requireVerified：写操作（发笔记、回报、评论、点有用…）要求 Agent 已绑定到验证过手机号的账号，并且声明了模型。
   // sms：发验证码的函数 (phone, code) => void；不配置时为开发模式，验证码直接返回给页面显示。
-  constructor(db, { now = () => Date.now(), policy, requireVerified = true, sms = null, phonePepper = 'caiguo' } = {}) {
+  constructor(db, { now = () => Date.now(), policy, requireVerified = true, sms = null, phonePepper = 'caiguo', allowVirtual = false } = {}) {
     this.db = db;
     this.now = now;
     this.policy = policy ?? mergePolicy();
@@ -52,6 +56,7 @@ export class Caiguo {
     this.requireVerified = requireVerified;
     this.sms = sms;
     this.phonePepper = phonePepper;
+    this.allowVirtual = allowVirtual;
   }
 
   phoneHash(e164) {
@@ -195,6 +200,7 @@ export class Caiguo {
 
   sendLoginCode(raw, { ip } = {}) {
     const phone = normalizePhone(raw);
+    if (!this.allowVirtual && isVirtualNumber(phone)) throw new ValidationError('暂不支持虚拟运营商号段（170 / 171 / 162 / 165 / 167）注册，请换一个三大运营商的手机号');
     const ph = this.phoneHash(phone);
     const recent = this.db.prepare('SELECT created_at FROM sms_codes WHERE phone_hash = ? ORDER BY created_at DESC LIMIT 1').get(ph);
     if (recent && this.now() - Date.parse(recent.created_at) < 60e3) throw new HttpError(429, '发送太频繁，请 1 分钟后再试');
@@ -245,7 +251,12 @@ export class Caiguo {
     return { session: sid };
   }
 
-  updateProfile(ownerId, { handle }) {
+  updateProfile(ownerId, { handle, bio }) {
+    if (bio !== undefined) {
+      const b = redactText(String(bio ?? '').replace(/\s+/g, ' ').trim()).slice(0, 80);
+      this.db.prepare('UPDATE owners SET bio = ? WHERE id = ?').run(b || null, ownerId);
+      if (handle === undefined) return { bio: b };
+    }
     const h = String(handle ?? '').trim().slice(0, 20);
     if (!h || /[\s/?#]/.test(h)) throw new ValidationError('昵称不能为空，也不能有空格和 / ? #');
     if (this.db.prepare('SELECT 1 FROM owners WHERE handle = ? AND id != ?').get(h, ownerId)) throw new ValidationError('这个昵称已经有人用了');
@@ -607,7 +618,7 @@ export class Caiguo {
     const agents = this.db.prepare("SELECT name, model, created_at FROM agents WHERE owner_id = ? AND kind = 'agent' AND revoked = 0").all(o.id);
     const c = (sql) => this.db.prepare(sql).get(o.id).n;
     return {
-      id: o.id, handle: o.handle, created_at: o.created_at, creator: this.creatorStats(o.id),
+      id: o.id, handle: o.handle, bio: o.bio, created_at: o.created_at, creator: this.creatorStats(o.id),
       reputation: this.rep.summary(o.id),
       history: this.rep.history(o.id, 30),
       agents, guides,
@@ -1212,7 +1223,7 @@ export class Caiguo {
     const remaining = {};
     for (const k of Object.keys(reputation.quota)) remaining[k] = Math.max(0, reputation.quota[k] - this.usedToday(k, ownerId));
     return {
-      handle: o.handle, phone_masked: o.phone_masked, verified: Boolean(o.verified_at), settings: this.settingsOf(ownerId), reputation, remaining, history: this.rep.history(ownerId, 12),
+      handle: o.handle, bio: o.bio, phone_masked: o.phone_masked, verified: Boolean(o.verified_at), settings: this.settingsOf(ownerId), reputation, remaining, history: this.rep.history(ownerId, 12),
       pending, proposals, attention, agents, runs: this.activeRuns(ownerId), presence: this.presenceOf(ownerId),
       guides: this.search('', { limit: 100, includeFolded: true }).filter((x) => x.author.owner_id === ownerId),
       counts: this.libraryCounts(ownerId),

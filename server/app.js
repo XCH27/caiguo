@@ -230,7 +230,7 @@ export function createApp(svc, { publicUrl } = {}) {
       const f = await form(req);
       const me = requireMe(req, f);
       try {
-        svc.updateProfile(me.owner_id, { handle: f.handle });
+        svc.updateProfile(me.owner_id, { handle: f.handle, ...(f.bio !== undefined ? { bio: f.bio } : {}) });
       } catch (e) {
         if (e.status && e.status < 500) return html(res, V.renderSettings(svc.consoleData(me.owner_id), { me: meInfo(req), error: e.message }), e.status);
         throw e;
