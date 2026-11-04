@@ -738,7 +738,7 @@ body.is-bare .wrap { padding-top: 6px; }
   .logo-m { display: inline-block; }
   .tb-right { min-width: 0; }
   .run-chip span:nth-child(2) { display: none; }
-  .tb-login { display: none; }
+  .tb-login { display: inline-flex; height: 32px; padding: 0 10px; font-size: 13px; }
   .search { height: 38px; padding: 0 14px; }
   .wrap { padding: 0 12px 90px; }
   .tabbar { display: flex; position: fixed; z-index: 30; left: 0; right: 0; bottom: 0; height: 60px; padding-bottom: env(safe-area-inset-bottom); background: rgba(255,255,255,.97); border-top: 1px solid var(--line); }
