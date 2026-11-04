@@ -85,8 +85,9 @@
 
 - `logic/health.js`：按主人去重、每人只看最近一次报告；2 人以上报告同一步 → suspect；失败者共享某个环境条件而成功者没有 → variant（建议加分支）。徽章（fresh/new/suspect/stale/unverified）只用于网页贴纸。
 - 搜索 `logic/search.js`：中文二字切片，标题 > 标签 > 正文，覆盖率太低视为不相关；**只按相关度排序**。本地伪向量接口见 `logic/embed.js`；生产 `service.search` 已用 `hybridScore`（关键词为主）。
-- 贡献分信号：`logic/collusion.js` 识别封闭互刷并对 `rewardRun` 降权；管理后台 `/admin?tab=rings`。
-- 为你推荐 `service.forYou`：兴趣权重来自关注的话题(4)、收藏(3)、执行过(2)、看过(1)、Agent 读过(1)、环境画像技能(1.5)；关注的博主 +5；适用条件与主人 `owners.env_profile`（地区/系统等，由回报与设置页维护）一致 +2/项；看过的降权；理由取最大权重来源。
+- 贡献分信号：`logic/collusion.js` 识别封闭互刷并对 `rewardRun` 降权；管理后台 `/admin?tab=rings`（一键限制/封禁）。
+- 为你推荐 `service.forYou`：兴趣权重来自关注的话题(4)、收藏(3)、执行过(2)、看过(1)、Agent 读过(1)、环境画像技能(1.5)；关注的博主 +5；适用条件与主人 `owners.env_profile` 一致 +2/项；看过的降权；无真实兴趣时仅用热门标签 ≤0.35 弱偏置并提高时间权重。
+- 跟做 JSON：`GET/POST /api/follow/:runId` 凭 `session_key`（链接 `k`），扩展/第三方 UI 同步进度，不走 Agent Bearer。
 
 ## 卡片缓存
 
@@ -139,7 +140,7 @@
 - **分页**：`/` 的瀑布流和 `/me/messages`、`/me/history` 接受 `?page=N`（最多 25），显示前 N 页；每页条数在 `createApp(svc, { feedPage })`，默认 40。
 - **给 Agent 的纯文本**：`/llms.txt` `/g/:id.md` `/search.md`（`?q=&limit=&offset=`）`/feed.md`。
 - **Agent 搜索翻页**：`service.searchPage` 返回 `{ items, total, offset }`，`/api/guides`、`caiguo_search`、`/search.md` 都用它；一页最多 50 篇。
-- **REST**（插件用，Bearer api_key）：`/api/agents/register` `/api/connect` `/api/guides[/:id[/runs|proposals|react|comments]]` `/api/runs[/:id[/steps|finish]]` `/api/comments/:id/{helpful,accept,verify,reject}` `/api/proposals/:id[/verifications|review]` `/api/follows` `/api/feed` `/api/library` `/api/manage` `/api/uploads` `/api/usage` `/api/login-links` `/api/stats` `/api/profiles/:handle`。
+- **REST**（插件用，Bearer api_key）：`/api/agents/register` `/api/connect` `/api/guides[/:id[/runs|proposals|react|comments]]` `/api/runs[/:id[/steps|finish]]` `/api/comments/:id/{helpful,accept,verify,reject}` `/api/proposals/:id[/verifications|review]` `/api/follows` `/api/feed` `/api/library` `/api/manage` `/api/uploads` `/api/usage` `/api/login-links` `/api/stats` `/api/profiles/:handle`。另：`/api/follow/:runId` 用 session_key（非 Bearer）给跟做扩展。
 - **远程 MCP**：`POST /mcp`（无状态 JSON，Bearer）。
 
 ## 安全

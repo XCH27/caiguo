@@ -1084,21 +1084,39 @@ test('guide_stats：互动写入后汇总表与卡片一致，冷读不再依赖
   assert.ok(preload.versions.has(guide_id));
 });
 
-test('为你推荐冷启动：无行为信号时用近期热门话题，并给出事实理由', () => {
-  const { svc, mk } = setup();
+test('为你推荐冷启动：无行为信号时用近期热门话题弱偏置，并给出事实理由', () => {
+  const { svc, tick, mk } = setup();
   const a = mk('热门作者');
   const b = mk('热门作者乙');
   const newbie = mk('新用户甲');
+  // 旧热门：时间推远，冷启动应被「最近更新」压过
   svc.publishGuide(a, { ...GUIDE, title: 'Cloudflare 隧道入门', tags: ['Cloudflare', '网络'] });
   svc.publishGuide(b, { ...GUIDE, title: 'Workers 定时任务', tags: ['Cloudflare', 'Workers'] });
-  svc.publishGuide(a, { ...GUIDE, title: '无关生活帖', tags: ['生活'] });
+  tick(40);
+  const fresh = svc.publishGuide(a, { ...GUIDE, title: '刚写的生活帖', tags: ['生活'] }).guide_id;
   const hot = svc.hotTopics({ limit: 5 });
   assert.ok(hot.some((t) => t.tag === 'Cloudflare'));
-  // newbie 无关注/收藏/执行/历史 → 冷启动
   const fy = svc.forYou(newbie.owner_id, { limit: 10 });
   assert.ok(fy.length >= 1);
-  assert.ok(fy.some((g) => g.tags.includes('Cloudflare')));
-  assert.ok(fy.some((g) => /热门话题/.test(g.reason)));
+  assert.equal(fy[0].id, fresh, '冷启动应以新鲜度为主，不让旧热门盖过新帖');
+  assert.ok(fy.some((g) => /热门话题|最近更新/.test(g.reason)));
+});
+
+test('为你推荐：真实关注兴趣压过冷启动热门', () => {
+  const { svc, mk } = setup();
+  const a = mk('兴趣作者甲');
+  const b = mk('兴趣作者乙');
+  const user = mk('有兴趣用户');
+  const hotG = svc.publishGuide(a, { ...GUIDE, title: '全站热门 Cloudflare', tags: ['Cloudflare'] }).guide_id;
+  const niche = svc.publishGuide(b, { ...GUIDE, title: '小众 Oracle 手册', tags: ['Oracle'] }).guide_id;
+  svc.publishGuide(a, { ...GUIDE, title: '又一篇 Cloudflare', tags: ['Cloudflare', '网络'] });
+  svc.follow(user.owner_id, { type: 'tag', target: 'Oracle' });
+  const fy = svc.forYou(user.owner_id, { limit: 10 });
+  const nicheRank = fy.findIndex((g) => g.id === niche);
+  const hotRank = fy.findIndex((g) => g.id === hotG);
+  assert.ok(nicheRank >= 0, '关注标签应出现');
+  assert.ok(hotRank < 0 || nicheRank < hotRank, '真实兴趣应排在仅热门之上');
+  assert.ok(fy.some((g) => /关注/.test(g.reason) || g.tags.includes('Oracle')));
 });
 
 test('环境画像：执行回报持久化；推荐用画像而非仅最近 run.env', () => {
@@ -1301,4 +1319,52 @@ test('生产搜索走 hybridScore：不相关仍为空；相关有分', () => {
   assert.ok(hit.some((g) => /Oracle/.test(g.title)));
   assert.ok(hit.every((g) => g.score > 0));
   assert.equal(svc.search('火星农业灌溉系统').length, 0);
+});
+
+test('跟做 JSON API：session_key 拉进度；本人步骤可写回；坏 key 拒绝', () => {
+  const { svc, mk } = setup();
+  const author = mk('跟做作者');
+  const runner = mk('跟做执行');
+  const { guide_id } = svc.publishGuide(author, GUIDE);
+  const s0 = svc.startRun(runner, guide_id, { env: { region: 'CN' } });
+  const key = new URL('http://x' + s0.follow_path).searchParams.get('k');
+  assert.throws(() => svc.followApiView(s0.run_id, 'bad'), /无效/);
+  let view = svc.followApiView(s0.run_id, key);
+  assert.equal(view.run_id, s0.run_id);
+  assert.equal(view.status, 'in_progress');
+  assert.equal(view.next_step_id, 's1');
+  assert.equal(view.steps.length, 4);
+  assert.equal(view.steps[2].actor, 'human');
+  svc.stepResult(runner, s0.run_id, { step_id: 's1', status: 'ok' });
+  svc.stepResult(runner, s0.run_id, { step_id: 's2', status: 'ok' });
+  view = svc.followApiView(s0.run_id, key);
+  assert.equal(view.next_step_id, 's3');
+  assert.equal(view.done_count, 2);
+  assert.ok(view.steps[0].result);
+  svc.humanDone(s0.run_id, key, 's3');
+  view = svc.followApiView(s0.run_id, key);
+  assert.equal(view.next_step_id, 's4');
+  assert.equal(view.done_count, 3);
+  assert.equal(view.steps[2].result.by, 'human');
+});
+
+test('互刷环管理：一键限制复用 resolveSignupRisk，账号进入 limited', () => {
+  const { svc, mk } = setup();
+  const admin = mk('互刷管理员');
+  svc.db.prepare("UPDATE owners SET role = 'admin' WHERE id = ?").run(admin.owner_id);
+  const a = mk('环甲');
+  const b = mk('环乙');
+  svc.rep.add(a.owner_id, 200, '测试', 'x');
+  svc.rep.add(b.owner_id, 200, '测试', 'y');
+  const g1 = svc.publishGuide(a, { ...GUIDE, title: '环甲一' }).guide_id;
+  const g2 = svc.publishGuide(a, { ...GUIDE, title: '环甲二', tags: ['二'] }).guide_id;
+  const gb = svc.publishGuide(b, { ...GUIDE, title: '环乙一', tags: ['乙'] }).guide_id;
+  runOk(svc, b, g1, { rating: 'helpful' });
+  runOk(svc, b, g2, { rating: 'helpful' });
+  svc.react(a, gb, { action: 'useful', context: '按这篇做完了注册流程顺利' });
+  const suspects = svc.collusionSuspects();
+  assert.ok(suspects.length >= 1);
+  svc.resolveSignupRisk(admin.owner_id, { owner_id: a.owner_id, action: 'limit', note: '互刷环人工限制' });
+  assert.equal(svc.db.prepare('SELECT risk_status FROM owners WHERE id = ?').get(a.owner_id).risk_status, 'limited');
+  assert.throws(() => svc.publishGuide(a, { ...GUIDE, title: '限制后不应发出' }), /限制/);
 });

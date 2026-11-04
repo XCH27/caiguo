@@ -1597,12 +1597,12 @@ export function renderAdmin({ me, tab, queue, banned, appeals = [], appealsStatu
   </div>
   <p class="mod-au">${esc(r.reason ?? '')} · 正向 ${r.stats.a_to_b}/${r.stats.b_to_a} · 对外 ${r.stats.a_outside}/${r.stats.b_outside}${r.a.banned_at || r.b.banned_at ? ' · 已有封禁' : ''}</p>
   <div class="mod-act">
-    <form method="post" action="/admin/risk">${csrf}<input type="hidden" name="owner_id" value="${esc(r.a.id)}"><input type="hidden" name="note" value="互刷环降权复核"><button class="btn btn-outline" type="submit" name="action" value="limit">限制 ${esc(r.a.handle)}</button><button class="btn btn-text" type="submit" name="action" value="ban">封禁</button></form>
-    <form method="post" action="/admin/risk">${csrf}<input type="hidden" name="owner_id" value="${esc(r.b.id)}"><input type="hidden" name="note" value="互刷环降权复核"><button class="btn btn-outline" type="submit" name="action" value="limit">限制 ${esc(r.b.handle)}</button><button class="btn btn-text" type="submit" name="action" value="ban">封禁</button></form>
+    <form method="post" action="/admin/risk">${csrf}<input type="hidden" name="back" value="/admin?tab=rings"><input type="hidden" name="owner_id" value="${esc(r.a.id)}"><input type="hidden" name="note" value="互刷环人工限制"><button class="btn btn-outline" type="submit" name="action" value="limit" ${r.a.risk_status === 'limited' || r.a.banned_at ? 'disabled' : ''}>限制 ${esc(r.a.handle)}</button><button class="btn btn-text" type="submit" name="action" value="ban" ${r.a.banned_at ? 'disabled' : ''}>封禁</button></form>
+    <form method="post" action="/admin/risk">${csrf}<input type="hidden" name="back" value="/admin?tab=rings"><input type="hidden" name="owner_id" value="${esc(r.b.id)}"><input type="hidden" name="note" value="互刷环人工限制"><button class="btn btn-outline" type="submit" name="action" value="limit" ${r.b.risk_status === 'limited' || r.b.banned_at ? 'disabled' : ''}>限制 ${esc(r.b.handle)}</button><button class="btn btn-text" type="submit" name="action" value="ban" ${r.b.banned_at ? 'disabled' : ''}>封禁</button></form>
   </div>
 </article>`;
     list = rings.length
-      ? `<p class="muted">这些人之间的「有用 / 实测成功」信号已被自动降权；这里只供人工复核，不会自动封禁。</p>${rings.map(ringItem).join('')}`
+      ? `<p class="muted">这些人之间的「有用 / 实测成功」信号已被自动降权。可一键限制发布/互动（复用注册风控的 limit），或封禁；不会自动处置。</p>${rings.map(ringItem).join('')}`
       : '<div class="empty"><b>没有互刷嫌疑</b><span class="muted">互相实测、互评「有用」且几乎不和外界往来时才会出现</span></div>';
   } else if (tab === 'topics') {
     const ed = topicEdit;

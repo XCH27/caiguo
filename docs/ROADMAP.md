@@ -17,7 +17,7 @@
 | 事项 | 说明 |
 |---|---|
 | 语义搜索 | 生产搜索已用 `hybridScore`（关键词为主 + 本地哈希伪向量为辅，见 `logic/embed.js`）。真语义仍待 Postgres + pgvector：替换 `embedText` 即可（D7：不按质量加权） |
-| 推荐改进 | 冷启动与环境画像已做（见 PLAN）；更深的兴趣模型仍可迭代 |
+| 推荐改进 | 冷启动弱偏置 + 环境画像已做（见 PLAN）；usage/浏览噪声权重仍可微调 |
 | 性能 | `guide_stats`、列表批量预取版本/runs/usage、发布 similarTitles 已做（见 PLAN）；真向量检索仍待 Postgres |
 
 ## P2 扩展

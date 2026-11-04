@@ -1543,6 +1543,39 @@ export class Caiguo {
     return { run: r, state: this.runState(runId), guide: { id: g.id, title: g.title }, content: v.content, agent: names[r.agent_id]?.name, owner: names[r.agent_id]?.handle };
   }
 
+  // 扩展 / 程序用：跟做页同权（session_key），返回扁平 JSON，不含密钥明文以外的库内字段
+  followApiView(runId, key) {
+    const v = this.followView(runId, key);
+    const doneMap = new Map(v.state.done.map((x) => [x.step_id, x]));
+    const steps = (v.content.steps ?? []).map((st, i) => ({
+      id: st.id,
+      n: i + 1,
+      action: st.action,
+      expect: st.expect ?? '',
+      notes: st.notes ?? '',
+      actor: st.actor || 'agent',
+      sensitive: Boolean(st.sensitive),
+      irreversible: Boolean(st.irreversible),
+      target: st.target ?? null,
+      result: doneMap.get(st.id) ?? null,
+    }));
+    const nextIdx = steps.findIndex((st) => st.id === v.state.next_step_id);
+    return {
+      run_id: v.run.id,
+      guide_id: v.guide.id,
+      title: v.guide.title,
+      agent: v.agent,
+      owner: v.owner,
+      status: v.state.status,
+      next_step_id: v.state.next_step_id,
+      next_step_index: nextIdx >= 0 ? nextIdx : null,
+      total_steps: v.state.total_steps,
+      done_count: v.state.done.length,
+      follow_path: v.state.follow_path,
+      steps,
+    };
+  }
+
   // 主人在跟做页点“我做完了”
   humanDone(runId, key, stepId, { problem } = {}) {
     const r = this.runRow(runId);
@@ -2344,10 +2377,11 @@ export class Caiguo {
     const all = this.search('', { limit: 10000 });
     if (!ownerId) return all.slice(0, limit).map((g) => ({ ...g, reason: '最新' }));
     const me = this.interestsOf(ownerId);
-    // 冷启动：没有任何关注/收藏/执行/浏览信号时，用近期热门话题作弱相关
-    if (Object.keys(me.weights).length === 0) {
-      for (const { tag } of this.hotTopics({ limit: 10 })) {
-        me.weights[tag] = 1.5;
+    // 冷启动：无真实兴趣时，热门话题只做很弱的偏置（≤0.35），主要仍按最近更新排，避免热门标签盖过一切
+    const coldStart = Object.keys(me.weights).length === 0;
+    if (coldStart) {
+      for (const { tag } of this.hotTopics({ limit: 5 })) {
+        me.weights[tag] = 0.35;
         me.why[tag] = `近期热门话题 #${tag}`;
       }
     }
@@ -2373,7 +2407,8 @@ export class Caiguo {
       }
       if (seen.has(g.id)) s *= 0.3;
       const ageDays = (this.now() - Date.parse(g.updated_at)) / 864e5;
-      s += Math.max(0, 1 - ageDays / 60);
+      // 冷启动：时间衰减权重更大，热门标签只做轻微打散
+      s += Math.max(0, (coldStart ? 2.2 : 1) - ageDays / (coldStart ? 45 : 60));
       return { ...g, reason: reason ?? (seen.has(g.id) ? '你看过' : '最近更新'), _s: s };
     });
     scored.sort((a, b) => b._s - a._s);

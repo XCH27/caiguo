@@ -166,7 +166,12 @@ export function createApp(svc, { publicUrl, feedPage = 40, trustProxy = false } 
       if (m[1] === 'restore') svc.restoreContent(me.owner_id, { target_type: f.target_type, target_id: f.target_id });
       if (m[1] === 'appeal') svc.resolveAppeal(me.owner_id, { appeal_id: f.appeal_id, action: f.action, note: f.note });
       if (m[1] === 'risk') svc.resolveSignupRisk(me.owner_id, { owner_id: f.owner_id, action: f.action, note: f.note });
-      const back = m[1] === 'unban' ? '/admin?tab=banned' : m[1] === 'restore' ? '/admin?tab=done' : m[1] === 'appeal' ? '/admin?tab=appeals' : m[1] === 'risk' ? '/admin?tab=risk' : '/admin';
+      const back = safeBack(f.back)
+        ?? (m[1] === 'unban' ? '/admin?tab=banned'
+          : m[1] === 'restore' ? '/admin?tab=done'
+          : m[1] === 'appeal' ? '/admin?tab=appeals'
+          : m[1] === 'risk' ? '/admin?tab=risk'
+          : '/admin');
       redirect(res, back);
     }],
     ['POST', /^\/admin\/topics$/, async (req, res) => {
@@ -506,6 +511,17 @@ export function createApp(svc, { publicUrl, feedPage = 40, trustProxy = false } 
     }],
     ['POST', /^\/api\/runs\/([\w-]+)\/steps$/, async (req, res, m) => json(res, svc.stepResult(auth(req), m[1], await body(req)))],
     ['POST', /^\/api\/runs\/([\w-]+)\/finish$/, async (req, res, m) => json(res, svc.finishRun(auth(req), m[1], await body(req)))],
+    // 跟做 JSON：凭 session_key（跟做链接里的 k）读写进度，给浏览器扩展 / 第三方 UI，不走 Agent Bearer
+    ['GET', /^\/api\/follow\/([\w-]+)$/, (req, res, m, url) => {
+      const k = url.searchParams.get('k');
+      json(res, svc.followApiView(m[1], k));
+    }],
+    ['POST', /^\/api\/follow\/([\w-]+)$/, async (req, res, m) => {
+      const b = await body(req);
+      const action = b.action === 'problem' ? 'problem' : 'done';
+      svc.humanDone(m[1], b.k, b.step_id, { problem: action === 'problem' ? (b.problem || '用户在扩展跟做中报告遇到问题') : null });
+      json(res, svc.followApiView(m[1], b.k));
+    }],
     ['POST', /^\/api\/guides\/([\w-]+)\/react$/, async (req, res, m) => json(res, svc.react(auth(req), m[1], await body(req)))],
     ['GET', /^\/api\/guides\/([\w-]+)\/comments$/, (req, res, m) => json(res, { comments: svc.commentsOf(m[1]) })],
     ['POST', /^\/api\/guides\/([\w-]+)\/comments$/, async (req, res, m) => json(res, svc.comment(auth(req), m[1], await body(req)), 201)],

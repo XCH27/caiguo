@@ -471,6 +471,82 @@ test('网页举报和管理后台：登录的人能举报；只有管理员能�
   assert.match(rings, /没有互刷嫌疑|互相实测/);
 });
 
+test('跟做 JSON：扩展用 session_key 同步 run；坏 key 403', async () => {
+  const author = svc.registerAgent({ name: '跟做API作者-网页', owner_handle: '跟做API作者', verified: true, model: '测试模型' });
+  svc.updateSettings(author.owner_id, { require_publish_approval: false });
+  svc.rep.add(author.owner_id, 50, 'test', 'seed');
+  const a = svc.authenticate(author.api_key);
+  const runner = svc.registerAgent({ name: '跟做API执行-网页', owner_handle: '跟做API执行', verified: true, model: '测试模型' });
+  svc.updateSettings(runner.owner_id, { require_publish_approval: false });
+  const b = svc.authenticate(runner.api_key);
+  const { guide_id } = svc.publishGuide(a, {
+    title: '扩展同步攻略', summary: 's', tags: ['扩展'],
+    steps: [
+      { action: '打开页', expect: '看到表单' },
+      { actor: 'human', action: '本人确认', expect: '确认成功' },
+      { action: '收尾', expect: '完成' },
+    ],
+  });
+  const s0 = svc.startRun(b, guide_id);
+  const key = new URL(base + s0.follow_path).searchParams.get('k');
+  const bad = await fetch(`${base}/api/follow/${s0.run_id}?k=wrong`);
+  assert.equal(bad.status, 403);
+  let view = await (await fetch(`${base}/api/follow/${s0.run_id}?k=${encodeURIComponent(key)}`)).json();
+  assert.equal(view.run_id, s0.run_id);
+  assert.equal(view.next_step_id, 's1');
+  assert.equal(view.steps.length, 3);
+  svc.stepResult(b, s0.run_id, { step_id: 's1', status: 'ok' });
+  const posted = await fetch(`${base}/api/follow/${s0.run_id}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ k: key, step_id: 's2', action: 'done' }),
+  });
+  assert.equal(posted.status, 200);
+  view = await posted.json();
+  assert.equal(view.next_step_id, 's3');
+  assert.equal(view.done_count, 2);
+  assert.equal(view.steps[1].result.by, 'human');
+});
+
+test('互刷嫌疑页：有嫌疑时显示限制按钮，提交后回到 rings', async () => {
+  const webLogin = async (handle, admin = false) => {
+    const reg = svc.registerAgent({ name: `${handle}-Agent`, owner_handle: handle, verified: true, model: '测试模型' });
+    svc.updateSettings(reg.owner_id, { require_publish_approval: false });
+    if (admin) svc.db.prepare("UPDATE owners SET role = 'admin' WHERE id = ?").run(reg.owner_id);
+    const agent = svc.authenticate(reg.api_key);
+    const login = await fetch(base + svc.createLoginLink(agent).path, { redirect: 'manual' });
+    const cookie = login.headers.get('set-cookie').split(';')[0];
+    const csrf = (await (await fetch(`${base}/me/settings`, { headers: { cookie } })).text()).match(/name="csrf" value="([a-f0-9]+)"/)[1];
+    const post = (p, fields) => fetch(base + p, { method: 'POST', headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ csrf, ...fields }), redirect: 'manual' });
+    return { agent, cookie, post, get: (p) => fetch(base + p, { headers: { cookie } }) };
+  };
+  const a = svc.registerAgent({ name: '环页甲Agent', owner_handle: '环页甲', verified: true, model: 'm' });
+  const b = svc.registerAgent({ name: '环页乙Agent', owner_handle: '环页乙', verified: true, model: 'm' });
+  svc.updateSettings(a.owner_id, { require_publish_approval: false });
+  svc.updateSettings(b.owner_id, { require_publish_approval: false });
+  svc.rep.add(a.owner_id, 200, 't', 'a');
+  svc.rep.add(b.owner_id, 200, 't', 'b');
+  const aa = svc.authenticate(a.api_key);
+  const bb = svc.authenticate(b.api_key);
+  const g1 = svc.publishGuide(aa, { kind: 'guide', title: '环页甲笔记一', summary: 's', tags: ['环'], steps: [{ action: '一步', expect: 'ok' }] }).guide_id;
+  const g2 = svc.publishGuide(aa, { kind: 'guide', title: '环页甲笔记二', summary: 's', tags: ['环二'], steps: [{ action: '一步', expect: 'ok' }] }).guide_id;
+  const gb = svc.publishGuide(bb, { kind: 'guide', title: '环页乙笔记', summary: 's', tags: ['环乙'], steps: [{ action: '一步', expect: 'ok' }] }).guide_id;
+  svc.reportRun(bb, g1, { outcome: 'success', rating: 'helpful', step_results: [] });
+  svc.reportRun(bb, g2, { outcome: 'success', rating: 'helpful', step_results: [] });
+  svc.react(aa, gb, { action: 'useful', context: '按这篇做完注册成功了' });
+  assert.ok(svc.collusionSuspects().length >= 1);
+
+  const admin = await webLogin('环页管理员', true);
+  const page = await (await admin.get('/admin?tab=rings')).text();
+  assert.match(page, /限制 环页/);
+  assert.match(page, /name="back" value="\/admin\?tab=rings"/);
+  const limited = await admin.post('/admin/risk', { owner_id: a.owner_id, action: 'limit', note: '互刷环人工限制', back: '/admin?tab=rings' });
+  assert.equal(limited.status, 303);
+  assert.equal(limited.headers.get('location'), '/admin?tab=rings');
+  assert.equal(svc.db.prepare('SELECT risk_status FROM owners WHERE id = ?').get(a.owner_id).risk_status, 'limited');
+});
+
+
 test('网页分页：瀑布流“加载更多”把下一页接在下面，搜索结果数是总数', async () => {
   const s = new Caiguo(openDb(':memory:'));
   const reg = s.registerAgent({ name: '分页测试', owner_handle: '分页', verified: true, model: '测试模型' });

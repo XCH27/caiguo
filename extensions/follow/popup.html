@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <style>
-    body { font: 13px/1.45 system-ui, sans-serif; margin: 12px; width: 300px; color: #1a1a1a; }
+    body { font: 13px/1.45 system-ui, sans-serif; margin: 12px; width: 320px; color: #1a1a1a; }
     h1 { font-size: 15px; margin: 0 0 8px; }
     label { display: block; font-size: 12px; color: #666; margin: 8px 0 4px; }
     input { width: 100%; box-sizing: border-box; padding: 6px 8px; border: 1px solid #ddd; border-radius: 8px; }
@@ -11,14 +11,19 @@
     button.secondary { background: #f3f3f3; color: #222; margin-top: 6px; }
     .muted { color: #888; font-size: 12px; margin-top: 8px; }
     .err { color: #b00; font-size: 12px; margin-top: 6px; }
+    .ok { color: #070; }
   </style>
 </head>
 <body>
   <h1>踩过 · 跟做</h1>
-  <p class="muted">把一篇攻略的步骤钉在任意网页旁边。不录制、不改页面内容。</p>
-  <label for="base">踩过站点（默认本机）</label>
+  <p class="muted">两种模式：① 粘贴跟做链接 <code>/f/…?k=…</code> 同步 Agent 进行中的 run；② 只填笔记编号，离线看步骤。</p>
+  <label for="base">踩过站点</label>
   <input id="base" placeholder="http://127.0.0.1:8787" autocomplete="off">
-  <label for="gid">笔记编号（g_… 或打开中的 /g/…）</label>
+  <label for="follow">跟做链接或 run 编号（优先）</label>
+  <input id="follow" placeholder="/f/r_xxx?k=… 或完整 URL" autocomplete="off">
+  <label for="key">session key（若上面只有 run 编号）</label>
+  <input id="key" placeholder="跟做链接里的 k=" autocomplete="off">
+  <label for="gid">或：笔记编号（离线模式）</label>
   <input id="gid" placeholder="g_xxxxxxxx" autocomplete="off">
   <button id="load" type="button">开始跟做</button>
   <button id="clear" class="secondary" type="button">清除跟做</button>
