@@ -1368,3 +1368,28 @@ test('互刷环管理：一键限制复用 resolveSignupRisk，账号进入 limi
   assert.equal(svc.db.prepare('SELECT risk_status FROM owners WHERE id = ?').get(a.owner_id).risk_status, 'limited');
   assert.throws(() => svc.publishGuide(a, { ...GUIDE, title: '限制后不应发出' }), /限制/);
 });
+
+test('为你推荐：浏览噪声不压过真实关注', () => {
+  const { svc, mk } = setup();
+  const a = mk('噪声作者甲');
+  const b = mk('噪声作者乙');
+  const user = mk('噪声读者');
+  svc.rep.add(a.owner_id, 200, '测试', 'boost-noise');
+  const niche = svc.publishGuide(b, { ...GUIDE, title: 'Oracle 专项手册', tags: ['Oracle'] }).guide_id;
+  const noisy = [];
+  for (let i = 0; i < 6; i++) {
+    noisy.push(svc.publishGuide(a, { ...GUIDE, title: `Cloudflare 浏览帖 ${i}`, tags: ['Cloudflare'] }).guide_id);
+  }
+  for (const gid of noisy) svc.getGuide(gid, { presenceOwner: user.owner_id });
+  // 大量浏览 Cloudflare 后仍关注 Oracle → Oracle 应更靠前
+  svc.follow(user.owner_id, { type: 'tag', target: 'Oracle' });
+  const interests = svc.interestsOf(user.owner_id);
+  assert.ok(interests.weights.Oracle >= 4);
+  assert.ok((interests.weights.Cloudflare ?? 0) < interests.weights.Oracle,
+    `浏览权重应弱于关注：CF=${interests.weights.Cloudflare} Oracle=${interests.weights.Oracle}`);
+  const fy = svc.forYou(user.owner_id, { limit: 10 });
+  const nicheRank = fy.findIndex((g) => g.id === niche);
+  const firstCf = fy.findIndex((g) => g.tags.includes('Cloudflare'));
+  assert.ok(nicheRank >= 0);
+  assert.ok(firstCf < 0 || nicheRank < firstCf, '关注的 Oracle 应排在大量浏览的 Cloudflare 之前');
+});

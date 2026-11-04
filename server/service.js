@@ -2330,8 +2330,9 @@ export class Caiguo {
     for (const r of this.db.prepare("SELECT target FROM follows WHERE owner_id = ? AND target_type = 'tag'").all(ownerId)) add([r.target], 4, `你关注了 #${r.target}`);
     for (const t of tagsOf('SELECT g.tags FROM saves s JOIN guides g ON g.id = s.guide_id WHERE s.owner_id = ?')) add(t, 3, '你收藏过同话题的笔记');
     for (const t of tagsOf('SELECT g.tags FROM runs r JOIN guides g ON g.id = r.guide_id WHERE r.owner_id = ? AND r.proposal_id IS NULL')) add(t, 2, '你的 Agent 执行过同话题的攻略');
-    for (const t of tagsOf('SELECT g.tags FROM history h JOIN guides g ON g.id = h.guide_id WHERE h.owner_id = ?')) add(t, 1, '你看过同话题的笔记');
-    for (const t of tagsOf("SELECT g.tags FROM usage u JOIN guides g ON g.id = u.guide_id WHERE u.viewer = ? AND u.source = 'agent'")) add(t, 1, '你的 Agent 读过同话题的笔记');
+    // 浏览 / Agent 只读是噪声信号：有真实关注或收藏时不应被大量浏览盖过
+    for (const t of tagsOf('SELECT g.tags FROM history h JOIN guides g ON g.id = h.guide_id WHERE h.owner_id = ?')) add(t, 0.4, '你看过同话题的笔记');
+    for (const t of tagsOf("SELECT g.tags FROM usage u JOIN guides g ON g.id = u.guide_id WHERE u.viewer = ? AND u.source = 'agent'")) add(t, 0.5, '你的 Agent 读过同话题的笔记');
     const profile = this.envProfileOf(ownerId);
     const followUsers = new Set(this.db.prepare("SELECT target FROM follows WHERE owner_id = ? AND target_type = 'user'").all(ownerId).map((r) => r.target));
     // 从收藏/执行过的笔记里提取 skill.name，当作弱兴趣（与热门话题同一权重通道）
@@ -2399,10 +2400,10 @@ export class Caiguo {
       if (me.followUsers.has(g.author.owner_id)) { s += 5; reason = `你关注了 ${g.author.owner}`; }
       const envHit = Object.entries(g.applies_to ?? {}).filter(([k, v]) => me.env[k] && String(me.env[k]) === String(v)).map(([k, v]) => `${k}=${v}`);
       if (envHit.length) { s += 2 * envHit.length; reason = reason ?? `适用条件和你的环境一致（${envHit.join('，')}）`; }
-      // 技能名与笔记 skill 对齐（已有信号之外的弱加分）
+      // 技能名与笔记 skill 对齐：弱加分，避免画像技能名单独抬过高
       const skillName = g.skill?.name;
       if (skillName && me.weights[skillName]) {
-        s += 1;
+        s += 0.5;
         reason = reason ?? me.why[skillName];
       }
       if (seen.has(g.id)) s *= 0.3;
