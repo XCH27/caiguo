@@ -1283,3 +1283,22 @@ test('本地嵌入接口：相同主题更近，hybrid 不相关仍为 0', async
   assert.ok(hybridScore('注册 Oracle', guide) > 0);
   assert.equal(hybridScore('完全不相关的火星农业', guide), 0);
 });
+
+test('生产搜索走 hybridScore：不相关仍为空；相关有分', () => {
+  const { svc, mk } = setup();
+  const a = mk('搜作者');
+  svc.publishGuide(a, {
+    kind: 'guide', title: '大陆用户注册 Oracle Cloud 免费账户', summary: 'Always Free',
+    tags: ['云服务', 'Oracle'], applies_to: { region: 'CN' },
+    steps: [{ action: '打开 cloud.oracle.com 注册', expect: '进入控制台' }],
+  });
+  svc.publishGuide(a, {
+    kind: 'pitfall', title: '食堂刷卡失败常见原因', summary: '和云无关的避坑',
+    tags: ['生活'], pitfalls: [{ symptom: '刷卡无响应', fix: '换窗口' }],
+  });
+  const hit = svc.search('注册 Oracle 云');
+  assert.ok(hit.length >= 1);
+  assert.ok(hit.some((g) => /Oracle/.test(g.title)));
+  assert.ok(hit.every((g) => g.score > 0));
+  assert.equal(svc.search('火星农业灌溉系统').length, 0);
+});

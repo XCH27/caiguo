@@ -31,6 +31,7 @@
 ```
 server/
   index.js          启动（端口、数据库、短信 webhook、定时自动合并）
+extensions/       浏览器扩展：跟做模式 MVP（extensions/follow）
   app.js            所有 HTTP 路由：网页 / 给 Agent 的纯文本 / REST API / 远程 MCP
   service.js        业务规则（唯一的一份）：账号绑定、发布、执行回报、修订=带修改的评论、互动、推荐、通知
   db.js             SQLite 表结构；新增列写在 COLUMNS（自动 ALTER）

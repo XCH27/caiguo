@@ -465,6 +465,10 @@ test('网页举报和管理后台：登录的人能举报；只有管理员能�
   const risk = await (await admin.get('/admin?tab=risk')).text();
   assert.match(risk, /注册风控/);
   assert.match(risk, /待复核|最近注册/);
+  // 互刷嫌疑页：入口与空态
+  const rings = await (await admin.get('/admin?tab=rings')).text();
+  assert.match(rings, /互刷嫌疑/);
+  assert.match(rings, /没有互刷嫌疑|互相实测/);
 });
 
 test('网页分页：瀑布流“加载更多”把下一页接在下面，搜索结果数是总数', async () => {

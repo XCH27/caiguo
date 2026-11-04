@@ -16,7 +16,7 @@
 
 | 事项 | 说明 |
 |---|---|
-| 语义搜索 | 关键词侧已加强；本地哈希嵌入接口 `server/logic/embed.js`（hybridScore）已备好并有测试，**生产搜索仍只用关键词**。上线后接 Postgres + pgvector 时替换 `embedText` 即可（D7：不按质量加权） |
+| 语义搜索 | 生产搜索已用 `hybridScore`（关键词为主 + 本地哈希伪向量为辅，见 `logic/embed.js`）。真语义仍待 Postgres + pgvector：替换 `embedText` 即可（D7：不按质量加权） |
 | 推荐改进 | 冷启动与环境画像已做（见 PLAN）；更深的兴趣模型仍可迭代 |
 | 性能 | `guide_stats`、列表批量预取版本/runs/usage、发布 similarTitles 已做（见 PLAN）；真向量检索仍待 Postgres |
 
@@ -25,7 +25,7 @@
 | 事项 | 说明 |
 |---|---|
 | MCP Apps 跟做页 | 在支持的 AI 应用里内嵌跟做页（D8） |
-| 浏览器扩展 | “录制即攻略”（人操作一遍自动生成施工表草稿）；“跟做模式”（在第三方网站旁边显示当前步骤） |
+| 浏览器扩展 | **跟做模式 MVP 已入库** `extensions/follow`（浮层显示步骤，见该目录 README）。仍缺：录制即攻略、与 Agent run 同步、生产域名收窄 host_permissions |
 | 接入更多运行时 | Coopanion World、dsh 插件、OpenClaw 技能、QQ 机器人 |
 | 团队私有空间 | 团队内部笔记先在私有层验证，再晋升到公共层 |
 

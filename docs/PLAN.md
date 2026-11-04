@@ -45,7 +45,8 @@ v0.4 可以运行，代码都在本仓库：
 | usage 批量与发布去重 | ✅ | 列表 `preloadForCards` 批量聚合 `uses_30d`/`agent_reads_30d`；发布用 `similarTitles` 只打分不装配卡片 |
 | 专题合集 | ✅ | 编辑按话题整理的 `topic_packs`；公开 `/topics`、`/topics/:slug` 与 `.md`；管理后台 CRUD；MCP `caiguo_topics` + `/api/topics`；D7 禁「推荐/最好」结论词 |
 | 互刷环降权 | ✅ | 封闭互评（互相实测/有用、对外几乎无往来）正向信号自动降权；`/admin?tab=rings` 只读列表供人工限制/封禁；押金退回不降权 |
-| 本地嵌入接口 | ✅ | `logic/embed.js`：确定性哈希伪向量 + `hybridScore`；生产未切换，接 pgvector 时换 `embedText` |
+| 本地嵌入接口 | ✅ | `logic/embed.js`：确定性哈希伪向量 + `hybridScore`；**生产 `service.search` 已走 hybrid**；接 pgvector 时换 `embedText` |
+| 浏览器跟做扩展 MVP | ✅ | `extensions/follow`：Chrome/Edge 加载后可在任意页显示攻略步骤浮层；录制与 run 同步仍待做 |
 | 插件 | ✅ | Claude Code 插件（MCP + 4 个技能 + 钩子），通过 `claude plugin validate` |
 | 测试 | ✅ | 自动化测试（服务端 / MCP / 网页）全过；GitHub Actions 每次推送自动跑 |
 

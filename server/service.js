@@ -8,6 +8,7 @@ import { computeHealth } from './logic/health.js';
 import { evaluateProposal, mergePolicy } from './logic/merge.js';
 import { redactDeep, redactText, scanForRisks } from './logic/redact.js';
 import { buildSearchText, score } from './logic/search.js';
+import { hybridScore } from './logic/embed.js';
 import { collusionFactor, collusionReason } from './logic/collusion.js';
 import { Reputation, START_POINTS, PUBLISH_DEPOSIT, REWARDS, trustOf, tierOf } from './reputation.js';
 
@@ -658,7 +659,8 @@ export class Caiguo {
     let rows = this.db.prepare("SELECT * FROM guides WHERE status = 'published'").all().map((g) => ({ ...g, tags: j(g.tags), source: j(g.source) }));
     if (tag) rows = rows.filter((g) => g.tags.includes(tag));
     if (kind) rows = rows.filter((g) => g.kind === kind);
-    const candidates = rows.map((g) => ({ g, s: q ? score(q, g) : 1 })).filter((x) => x.s > 0);
+    // 有查询时用 hybridScore（关键词为主 + 本地伪向量为辅）；无查询保持原序分 1
+    const candidates = rows.map((g) => ({ g, s: q ? hybridScore(q, g) : 1 })).filter((x) => x.s > 0);
     const preload = this.preloadForCards(candidates.map((x) => x.g));
     let items = candidates.map(({ g, s }) => {
       const item = this.cardOf(g, preload);

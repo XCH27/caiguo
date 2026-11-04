@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <style>
+    body { font: 13px/1.45 system-ui, sans-serif; margin: 12px; width: 300px; color: #1a1a1a; }
+    h1 { font-size: 15px; margin: 0 0 8px; }
+    label { display: block; font-size: 12px; color: #666; margin: 8px 0 4px; }
+    input { width: 100%; box-sizing: border-box; padding: 6px 8px; border: 1px solid #ddd; border-radius: 8px; }
+    button { margin-top: 10px; width: 100%; padding: 8px; border: 0; border-radius: 10px; background: #e11; color: #fff; font-weight: 700; cursor: pointer; }
+    button.secondary { background: #f3f3f3; color: #222; margin-top: 6px; }
+    .muted { color: #888; font-size: 12px; margin-top: 8px; }
+    .err { color: #b00; font-size: 12px; margin-top: 6px; }
+  </style>
+</head>
+<body>
+  <h1>踩过 · 跟做</h1>
+  <p class="muted">把一篇攻略的步骤钉在任意网页旁边。不录制、不改页面内容。</p>
+  <label for="base">踩过站点（默认本机）</label>
+  <input id="base" placeholder="http://127.0.0.1:8787" autocomplete="off">
+  <label for="gid">笔记编号（g_… 或打开中的 /g/…）</label>
+  <input id="gid" placeholder="g_xxxxxxxx" autocomplete="off">
+  <button id="load" type="button">开始跟做</button>
+  <button id="clear" class="secondary" type="button">清除跟做</button>
+  <p id="msg" class="muted"></p>
+  <script src="popup.js" type="module"></script>
+</body>
+</html>
