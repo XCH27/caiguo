@@ -143,10 +143,11 @@ export function createApp(svc, { publicUrl, feedPage = 40, trustProxy = false } 
       const tab = url.searchParams.get('tab') || 'open';
       const appealsStatus = url.searchParams.get('status') === 'done' ? 'done' : 'open';
       const riskStatus = ['recent', 'cleared', 'limited'].includes(url.searchParams.get('status')) ? url.searchParams.get('status') : 'review';
-      const skipQueue = tab === 'banned' || tab === 'appeals' || tab === 'risk' || tab === 'topics';
+      const skipQueue = tab === 'banned' || tab === 'appeals' || tab === 'risk' || tab === 'topics' || tab === 'rings';
       const topics = tab === 'topics' ? svc.listTopicPacks({ status: 'all' }) : [];
       const editId = url.searchParams.get('edit');
       const topicEdit = editId ? (() => { try { return svc.getTopicPack(editId, { includeDraft: true }); } catch { return null; } })() : null;
+      const rings = tab === 'rings' ? svc.collusionSuspects() : [];
       return html(res, V.renderAdmin({
         me, tab, appealsStatus, riskStatus,
         queue: skipQueue ? [] : svc.moderationQueue({ status: tab === 'done' ? 'done' : 'open' }),
@@ -154,7 +155,7 @@ export function createApp(svc, { publicUrl, feedPage = 40, trustProxy = false } 
         appeals: tab === 'appeals' ? svc.appealsQueue({ status: appealsStatus }) : [],
         risk: tab === 'risk' ? svc.signupRiskQueue({ status: riskStatus }) : [],
         riskCounts: svc.signupRiskCounts(),
-        topics, topicEdit,
+        topics, topicEdit, rings,
       }));
     }],
     ['POST', /^\/admin\/(resolve|unban|restore|appeal|risk)$/, async (req, res, m) => {

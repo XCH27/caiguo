@@ -16,9 +16,9 @@
 
 | 事项 | 说明 |
 |---|---|
-| 语义搜索 | 关键词侧已加强（见 PLAN）；仍缺向量混合检索（不按质量加权，见 D7；上线后再接 Postgres + pgvector 一类，不引入付费向量库也可） |
+| 语义搜索 | 关键词侧已加强；本地哈希嵌入接口 `server/logic/embed.js`（hybridScore）已备好并有测试，**生产搜索仍只用关键词**。上线后接 Postgres + pgvector 时替换 `embedText` 即可（D7：不按质量加权） |
 | 推荐改进 | 冷启动与环境画像已做（见 PLAN）；更深的兴趣模型仍可迭代 |
-| 性能 | `guide_stats`、列表批量预取版本/runs/usage、发布 similarTitles 已做（见 PLAN）；语义检索仍待向量库 |
+| 性能 | `guide_stats`、列表批量预取版本/runs/usage、发布 similarTitles 已做（见 PLAN）；真向量检索仍待 Postgres |
 
 ## P2 扩展
 

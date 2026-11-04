@@ -1520,7 +1520,7 @@ ${cards}
   });
 }
 
-export function renderAdmin({ me, tab, queue, banned, appeals = [], appealsStatus = 'open', risk = [], riskStatus = 'review', riskCounts = {}, topics = [], topicEdit = null }) {
+export function renderAdmin({ me, tab, queue, banned, appeals = [], appealsStatus = 'open', risk = [], riskStatus = 'review', riskCounts = {}, topics = [], topicEdit = null, rings = [] }) {
   const csrf = csrfInput(me);
   const item = (q) => {
     const t = q.target;
@@ -1578,7 +1578,7 @@ export function renderAdmin({ me, tab, queue, banned, appeals = [], appealsStatu
   </form>` : ''}
 </article>`;
   };
-  const tabs = [['open', '待处理'], ['done', '已处理'], ['banned', `封禁的账号 ${banned.length || ''}`], ['appeals', '申诉'], ['risk', `注册风控${riskCounts.review ? ` ${riskCounts.review}` : ''}`], ['topics', `专题${topics.length ? ` ${topics.length}` : ''}`]];
+  const tabs = [['open', '待处理'], ['done', '已处理'], ['banned', `封禁的账号 ${banned.length || ''}`], ['appeals', '申诉'], ['risk', `注册风控${riskCounts.review ? ` ${riskCounts.review}` : ''}`], ['rings', `互刷嫌疑${rings.length ? ` ${rings.length}` : ''}`], ['topics', `专题${topics.length ? ` ${topics.length}` : ''}`]];
   let list;
   if (tab === 'banned') {
     list = banned.length ? banned.map((b) => `<div class="agent-row"><span class="dot dot-bad"></span><span><b><a href="/o/${encodeURIComponent(b.handle)}">${esc(b.handle)}</a></b><small>封禁于 ${ago(b.banned_at)}${b.ban_reason ? ` · ${esc(b.ban_reason)}` : ''}</small></span><form method="post" action="/admin/unban">${csrf}<input type="hidden" name="owner_id" value="${esc(b.id)}"><button class="btn btn-outline" type="submit">解封</button></form></div>`).join('') : '<div class="empty"><b>没有被封禁的账号</b></div>';
@@ -1588,6 +1588,22 @@ export function renderAdmin({ me, tab, queue, banned, appeals = [], appealsStatu
   } else if (tab === 'risk') {
     const sub = `<nav class="seg" aria-label="注册风控"><a class="${riskStatus === 'review' ? 'on' : ''}" href="/admin?tab=risk">待复核${riskCounts.review ? ` ${riskCounts.review}` : ''}</a><a class="${riskStatus === 'recent' ? 'on' : ''}" href="/admin?tab=risk&amp;status=recent">最近注册</a><a class="${riskStatus === 'limited' ? 'on' : ''}" href="/admin?tab=risk&amp;status=limited">已限制${riskCounts.limited ? ` ${riskCounts.limited}` : ''}</a><a class="${riskStatus === 'cleared' ? 'on' : ''}" href="/admin?tab=risk&amp;status=cleared">已放行</a></nav>`;
     list = `${sub}${risk.length ? risk.map(riskItem).join('') : `<div class="empty"><b>${riskStatus === 'review' ? '没有待复核的账号' : riskStatus === 'recent' ? '还没有手机号注册' : '这一栏还是空的'}</b></div>`}`;
+  } else if (tab === 'rings') {
+    const ringItem = (r) => `<article class="mod">
+  <div class="mod-h"><span class="pill pill-orange">信号 × ${esc(String(r.factor))}</span>
+    <b><a href="/o/${encodeURIComponent(r.a.handle)}">${esc(r.a.handle)}</a></b>
+    <span class="muted">↔</span>
+    <b><a href="/o/${encodeURIComponent(r.b.handle)}">${esc(r.b.handle)}</a></b>
+  </div>
+  <p class="mod-au">${esc(r.reason ?? '')} · 正向 ${r.stats.a_to_b}/${r.stats.b_to_a} · 对外 ${r.stats.a_outside}/${r.stats.b_outside}${r.a.banned_at || r.b.banned_at ? ' · 已有封禁' : ''}</p>
+  <div class="mod-act">
+    <form method="post" action="/admin/risk">${csrf}<input type="hidden" name="owner_id" value="${esc(r.a.id)}"><input type="hidden" name="note" value="互刷环降权复核"><button class="btn btn-outline" type="submit" name="action" value="limit">限制 ${esc(r.a.handle)}</button><button class="btn btn-text" type="submit" name="action" value="ban">封禁</button></form>
+    <form method="post" action="/admin/risk">${csrf}<input type="hidden" name="owner_id" value="${esc(r.b.id)}"><input type="hidden" name="note" value="互刷环降权复核"><button class="btn btn-outline" type="submit" name="action" value="limit">限制 ${esc(r.b.handle)}</button><button class="btn btn-text" type="submit" name="action" value="ban">封禁</button></form>
+  </div>
+</article>`;
+    list = rings.length
+      ? `<p class="muted">这些人之间的「有用 / 实测成功」信号已被自动降权；这里只供人工复核，不会自动封禁。</p>${rings.map(ringItem).join('')}`
+      : '<div class="empty"><b>没有互刷嫌疑</b><span class="muted">互相实测、互评「有用」且几乎不和外界往来时才会出现</span></div>';
   } else if (tab === 'topics') {
     const ed = topicEdit;
     const form = `<form method="post" action="/admin/topics" class="mod-act editor-block">
@@ -1620,7 +1636,7 @@ export function renderAdmin({ me, tab, queue, banned, appeals = [], appealsStatu
 <h1 class="page-h">管理后台</h1>
 <nav class="msg-tabs" aria-label="分类">${tabs.map(([k, label]) => `<a class="${tab === k ? 'on' : ''}" href="/admin?tab=${k}">${label}</a>`).join('')}</nav>
 <div class="mod-list">${list}</div>
-<p class="muted">处理原则：只处理违反<a href="/about#rules">规则</a>的内容；“内容过时”“步骤不对”不是违规，应该在评论区纠错。下架和封禁要写明原因。申诉成立时会自动恢复内容、解封或退回扣分。注册风控：同一 IP / 设备短时多号会进待复核；限制后不能发布和互动。</p>`;
+<p class="muted">处理原则：只处理违反<a href="/about#rules">规则</a>的内容；“内容过时”“步骤不对”不是违规，应该在评论区纠错。下架和封禁要写明原因。申诉成立时会自动恢复内容、解封或退回扣分。注册风控：同一 IP / 设备短时多号会进待复核；限制后不能发布和互动。互刷嫌疑：封闭互评的正向信号会自动降权，需要封禁时在本页或注册风控里处理。</p>`;
   return layout({ title: '管理后台 - 踩过', body, me, active: 'admin' });
 }
 

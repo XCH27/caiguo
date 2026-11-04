@@ -1222,3 +1222,64 @@ test('专题合集：管理员创建/发布/列表/详情；草稿对外不可�
   svc.deleteTopicPack(admin.owner_id, pub.id);
   assert.equal(svc.listTopicPacks({ status: 'all' }).length, 0);
 });
+
+test('互刷环：封闭互评的正向信号降权；对外有往来则不降', () => {
+  const { svc, mk } = setup();
+  const a = mk('甲号');
+  const b = mk('乙号');
+  const outsider = mk('路人');
+  svc.rep.add(a.owner_id, 200, '测试抬分', 'boost-a');
+  svc.rep.add(b.owner_id, 200, '测试抬分', 'boost-b');
+  svc.rep.add(outsider.owner_id, 200, '测试抬分', 'boost-o');
+
+  const g1 = svc.publishGuide(a, { ...GUIDE, title: '甲的笔记一' }).guide_id;
+  const g2 = svc.publishGuide(a, { ...GUIDE, title: '甲的笔记二', tags: ['别的'] }).guide_id;
+  const g3 = svc.publishGuide(a, { ...GUIDE, title: '甲的笔记三', tags: ['又一个'] }).guide_id;
+  const gb = svc.publishGuide(b, { ...GUIDE, title: '乙的笔记', tags: ['乙'] }).guide_id;
+
+  // 第一次：路人正常实测，信任系数 1
+  const before = svc.rep.points(a.owner_id);
+  runOk(svc, outsider, g1, { rating: 'helpful' });
+  const normalDelta = svc.rep.points(a.owner_id) - before;
+  assert.equal(normalDelta, 2 + 3 + 1); // 成功奖励 + 退押金 + 有用（押金只退一次，这里第一次）
+
+  // 乙给甲连刷两次正向，且双方几乎不对外 → 第二次的成功/有用应降权（押金仍全额退）
+  runOk(svc, b, g2, { rating: 'helpful' });
+  const mid = svc.rep.points(a.owner_id);
+  runOk(svc, b, g3, { rating: 'helpful' });
+  const ringDelta = svc.rep.points(a.owner_id) - mid;
+  // 满额应为 押金3 + 成功2 + 有用1 = 6；互刷 factor 0.35 → 3 + 0.7 + 0.35 = 4.05
+  assert.ok(ringDelta < 5, `互刷第二次应小于满额 6，实际 ${ringDelta}`);
+  assert.ok(ringDelta > 3.5 && ringDelta < 4.5, `押金全额 + 降权后的成功/有用，实际 ${ringDelta}`);
+  const successLedgers = svc.db.prepare("SELECT delta, reason FROM ledger WHERE owner_id = ? AND ref = ?").all(a.owner_id, `run-success:${g3}:${b.owner_id}`);
+  assert.equal(successLedgers.length, 1);
+  assert.ok(successLedgers[0].delta < 2, `成功奖励应被降权，实际 ${successLedgers[0].delta}`);
+
+  // 甲也回评乙，形成更明显互刷；管理列表应能看到
+  svc.react(a, gb, { action: 'useful', context: '我按这篇做了注册，过了' });
+  const suspects = svc.collusionSuspects();
+  assert.ok(suspects.some((s) =>
+    (s.a.handle === '甲号' && s.b.handle === '乙号') || (s.a.handle === '乙号' && s.b.handle === '甲号')),
+  '应列出甲乙互刷对');
+  assert.ok(suspects.every((s) => s.factor < 1));
+});
+
+test('本地嵌入接口：相同主题更近，hybrid 不相关仍为 0', async () => {
+  const { embedText, cosine, hybridScore, vectorToBlob, blobToVector, EMBED_DIM } = await import('../server/logic/embed.js');
+  const { collusionFactor } = await import('../server/logic/collusion.js');
+  assert.equal(collusionFactor({ a_to_b: 0, b_to_a: 0, a_outside: 0, b_outside: 0 }), 1);
+  assert.equal(collusionFactor({ a_to_b: 2, b_to_a: 2, a_outside: 0, b_outside: 0 }), 0.25);
+  assert.equal(collusionFactor({ a_to_b: 2, b_to_a: 0, a_outside: 0, b_outside: 5 }), 0.35);
+
+  const a = embedText('大陆用户注册 Oracle Cloud 免费账户');
+  const b = embedText('中国大陆注册 Oracle 云免费额度');
+  const c = embedText('今天天气真好适合散步');
+  assert.equal(a.length, EMBED_DIM);
+  assert.ok(cosine(a, b) > cosine(a, c));
+  const blob = vectorToBlob(a);
+  assert.deepEqual([...blobToVector(blob)], [...a]);
+
+  const guide = { title: '注册 Oracle Cloud', tags: ['云服务'], search_text: 'Always Free 信用卡' };
+  assert.ok(hybridScore('注册 Oracle', guide) > 0);
+  assert.equal(hybridScore('完全不相关的火星农业', guide), 0);
+});

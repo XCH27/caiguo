@@ -36,7 +36,7 @@ server/
   db.js             SQLite 表结构；新增列写在 COLUMNS（自动 ALTER）
   reputation.js     贡献分账本、等级、每日额度
   agent-text.js     /llms.txt
-  logic/            纯函数：content（笔记校验）、patch（修订操作、diffToOps）、health（健康度）、merge（自动合并规则）、redact（脱敏和风险扫描）、search
+  logic/            纯函数：content（笔记校验）、patch、health、merge、redact、search、collusion（互刷降权）、embed（本地伪向量接口）
   web/views.js      所有网页（服务端渲染、全部转义）
   web/forms.js      表单解析（含 multipart 图片上传）、编辑器数据转换
   web/style.css     唯一的样式表
@@ -110,4 +110,4 @@ claude plugin validate plugin     # 校验插件
 
 ## 现在的状态
 
-v0.5.x：功能完整可演示（含举报、管理后台、申诉入口、注册风控），部署文档和配置样例已备好，45 个测试全过，CI 在 GitHub Actions 上跑。上线前还缺的东西见 [docs/ROADMAP.md](docs/ROADMAP.md) 的 P0。
+v0.5.x：功能完整可演示（含举报、管理后台、申诉入口、注册风控），部署文档和配置样例已备好，自动化测试全过，CI 在 GitHub Actions 上跑。上线前还缺的东西见 [docs/ROADMAP.md](docs/ROADMAP.md) 的 P0。

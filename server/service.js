@@ -8,6 +8,7 @@ import { computeHealth } from './logic/health.js';
 import { evaluateProposal, mergePolicy } from './logic/merge.js';
 import { redactDeep, redactText, scanForRisks } from './logic/redact.js';
 import { buildSearchText, score } from './logic/search.js';
+import { collusionFactor, collusionReason } from './logic/collusion.js';
 import { Reputation, START_POINTS, PUBLISH_DEPOSIT, REWARDS, trustOf, tierOf } from './reputation.js';
 
 export class HttpError extends Error {
@@ -1106,10 +1107,10 @@ export class Caiguo {
 
   // ───────────────────────── 修订提案 ─────────────────────────
 
-  // 贡献分：只奖励“别人”的真实使用；每个人对每篇攻略的同类信号只算一次；新手的信号打对折
+  // 贡献分：只奖励“别人”的真实使用；每个人对每篇攻略的同类信号只算一次；新手的信号打对折；互刷环再降权
   rewardRun(g, agent, outcome, rating) {
     if (agent.owner_id === g.author_owner_id) return;
-    const trust = trustOf(this.rep.points(agent.owner_id));
+    const trust = this.signalTrust(agent.owner_id, g.author_owner_id);
     const author = g.author_owner_id;
     if (outcome === 'success') {
       this.rep.add(author, REWARDS.firstVerifiedRefund, '押金退回：攻略第一次被他人实测成功', `deposit-refund:${g.id}`, g.id);
@@ -1117,6 +1118,78 @@ export class Caiguo {
     }
     if (rating === 'helpful') this.rep.add(author, REWARDS.helpful * trust, '攻略被评价“有帮助”', `helpful:${g.id}:${agent.owner_id}`, g.id);
     if (rating === 'misleading') this.rep.add(author, REWARDS.misleading * trust, '攻略被评价“有误导”', `misleading:${g.id}:${agent.owner_id}`, g.id);
+  }
+
+  // 一对账号之间的正向往来（有用评价 ∪ 实测成功，按笔记去重）+ 各自对外正向次数
+  pairPositiveStats(a, b) {
+    const toward = (from, to) => this.db.prepare(`SELECT COUNT(*) AS n FROM (
+      SELECT r.guide_id AS gid FROM ratings r JOIN guides g ON g.id = r.guide_id
+        WHERE r.owner_id = ? AND g.author_owner_id = ? AND r.rating = 'helpful'
+      UNION
+      SELECT r.guide_id FROM runs r JOIN guides g ON g.id = r.guide_id
+        WHERE r.owner_id = ? AND g.author_owner_id = ? AND r.outcome = 'success'
+          AND r.proposal_id IS NULL AND r.version IS NOT NULL
+    )`).get(from, to, from, to).n;
+    const outside = (from, exclude) => this.db.prepare(`SELECT COUNT(*) AS n FROM (
+      SELECT r.guide_id AS gid FROM ratings r JOIN guides g ON g.id = r.guide_id
+        WHERE r.owner_id = ? AND g.author_owner_id != ? AND g.author_owner_id != ? AND r.rating = 'helpful'
+      UNION
+      SELECT r.guide_id FROM runs r JOIN guides g ON g.id = r.guide_id
+        WHERE r.owner_id = ? AND g.author_owner_id != ? AND g.author_owner_id != ?
+          AND r.outcome = 'success' AND r.proposal_id IS NULL AND r.version IS NOT NULL
+    )`).get(from, exclude, from, from, exclude, from).n;
+    return {
+      a_to_b: toward(a, b),
+      b_to_a: toward(b, a),
+      a_outside: outside(a, b),
+      b_outside: outside(b, a),
+    };
+  }
+
+  // 新手 trust × 互刷降权；结果落在 (0, 1]
+  signalTrust(giverId, authorId) {
+    const base = trustOf(this.rep.points(giverId));
+    if (!giverId || !authorId || giverId === authorId) return base;
+    const stats = this.pairPositiveStats(giverId, authorId);
+    const factor = collusionFactor(stats);
+    return Math.round(base * factor * 1000) / 1000;
+  }
+
+  // 管理后台：列出当前会被降权的账号对（只读，处置走注册风控的限制/封禁）
+  collusionSuspects(limit = 40) {
+    const edges = this.db.prepare(`
+      SELECT r.owner_id AS a, g.author_owner_id AS b FROM ratings r JOIN guides g ON g.id = r.guide_id
+        WHERE r.rating = 'helpful' AND r.owner_id != g.author_owner_id
+      UNION
+      SELECT r.owner_id, g.author_owner_id FROM runs r JOIN guides g ON g.id = r.guide_id
+        WHERE r.outcome = 'success' AND r.proposal_id IS NULL AND r.version IS NOT NULL AND r.owner_id != g.author_owner_id
+    `).all();
+    const seen = new Set();
+    const out = [];
+    for (const { a, b } of edges) {
+      const key = a < b ? `${a}|${b}` : `${b}|${a}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const stats = this.pairPositiveStats(a, b);
+      const fab = collusionFactor(stats);
+      const fba = collusionFactor({
+        a_to_b: stats.b_to_a, b_to_a: stats.a_to_b,
+        a_outside: stats.b_outside, b_outside: stats.a_outside,
+      });
+      const factor = Math.min(fab, fba);
+      if (factor >= 1) continue;
+      const reason = collusionReason(stats, factor)
+        || collusionReason({
+          a_to_b: stats.b_to_a, b_to_a: stats.a_to_b,
+          a_outside: stats.b_outside, b_outside: stats.a_outside,
+        }, factor);
+      const oa = this.db.prepare('SELECT id, handle, risk_status, banned_at FROM owners WHERE id = ?').get(a);
+      const ob = this.db.prepare('SELECT id, handle, risk_status, banned_at FROM owners WHERE id = ?').get(b);
+      if (!oa || !ob) continue;
+      out.push({ a: oa, b: ob, stats, factor, reason });
+    }
+    out.sort((x, y) => x.factor - y.factor || (y.stats.a_to_b + y.stats.b_to_a) - (x.stats.a_to_b + x.stats.b_to_a));
+    return out.slice(0, Math.min(Math.max(Number(limit) || 40, 1), 100));
   }
 
   propose(agent, guideId, input) {
@@ -1957,12 +2030,11 @@ export class Caiguo {
       this.recordUse(gid, agent.owner_id, 'agent', { uses: 1 });
       if (cleanEnv && Object.keys(cleanEnv).length) this.mergeEnvProfile(agent.owner_id, cleanEnv);
       if (prev?.rating !== rating) {
-        const trust = trustOf(this.rep.points(agent.owner_id));
         // 不是攻略的笔记（测评、避坑、新鲜事…）没有“执行”，第一次被别人用过说有用时退押金
         if (rating === 'helpful') this.rep.add(g.author_owner_id, REWARDS.firstVerifiedRefund, '押金退回：笔记第一次被他人用过并评价有用', `deposit-refund:${gid}`, gid);
         if (rating === 'helpful') this.notify(g.author_owner_id, gid, 'got_useful', { by: agent.name, context: ctx });
+        // 有用/有误导的贡献分走 rewardRun（含新手打折 + 互刷降权）
         this.rewardRun(g, agent, null, rating);
-        void trust;
       }
     });
     if (rating === 'misleading' && g.author_owner_id !== agent.owner_id && prev?.rating !== 'misleading') {
