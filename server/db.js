@@ -243,7 +243,51 @@ CREATE TABLE IF NOT EXISTS reports (
   resolved_at TEXT
 );
 CREATE INDEX IF NOT EXISTS reports_target ON reports(target_type, target_id, status);
+CREATE TABLE IF NOT EXISTS appeals (
+  id TEXT PRIMARY KEY,
+  owner_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  target_type TEXT NOT NULL,
+  target_id TEXT NOT NULL,
+  guide_id TEXT,
+  reason TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'open',
+  resolution TEXT,
+  resolved_by TEXT,
+  resolved_note TEXT,
+  created_at TEXT NOT NULL,
+  resolved_at TEXT
+);
+CREATE INDEX IF NOT EXISTS appeals_status ON appeals(status, created_at);
+CREATE INDEX IF NOT EXISTS appeals_owner ON appeals(owner_id, status);
+CREATE INDEX IF NOT EXISTS appeals_target ON appeals(kind, target_id, status);
+CREATE TABLE IF NOT EXISTS guide_stats (
+  guide_id TEXT PRIMARY KEY,
+  helpful INTEGER NOT NULL DEFAULT 0,
+  neutral INTEGER NOT NULL DEFAULT 0,
+  misleading INTEGER NOT NULL DEFAULT 0,
+  saves INTEGER NOT NULL DEFAULT 0,
+  recommends INTEGER NOT NULL DEFAULT 0,
+  comments INTEGER NOT NULL DEFAULT 0,
+  fixes INTEGER NOT NULL DEFAULT 0,
+  open_proposals INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT
+);
+CREATE TABLE IF NOT EXISTS topic_packs (
+  id TEXT PRIMARY KEY,
+  slug TEXT NOT NULL UNIQUE,
+  title TEXT NOT NULL,
+  summary TEXT NOT NULL DEFAULT '',
+  tags TEXT NOT NULL DEFAULT '[]',
+  guide_ids TEXT NOT NULL DEFAULT '[]',
+  status TEXT NOT NULL DEFAULT 'draft',
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS topic_packs_status ON topic_packs(status, updated_at);
 CREATE TABLE IF NOT EXISTS presence (
+
   owner_id TEXT NOT NULL,
   guide_id TEXT NOT NULL,
   viewed_at TEXT NOT NULL,
@@ -279,6 +323,16 @@ const COLUMNS = [
   ['ratings', 'context', 'TEXT'],
   ['ratings', 'env', "TEXT NOT NULL DEFAULT '{}'"],
   ['ratings', 'agent_id', 'TEXT'],
+  // 注册风控：记下注册时的 IP / 设备哈希，可疑时进人工复核
+  ['owners', 'signup_ip', 'TEXT'],
+  ['owners', 'signup_device', 'TEXT'],
+  ['owners', 'risk_status', 'TEXT'],
+  ['owners', 'risk_flags', 'TEXT'],
+  ['owners', 'risk_note', 'TEXT'],
+  ['owners', 'risk_reviewed_at', 'TEXT'],
+  ['owners', 'risk_reviewed_by', 'TEXT'],
+  ['owners', 'deleted_at', 'TEXT'],
+  ['owners', 'env_profile', "TEXT NOT NULL DEFAULT '{}'"],
 ];
 
 export function openDb(path = ':memory:') {
@@ -292,6 +346,10 @@ export function openDb(path = ':memory:') {
   }
   // 一个手机号只能有一个账号
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS owners_phone ON owners(phone_hash) WHERE phone_hash IS NOT NULL');
+  db.exec('CREATE INDEX IF NOT EXISTS owners_signup_ip ON owners(signup_ip, created_at)');
+  db.exec('CREATE INDEX IF NOT EXISTS owners_signup_device ON owners(signup_device, created_at)');
+  db.exec('CREATE INDEX IF NOT EXISTS owners_risk ON owners(risk_status, created_at)');
+  db.exec('CREATE INDEX IF NOT EXISTS owners_deleted ON owners(deleted_at)');
   return db;
 }
 

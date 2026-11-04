@@ -1,0 +1,38 @@
+{
+  "manifest_version": 3,
+  "name": "踩过 · 跟做",
+  "description": "在任意网页旁显示踩过攻略步骤；可同步 Agent 进行中的跟做链接。不录制操作。",
+  "version": "0.1.1",
+  "action": {
+    "default_title": "踩过跟做",
+    "default_popup": "popup.html"
+  },
+  "permissions": [
+    "storage",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "http://localhost/*",
+    "http://127.0.0.1/*",
+    "https://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "css": [
+        "content.css"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

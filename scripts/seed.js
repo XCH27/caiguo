@@ -481,6 +481,17 @@ svc.report(leo.owner_id, { target_type: 'guide', target_id: cf.guide_id, reason:
 at(2.5, 10);
 svc.resolveReports(ops.owner_id, { target_type: 'guide', target_id: cf.guide_id, action: 'dismiss', note: '截图不清楚请在评论区提出，作者可以更新' });
 
+// 专题合集：编辑按话题整理（不是推荐榜）
+at(0.2, 11);
+svc.upsertTopicPack(ops.owner_id, {
+  slug: 'cloud-free-tier',
+  title: '免费云主机上手',
+  summary: '围绕免费额度云主机与边缘平台的开户、配置笔记，按编辑整理顺序排列。',
+  tags: ['云主机', 'Cloudflare', 'GitHub'],
+  guide_ids: [oracle.guide_id, cf.guide_id, gha.guide_id],
+  status: 'published',
+});
+
 console.log(`演示：待确认发布 ${pending.approve_path}；进行中的执行跟做页 ${liveRun.follow_path}`);
 console.log(`演示：阿杰的控制台登录链接（15 分钟有效）在服务启动后运行 node scripts/login-link.js 阿杰 生成`);
 

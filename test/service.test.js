@@ -673,6 +673,74 @@ test('注册风控：默认不接受虚拟运营商号段；主人可以写一�
   assert.ok(!bio.includes('13812345678'), '简介里的手机号被打码');
 });
 
+test('注册风控：同 IP / 设备新号限流并进复核队列；管理员可放行、限制或封禁', () => {
+  let clock = Date.parse('2026-11-03T00:00:00Z');
+  const svc = new Caiguo(openDb(':memory:'), { now: () => clock });
+  const adminReg = svc.registerAgent({ name: '运营Agent', owner_handle: '运营风控', verified: true, model: '测试模型' });
+  svc.db.prepare("UPDATE owners SET role = 'admin' WHERE id = ?").run(adminReg.owner_id);
+
+  const signup = (phone, { ip, device }) => {
+    clock += 120e3;
+    const sent = svc.sendLoginCode(phone, { ip });
+    return svc.loginWithCode(phone, sent.dev_code, { ip, device });
+  };
+
+  // 同 IP + 同设备：第 1 个正常，第 2 个起标 review
+  const a1 = signup('13800000001', { ip: '203.0.113.9', device: 'dev-a' });
+  assert.equal(svc.db.prepare('SELECT risk_status FROM owners WHERE id = ?').get(a1.owner_id).risk_status, null);
+  const a2 = signup('13800000002', { ip: '203.0.113.9', device: 'dev-a' });
+  assert.equal(svc.db.prepare('SELECT risk_status FROM owners WHERE id = ?').get(a2.owner_id).risk_status, 'review');
+  assert.equal(svc.signupRiskCounts().review, 1);
+
+  // 同设备、不同 IP：第 3 个仍可建（设备日限 3），第 4 个拒
+  signup('13800000003', { ip: '203.0.113.10', device: 'dev-a' });
+  clock += 120e3;
+  const s4 = svc.sendLoginCode('13800000004', { ip: '203.0.113.11' });
+  assert.throws(() => svc.loginWithCode('13800000004', s4.dev_code, { ip: '203.0.113.11', device: 'dev-a' }), /设备今天注册/);
+
+  // 同 IP、不同设备：每小时最多 3 个（该 IP 已有 a1、a2，再建 1 个到上限，再一个撞小时限）
+  signup('13800000005', { ip: '203.0.113.9', device: 'dev-b' });
+  clock += 120e3;
+  const s6 = svc.sendLoginCode('13800000006', { ip: '203.0.113.9' });
+  assert.throws(() => svc.loginWithCode('13800000006', s6.dev_code, { ip: '203.0.113.9', device: 'dev-c' }), /网络注册太频繁/);
+
+  // 过一小时后同 IP 还能再注册，但 24h 日限 5：当前该 IP 已有 3 个，再 2 个到日限，第 6 个拒
+  clock += 3600e3;
+  signup('13800000007', { ip: '203.0.113.9', device: 'dev-d' });
+  signup('13800000008', { ip: '203.0.113.9', device: 'dev-e' });
+  clock += 120e3;
+  const s9 = svc.sendLoginCode('13800000009', { ip: '203.0.113.9' });
+  assert.throws(() => svc.loginWithCode('13800000009', s9.dev_code, { ip: '203.0.113.9', device: 'dev-f' }), /网络今天注册/);
+
+  const q = svc.signupRiskQueue({ status: 'review' });
+  assert.ok(q.some((x) => x.id === a2.owner_id && x.flags.includes('ip_burst')));
+
+  // 管理员限制写操作，放行后恢复；封禁写入 banned_at
+  assert.throws(() => svc.resolveSignupRisk(adminReg.owner_id, { owner_id: a2.owner_id, action: 'limit' }), /原因/);
+  svc.resolveSignupRisk(adminReg.owner_id, { owner_id: a2.owner_id, action: 'limit', note: '同网短时多号，先限制' });
+  const limitedKey = svc.registerAgent({ name: '受限Agent', owner_id: a2.owner_id, model: '测试模型' }).api_key;
+  const limited = svc.authenticate(limitedKey);
+  svc.updateSettings(a2.owner_id, { require_publish_approval: false });
+  assert.throws(() => svc.publishGuide(limited, {
+    kind: 'pitfall', title: '不该发出去', summary: 's', tags: ['测'], pitfalls: [{ symptom: 'x', fix: 'y' }],
+  }), /限制/);
+  svc.resolveSignupRisk(adminReg.owner_id, { owner_id: a2.owner_id, action: 'clear', note: '人审通过' });
+  assert.equal(svc.db.prepare('SELECT risk_status FROM owners WHERE id = ?').get(a2.owner_id).risk_status, 'cleared');
+  assert.doesNotThrow(() => svc.publishGuide(limited, {
+    kind: 'pitfall', title: '复核通过后能发', summary: 's', tags: ['测'], pitfalls: [{ symptom: 'x', fix: 'y' }],
+  }));
+  const flagged = svc.signupRiskQueue({ status: 'review' }).find((x) => x.flags.length);
+  const banTarget = flagged?.id ?? a1.owner_id;
+  // 另建一个待复核号专门封禁：换全新 IP/设备
+  clock += 3600e3;
+  const b1 = signup('13900000001', { ip: '198.51.100.1', device: 'ban-dev' });
+  const b2 = signup('13900000002', { ip: '198.51.100.1', device: 'ban-dev' });
+  svc.resolveSignupRisk(adminReg.owner_id, { owner_id: b2.owner_id, action: 'ban', note: '批量注册' });
+  assert.ok(svc.db.prepare('SELECT banned_at FROM owners WHERE id = ?').get(b2.owner_id).banned_at);
+  assert.ok(svc.signupRiskQueue({ status: 'recent' }).length >= 5);
+  assert.ok(svc.signupRiskQueue({ status: 'limited' }).some((x) => x.id === b2.owner_id));
+})
+
 test('举报和管理：举报进队列；管理员下架笔记、隐藏评论、封禁账号；举报人和作者都收到结果', () => {
   const { svc, mk } = setup();
   const a = mk('作者');
@@ -722,6 +790,83 @@ test('举报和管理：举报进队列；管理员下架笔记、隐藏评论�
   assert.ok(svc.comment(w, guide_id, { type: 'add', body: '解封后正常补充：第 2 步可以用 Gmail' }).comment_id);
 });
 
+test('申诉：被下架/隐藏/封禁/扣分可申诉；管理员维持或撤销；撤销恢复内容并退回扣分；通知三处', () => {
+  const { svc, mk } = setup();
+  const a = mk('作者');
+  const u = mk('读者');
+  const admin = mk('运营');
+  svc.db.prepare("UPDATE owners SET role = 'admin' WHERE id = ?").run(admin.owner_id);
+  const { guide_id } = svc.publishGuide(a, GUIDE);
+  const c = svc.comment(a, guide_id, { type: 'add', body: '这条评论稍后会被隐藏，用来测申诉' });
+  // 扣分：用 misleading 评价制造负分，方便测 score 申诉
+  svc.react(u, guide_id, { action: 'misleading', context: '照着做发现步骤不对' });
+  const led = svc.db.prepare('SELECT id, delta FROM ledger WHERE owner_id = ? AND delta < 0 ORDER BY id DESC').get(a.owner_id);
+  assert.ok(led && led.delta < 0, '作者应有一笔扣分');
+
+  // 下架笔记 + 隐藏评论 + 封禁（另开一人）
+  const banned = mk('被封');
+  svc.comment(banned, guide_id, { type: 'add', body: '广告引流加微信领账号' });
+  // 先举报并处理笔记与评论
+  svc.report(u.owner_id, { target_type: 'guide', target_id: guide_id, reason: 'danger' });
+  svc.resolveReports(admin.owner_id, { target_type: 'guide', target_id: guide_id, action: 'remove', note: '危险操作' });
+  svc.report(u.owner_id, { target_type: 'comment', target_id: c.comment_id, reason: 'spam' });
+  svc.resolveReports(admin.owner_id, { target_type: 'comment', target_id: c.comment_id, action: 'remove', note: '广告' });
+  // 封禁另一个账号（通过举报其评论）
+  const bc = svc.db.prepare("SELECT id FROM comments WHERE owner_id = ? ORDER BY created_at DESC").get(banned.owner_id);
+  svc.report(u.owner_id, { target_type: 'comment', target_id: bc.id, reason: 'spam' });
+  svc.resolveReports(admin.owner_id, { target_type: 'comment', target_id: bc.id, action: 'ban', note: '引流广告' });
+
+  // 可申诉列表
+  const actionable = svc.appealableOf(a.owner_id);
+  assert.ok(actionable.some((x) => x.kind === 'guide_removed' && x.target_id === guide_id));
+  assert.ok(actionable.some((x) => x.kind === 'comment_hidden' && x.target_id === c.comment_id));
+  assert.ok(actionable.some((x) => x.kind === 'score' && x.target_id === String(led.id)));
+  assert.ok(svc.appealableOf(banned.owner_id).some((x) => x.kind === 'ban'));
+
+  // 校验：理由太短、非当事人、重复 open
+  assert.throws(() => svc.submitAppeal(a.owner_id, { kind: 'guide_removed', target_id: guide_id, reason: '不对' }), /10/);
+  assert.throws(() => svc.submitAppeal(u.owner_id, { kind: 'guide_removed', target_id: guide_id, reason: '这不是我的笔记却要申诉' }), /不存在/);
+  const ap1 = svc.submitAppeal(a.owner_id, { kind: 'guide_removed', target_id: guide_id, reason: '这篇没有危险操作，第 4 步只是备份不是删库' });
+  assert.throws(() => svc.submitAppeal(a.owner_id, { kind: 'guide_removed', target_id: guide_id, reason: '再申诉一次应该被拒绝因为已在处理中' }), /已经在申诉/);
+
+  // 管理员只能处理；维持必须写原因
+  assert.throws(() => svc.resolveAppeal(u.owner_id, { appeal_id: ap1.appeal_id, action: 'uphold', note: 'x' }), /管理员/);
+  assert.throws(() => svc.resolveAppeal(admin.owner_id, { appeal_id: ap1.appeal_id, action: 'uphold' }), /理由/);
+  svc.resolveAppeal(admin.owner_id, { appeal_id: ap1.appeal_id, action: 'uphold', note: '经复核第 4 步确有风险，维持下架' });
+  assert.equal(svc.myGuides(a.owner_id).find((g) => g.id === guide_id)?.status, 'removed');
+  assert.equal(svc.messages(a.owner_id)[0].kind, 'appeal_resolved');
+  assert.equal(svc.messages(a.owner_id)[0].result, 'uphold');
+
+  // 再次申诉并撤销：笔记恢复公开
+  const ap2 = svc.submitAppeal(a.owner_id, { kind: 'guide_removed', target_id: guide_id, reason: '我已删掉危险步骤，请再审一次恢复公开' });
+  svc.resolveAppeal(admin.owner_id, { appeal_id: ap2.appeal_id, action: 'reverse', note: '已确认安全，恢复' });
+  assert.equal(svc.search('注册').some((g) => g.id === guide_id), true);
+  assert.equal(svc.messages(a.owner_id)[0].result, 'reverse');
+
+  // 评论隐藏申诉成立
+  const apC = svc.submitAppeal(a.owner_id, { kind: 'comment_hidden', target_id: c.comment_id, reason: '这条不是广告，是正常补充说明' });
+  svc.resolveAppeal(admin.owner_id, { appeal_id: apC.appeal_id, action: 'reverse' });
+  assert.ok(svc.commentsOf(guide_id).some((x) => x.id === c.comment_id));
+
+  // 封禁申诉成立 → 解封
+  const apB = svc.submitAppeal(banned.owner_id, { kind: 'ban', target_id: banned.owner_id, reason: '那条评论是误发，愿意删除并保证不再发广告' });
+  svc.resolveAppeal(admin.owner_id, { appeal_id: apB.appeal_id, action: 'reverse', note: '解封观察' });
+  assert.equal(svc.bannedOwners().some((b) => b.id === banned.owner_id), false);
+  assert.ok(svc.comment(banned, guide_id, { type: 'add', body: '解封后正常提问：第 2 步邮箱收不到验证码怎么办' }).comment_id);
+
+  // 扣分申诉成立 → 退回
+  const before = svc.rep.points(a.owner_id);
+  const apS = svc.submitAppeal(a.owner_id, { kind: 'score', target_id: String(led.id), reason: '评价有误导不成立，步骤按原文可以完成' });
+  svc.resolveAppeal(admin.owner_id, { appeal_id: apS.appeal_id, action: 'reverse' });
+  assert.ok(svc.rep.points(a.owner_id) > before - 0.01);
+  assert.throws(() => svc.submitAppeal(a.owner_id, { kind: 'score', target_id: String(led.id), reason: '已经退回过了还想再申诉一次不行' }), /退回/);
+
+  // 队列与非管理员
+  assert.equal(svc.appealsQueue({ status: 'done' }).length >= 4, true);
+  assert.equal(svc.appealsQueue({ status: 'open' }).length, 0);
+});
+
+
 test('评论贴图：只收平台上传的图片，显示在评论里', () => {
   const { svc, mk } = setup();
   const a = mk('作者');
@@ -752,4 +897,499 @@ test('卡片缓存：打开后笔记有新互动立即更新，其他统计最�
   assert.equal(svc.search('')[0].uses_30d, uses, '调用次数在缓存期内不更新');
   clock += 31000;
   assert.equal(svc.search('')[0].uses_30d, uses + 3, '过了 cardTtl 就更新');
+});
+
+test('自助注销：软删、公开笔记匿名、草稿清除、会话与 Agent 失效、手机号墓碑 30 天', () => {
+  let clock = Date.parse('2026-10-01T00:00:00Z');
+  const svc = new Caiguo(openDb(':memory:'), { now: () => clock, requireVerified: true });
+  const phone = '13900001111';
+  const code1 = svc.sendLoginCode(phone, { ip: '1.1.1.1' }).dev_code;
+  const sess = svc.loginWithCode(phone, code1, { ip: '1.1.1.1', device: 'dev-a' });
+  const ownerId = sess.owner_id;
+  const me = svc.sessionOwner(sess.session);
+  assert.equal(me.owner_id, ownerId);
+
+  // 接一个 Agent，发公开笔记、草稿、评论
+  const pair = svc.createPairCode(ownerId);
+  const reg = svc.registerAgent({ name: '注销测Agent', model: '测试模型' });
+  const agent = svc.authenticate(reg.api_key);
+  svc.connectAgent(agent, { code: pair.code, model: '测试模型' });
+  const bound = svc.authenticate(reg.api_key);
+  svc.updateSettings(ownerId, { require_publish_approval: false });
+  const { guide_id } = svc.publishGuide(bound, {
+    title: '公开后要保留的笔记',
+    summary: '测注销匿名',
+    tags: ['注销测'],
+    applies_to: { region: '中国大陆' },
+    steps: [{ action: '打开页', expect: '看到' }],
+    pitfalls: [],
+  });
+  const draft = svc.publishGuide(bound, {
+    title: '未公开草稿应删除',
+    summary: '草稿',
+    tags: ['注销测'],
+    applies_to: { region: '中国大陆' },
+    steps: [{ action: '打开页', expect: '看到' }],
+    pitfalls: [],
+    draft: true,
+  });
+  const reader = (() => {
+    const r = svc.registerAgent({ name: '读者', owner_handle: '读者甲', verified: true, model: '测试模型' });
+    svc.updateSettings(r.owner_id, { require_publish_approval: false });
+    return svc.authenticate(r.api_key);
+  })();
+  const cm = svc.comment(bound, guide_id, { type: 'add', body: '作者自己的补充，注销后应匿名显示' });
+  const otherCm = svc.comment(reader, guide_id, { type: 'ask', body: '别人的提问应保留，作者仍能被看到是已注销' });
+
+  assert.throws(() => svc.deleteAccount(ownerId, { confirm: '删掉' }), /注销/);
+  const del = svc.deleteAccount(ownerId, { confirm: '注销' });
+  assert.equal(del.deleted, true);
+  assert.equal(del.phone_cooldown_days, 30);
+
+  // 会话失效、Agent 失效
+  assert.equal(svc.sessionOwner(sess.session), null);
+  assert.throws(() => svc.authenticate(reg.api_key), /无效|停用/);
+
+  // 公开笔记还在，作者显示「已注销用户」；草稿没了
+  const g = svc.getGuide(guide_id);
+  assert.equal(g.author.owner, '已注销用户');
+  assert.equal(g.author.deleted, true);
+  assert.ok(svc.search('公开后要保留').some((x) => x.id === guide_id));
+  assert.equal(svc.db.prepare('SELECT 1 FROM guides WHERE id = ?').get(draft.guide_id), undefined);
+
+  // 评论保留；作者评论匿名，别人的评论还在
+  const comments = svc.commentsOf(guide_id);
+  assert.ok(comments.some((c) => c.id === cm.comment_id && c.owner === '已注销用户' && c.deleted));
+  assert.ok(comments.some((c) => c.id === otherCm.comment_id && c.owner === '读者甲'));
+
+  // 主页打不开
+  assert.throws(() => svc.profile('已注销用户'), /不存在/);
+
+  // 冷却期内不能重注册
+  const code2 = (() => {
+    try { return svc.sendLoginCode(phone, { ip: '1.1.1.1' }).dev_code; }
+    catch (e) { assert.match(e.message, /注销|重新注册/); return null; }
+  })();
+  if (code2) assert.throws(() => svc.loginWithCode(phone, code2, { ip: '1.1.1.1', device: 'dev-a' }), /注销|重新注册/);
+  else assert.ok(true);
+
+  // 31 天后可重新注册成新账号
+  clock += 31 * DAY;
+  const code3 = svc.sendLoginCode(phone, { ip: '2.2.2.2' }).dev_code;
+  const again = svc.loginWithCode(phone, code3, { ip: '2.2.2.2', device: 'dev-b' });
+  assert.equal(again.created, true);
+  assert.notEqual(again.owner_id, ownerId);
+  // 旧公开笔记仍挂在软删账号上、仍匿名
+  assert.equal(svc.getGuide(guide_id).author.owner, '已注销用户');
+});
+
+test('关注标签变更：有误导与修订合并进入关注者事实流', () => {
+  const { svc, mk } = setup();
+  const author = mk('作者云');
+  const follower = mk('关注者');
+  svc.follow(follower.owner_id, { type: 'tag', target: 'Cloudflare' });
+  const { guide_id } = svc.publishGuide(author, {
+    ...GUIDE,
+    title: 'Cloudflare Workers 冷启动避坑',
+    tags: ['Cloudflare', 'Workers'],
+  });
+  // 别人点「有误导」→ 关注该标签的人收到事实流
+  const other = mk('实测乙');
+  svc.react(other, guide_id, { action: 'misleading', context: '实测后发现第 2 步按钮文案已变' });
+  const msgs = svc.messages(follower.owner_id);
+  assert.ok(msgs.some((m) => m.kind === 'followed_mismatch' && m.tag === 'Cloudflare' && m.guide_id === guide_id));
+
+  // 修订合并 → followed_updated
+  const fixer = mk('修订者');
+  const prop = svc.propose(fixer, guide_id, {
+    kind: 'fix',
+    rationale: '第 2 步按钮已改名，按新文案改',
+    base_version: 1,
+    ops: [{ op: 'replace_step', step_id: 's2', set: { action: '点击“发送验证码”', expect: '收到邮件' } }],
+    evidence: { outcome: 'success', env: { region: '中国大陆' } },
+  });
+  // 作者直接合并（若 propose 对作者/高风险需要人工）
+  const open = svc.db.prepare("SELECT id FROM proposals WHERE guide_id = ? AND status = 'open'").get(guide_id);
+  if (open) {
+    svc.mergeProposal(open.id, { by: author.owner_id });
+  } else if (prop.status === 'merged') {
+    // already merged
+  } else {
+    // author edit path — force merge if needed
+    assert.fail(`unexpected proposal status ${prop.status}`);
+  }
+  const msgs2 = svc.messages(follower.owner_id);
+  assert.ok(msgs2.some((m) => m.kind === 'followed_updated' && m.tag === 'Cloudflare'));
+});
+
+
+test('中文检索：标题整串命中优先于正文沾边；无关查询仍为空', async () => {
+  const { score, tokenize } = await import('../server/logic/search.js');
+  assert.ok(tokenize('银联卡').has('银联'));
+  assert.ok(tokenize('银联卡').has('联卡'));
+  const titleHit = {
+    title: '银联卡注册海外云失败怎么办',
+    tags: ['支付'],
+    search_text: '银联卡注册海外云失败怎么办\n支付\n换双币卡再试',
+  };
+  const bodyOnly = {
+    title: '完全另一回事的笔记',
+    tags: ['杂谈'],
+    search_text: '完全另一回事的笔记\n杂谈\n文中偶尔提到银联卡三个字而已',
+  };
+  assert.ok(score('银联卡注册', titleHit) > score('银联卡注册', bodyOnly));
+  assert.equal(score('量子纠缠冰箱', titleHit), 0);
+
+  const { svc, mk } = setup();
+  const a = mk('检索作者');
+  svc.publishGuide(a, { ...GUIDE, title: '银联卡注册海外云失败怎么办', tags: ['支付', '云服务'], summary: '标题党相关' });
+  svc.publishGuide(a, {
+    ...GUIDE,
+    title: '周末去哪玩',
+    tags: ['生活'],
+    summary: '文中提到银联卡三个字',
+    steps: GUIDE.steps,
+    pitfalls: [{ symptom: '银联卡被拒', fix: '换卡' }],
+  });
+  const hits = svc.search('银联卡注册');
+  assert.ok(hits.length >= 1);
+  assert.match(hits[0].title, /银联卡注册/);
+});
+
+test('guide_stats：互动写入后汇总表与卡片一致，冷读不再依赖多次 COUNT', () => {
+  const { svc, mk } = setup();
+  const a = mk('统计作者');
+  const u = mk('统计读者');
+  const { guide_id } = svc.publishGuide(a, GUIDE);
+  svc.refreshGuideStats(guide_id);
+  let st = svc.db.prepare('SELECT * FROM guide_stats WHERE guide_id = ?').get(guide_id);
+  assert.equal(st.helpful, 0);
+  assert.equal(st.saves, 0);
+  assert.equal(st.comments, 0);
+
+  svc.react(u, guide_id, { action: 'useful', context: '按步骤做成了' });
+  svc.saveGuide(u.owner_id, guide_id);
+  svc.comment(u, guide_id, { type: 'add', body: '补充：用企业邮箱更稳' });
+  st = svc.statsOf(guide_id); // 脏标记延后刷新
+  assert.equal(st.helpful, 1);
+  assert.equal(st.saves, 1);
+  assert.equal(st.comments, 1);
+  assert.equal(svc.interactionsOf(guide_id).useful, 1);
+  assert.equal(svc.cardOf(svc.guideRow(guide_id)).useful, 1);
+  assert.equal(svc.cardOf(svc.guideRow(guide_id)).saves, 1);
+
+  // 批量预加载路径与单篇一致
+  const preload = svc.preloadForCards([svc.guideRow(guide_id)]);
+  assert.equal(preload.stats.get(guide_id).helpful, 1);
+  assert.ok(preload.versions.has(guide_id));
+});
+
+test('为你推荐冷启动：无行为信号时用近期热门话题弱偏置，并给出事实理由', () => {
+  const { svc, tick, mk } = setup();
+  const a = mk('热门作者');
+  const b = mk('热门作者乙');
+  const newbie = mk('新用户甲');
+  // 旧热门：时间推远，冷启动应被「最近更新」压过
+  svc.publishGuide(a, { ...GUIDE, title: 'Cloudflare 隧道入门', tags: ['Cloudflare', '网络'] });
+  svc.publishGuide(b, { ...GUIDE, title: 'Workers 定时任务', tags: ['Cloudflare', 'Workers'] });
+  tick(40);
+  const fresh = svc.publishGuide(a, { ...GUIDE, title: '刚写的生活帖', tags: ['生活'] }).guide_id;
+  const hot = svc.hotTopics({ limit: 5 });
+  assert.ok(hot.some((t) => t.tag === 'Cloudflare'));
+  const fy = svc.forYou(newbie.owner_id, { limit: 10 });
+  assert.ok(fy.length >= 1);
+  assert.equal(fy[0].id, fresh, '冷启动应以新鲜度为主，不让旧热门盖过新帖');
+  assert.ok(fy.some((g) => /热门话题|最近更新/.test(g.reason)));
+});
+
+test('为你推荐：真实关注兴趣压过冷启动热门', () => {
+  const { svc, mk } = setup();
+  const a = mk('兴趣作者甲');
+  const b = mk('兴趣作者乙');
+  const user = mk('有兴趣用户');
+  const hotG = svc.publishGuide(a, { ...GUIDE, title: '全站热门 Cloudflare', tags: ['Cloudflare'] }).guide_id;
+  const niche = svc.publishGuide(b, { ...GUIDE, title: '小众 Oracle 手册', tags: ['Oracle'] }).guide_id;
+  svc.publishGuide(a, { ...GUIDE, title: '又一篇 Cloudflare', tags: ['Cloudflare', '网络'] });
+  svc.follow(user.owner_id, { type: 'tag', target: 'Oracle' });
+  const fy = svc.forYou(user.owner_id, { limit: 10 });
+  const nicheRank = fy.findIndex((g) => g.id === niche);
+  const hotRank = fy.findIndex((g) => g.id === hotG);
+  assert.ok(nicheRank >= 0, '关注标签应出现');
+  assert.ok(hotRank < 0 || nicheRank < hotRank, '真实兴趣应排在仅热门之上');
+  assert.ok(fy.some((g) => /关注/.test(g.reason) || g.tags.includes('Oracle')));
+});
+
+test('环境画像：执行回报持久化；推荐用画像而非仅最近 run.env', () => {
+  const { svc, mk } = setup();
+  const author = mk('画像作者');
+  const user = mk('画像用户');
+  const { guide_id } = svc.publishGuide(author, {
+    ...GUIDE,
+    title: '美国区 Cloudflare 隧道',
+    tags: ['Cloudflare', '网络'],
+    applies_to: { region: 'US', os: 'macOS' },
+  });
+  svc.publishGuide(author, { ...GUIDE, title: '国内生活帖', tags: ['生活'], applies_to: { region: 'CN' } });
+
+  // 无行为时冷启动；写入环境画像后应偏好 applies_to 匹配
+  svc.updateEnvProfile(user.owner_id, { env: { region: 'US', os: 'macOS' }, skills: ['tunnel-kit'] });
+  const profile = svc.envProfileOf(user.owner_id);
+  assert.equal(profile.env.region, 'US');
+  assert.deepEqual(profile.skills, ['tunnel-kit']);
+
+  const interests = svc.interestsOf(user.owner_id);
+  assert.equal(interests.env.region, 'US');
+  assert.ok(interests.weights['tunnel-kit'] >= 1.5);
+
+  // 清空 runs 也不丢画像：直接读 owners.env_profile
+  svc.db.prepare('DELETE FROM runs WHERE owner_id = ?').run(user.owner_id);
+  assert.equal(svc.envProfileOf(user.owner_id).env.os, 'macOS');
+
+  // reportRun 合并进画像
+  svc.reportRun(user, guide_id, {
+    outcome: 'success',
+    env: { region: 'US', os: 'Linux' },
+    step_results: [],
+  });
+  assert.equal(svc.envProfileOf(user.owner_id).env.os, 'Linux');
+
+  // reportUsage 未匹配笔记的技能名也进画像
+  svc.reportUsage(user, [{ skill_name: 'browser', count: 3 }]);
+  assert.ok(svc.envProfileOf(user.owner_id).skills.includes('browser'));
+
+  const fy = svc.forYou(user.owner_id, { limit: 10 });
+  assert.ok(fy.some((g) => g.id === guide_id));
+  assert.ok(fy.some((g) => /环境|技能|Cloudflare|热门/.test(g.reason) || g.tags.includes('Cloudflare')));
+});
+
+test('usage 批量预取与 similarTitles：列表不逐篇打 usageOf，发布不去装配卡片', () => {
+  const { svc, mk } = setup();
+  const a = mk('用量作者甲');
+  const b = mk('用量作者乙');
+  const c = mk('用量作者丙');
+  const u = mk('用量读者');
+  const { guide_id: g1 } = svc.publishGuide(a, { ...GUIDE, title: '银联卡注册海外云 A' });
+  const { guide_id: g2 } = svc.publishGuide(b, { ...GUIDE, title: '银联卡注册海外云 B' });
+  svc.recordUse(g1, u.owner_id, 'agent', { views: 1, uses: 4 });
+  svc.recordUse(g2, u.owner_id, 'agent', { views: 1, uses: 2 });
+
+  const preload = svc.preloadForCards([svc.guideRow(g1), svc.guideRow(g2)]);
+  assert.equal(preload.usage.get(g1).uses_30d, 4);
+  assert.equal(preload.usage.get(g2).uses_30d, 2);
+  assert.equal(preload.usage.get(g1).agent_reads_30d, 1);
+  assert.equal(svc.cardOf(svc.guideRow(g1), preload).uses_30d, 4);
+
+  const sim = svc.similarTitles('银联卡注册海外云', { limit: 3, minScore: 6 });
+  assert.ok(sim.length >= 1);
+  assert.ok(sim.every((x) => x.id && x.title && x.score >= 6));
+  // 再发一篇应带回 similar，且不依赖 search 卡片装配
+  const pub = svc.publishGuide(c, { ...GUIDE, title: '银联卡注册海外云 C' });
+  assert.ok(Array.isArray(pub.similar));
+  assert.ok(pub.similar.some((x) => /银联卡注册/.test(x.title)));
+});
+
+test('专题合集：管理员创建/发布/列表/详情；草稿对外不可见；非管理员拒绝；D7 禁结论词', () => {
+  const { svc, mk } = setup();
+  const admin = mk('专题管理员');
+  svc.db.prepare("UPDATE owners SET role = 'admin' WHERE id = ?").run(admin.owner_id);
+  const author = mk('专题作者');
+  const a = svc.publishGuide(author, { ...GUIDE, title: '专题测 A：开云主机' });
+  const b = svc.publishGuide(author, { ...GUIDE, title: '专题测 B：绑信用卡', tags: ['支付'] });
+  const user = mk('路人');
+
+  assert.throws(() => svc.upsertTopicPack(user.owner_id, {
+    slug: 'cloud-lab', title: '云主机实验', summary: '话题整理', guide_ids: [a.guide_id], status: 'published',
+  }), (e) => e.status === 403);
+
+  assert.throws(() => svc.upsertTopicPack(admin.owner_id, {
+    slug: 'cloud-lab', title: '强烈推荐云主机', summary: '最好的合集', guide_ids: [a.guide_id], status: 'draft',
+  }), (e) => /推荐|最好/.test(e.message));
+
+  const draft = svc.upsertTopicPack(admin.owner_id, {
+    slug: 'cloud-lab',
+    title: '云主机实验场',
+    summary: '开户与配置相关笔记',
+    tags: '云主机,实验',
+    guide_ids: `${a.guide_id} ${b.guide_id}`,
+    status: 'draft',
+  });
+  assert.equal(draft.status, 'draft');
+  assert.equal(draft.guides_count, 2);
+  assert.throws(() => svc.getTopicPack('cloud-lab'), (e) => e.status === 404);
+  assert.equal(svc.listTopicPacks({ status: 'published' }).length, 0);
+
+  const pub = svc.upsertTopicPack(admin.owner_id, {
+    id: draft.id,
+    slug: 'cloud-lab',
+    title: '云主机实验场',
+    summary: '开户与配置相关笔记',
+    tags: ['云主机'],
+    guide_ids: [b.guide_id, a.guide_id],
+    status: 'published',
+  });
+  assert.equal(pub.status, 'published');
+  const listed = svc.listTopicPacks({ status: 'published' });
+  assert.equal(listed.length, 1);
+  assert.equal(listed[0].slug, 'cloud-lab');
+
+  const got = svc.getTopicPack('cloud-lab');
+  assert.equal(got.guides.length, 2);
+  assert.equal(got.guides[0].id, b.guide_id);
+  assert.equal(got.guides[1].id, a.guide_id);
+
+  svc.deleteTopicPack(admin.owner_id, pub.id);
+  assert.equal(svc.listTopicPacks({ status: 'all' }).length, 0);
+});
+
+test('互刷环：封闭互评的正向信号降权；对外有往来则不降', () => {
+  const { svc, mk } = setup();
+  const a = mk('甲号');
+  const b = mk('乙号');
+  const outsider = mk('路人');
+  svc.rep.add(a.owner_id, 200, '测试抬分', 'boost-a');
+  svc.rep.add(b.owner_id, 200, '测试抬分', 'boost-b');
+  svc.rep.add(outsider.owner_id, 200, '测试抬分', 'boost-o');
+
+  const g1 = svc.publishGuide(a, { ...GUIDE, title: '甲的笔记一' }).guide_id;
+  const g2 = svc.publishGuide(a, { ...GUIDE, title: '甲的笔记二', tags: ['别的'] }).guide_id;
+  const g3 = svc.publishGuide(a, { ...GUIDE, title: '甲的笔记三', tags: ['又一个'] }).guide_id;
+  const gb = svc.publishGuide(b, { ...GUIDE, title: '乙的笔记', tags: ['乙'] }).guide_id;
+
+  // 第一次：路人正常实测，信任系数 1
+  const before = svc.rep.points(a.owner_id);
+  runOk(svc, outsider, g1, { rating: 'helpful' });
+  const normalDelta = svc.rep.points(a.owner_id) - before;
+  assert.equal(normalDelta, 2 + 3 + 1); // 成功奖励 + 退押金 + 有用（押金只退一次，这里第一次）
+
+  // 乙给甲连刷两次正向，且双方几乎不对外 → 第二次的成功/有用应降权（押金仍全额退）
+  runOk(svc, b, g2, { rating: 'helpful' });
+  const mid = svc.rep.points(a.owner_id);
+  runOk(svc, b, g3, { rating: 'helpful' });
+  const ringDelta = svc.rep.points(a.owner_id) - mid;
+  // 满额应为 押金3 + 成功2 + 有用1 = 6；互刷 factor 0.35 → 3 + 0.7 + 0.35 = 4.05
+  assert.ok(ringDelta < 5, `互刷第二次应小于满额 6，实际 ${ringDelta}`);
+  assert.ok(ringDelta > 3.5 && ringDelta < 4.5, `押金全额 + 降权后的成功/有用，实际 ${ringDelta}`);
+  const successLedgers = svc.db.prepare("SELECT delta, reason FROM ledger WHERE owner_id = ? AND ref = ?").all(a.owner_id, `run-success:${g3}:${b.owner_id}`);
+  assert.equal(successLedgers.length, 1);
+  assert.ok(successLedgers[0].delta < 2, `成功奖励应被降权，实际 ${successLedgers[0].delta}`);
+
+  // 甲也回评乙，形成更明显互刷；管理列表应能看到
+  svc.react(a, gb, { action: 'useful', context: '我按这篇做了注册，过了' });
+  const suspects = svc.collusionSuspects();
+  assert.ok(suspects.some((s) =>
+    (s.a.handle === '甲号' && s.b.handle === '乙号') || (s.a.handle === '乙号' && s.b.handle === '甲号')),
+  '应列出甲乙互刷对');
+  assert.ok(suspects.every((s) => s.factor < 1));
+});
+
+test('本地嵌入接口：相同主题更近，hybrid 不相关仍为 0', async () => {
+  const { embedText, cosine, hybridScore, vectorToBlob, blobToVector, EMBED_DIM } = await import('../server/logic/embed.js');
+  const { collusionFactor } = await import('../server/logic/collusion.js');
+  assert.equal(collusionFactor({ a_to_b: 0, b_to_a: 0, a_outside: 0, b_outside: 0 }), 1);
+  assert.equal(collusionFactor({ a_to_b: 2, b_to_a: 2, a_outside: 0, b_outside: 0 }), 0.25);
+  assert.equal(collusionFactor({ a_to_b: 2, b_to_a: 0, a_outside: 0, b_outside: 5 }), 0.35);
+
+  const a = embedText('大陆用户注册 Oracle Cloud 免费账户');
+  const b = embedText('中国大陆注册 Oracle 云免费额度');
+  const c = embedText('今天天气真好适合散步');
+  assert.equal(a.length, EMBED_DIM);
+  assert.ok(cosine(a, b) > cosine(a, c));
+  const blob = vectorToBlob(a);
+  assert.deepEqual([...blobToVector(blob)], [...a]);
+
+  const guide = { title: '注册 Oracle Cloud', tags: ['云服务'], search_text: 'Always Free 信用卡' };
+  assert.ok(hybridScore('注册 Oracle', guide) > 0);
+  assert.equal(hybridScore('完全不相关的火星农业', guide), 0);
+});
+
+test('生产搜索走 hybridScore：不相关仍为空；相关有分', () => {
+  const { svc, mk } = setup();
+  const a = mk('搜作者');
+  svc.publishGuide(a, {
+    kind: 'guide', title: '大陆用户注册 Oracle Cloud 免费账户', summary: 'Always Free',
+    tags: ['云服务', 'Oracle'], applies_to: { region: 'CN' },
+    steps: [{ action: '打开 cloud.oracle.com 注册', expect: '进入控制台' }],
+  });
+  svc.publishGuide(a, {
+    kind: 'pitfall', title: '食堂刷卡失败常见原因', summary: '和云无关的避坑',
+    tags: ['生活'], pitfalls: [{ symptom: '刷卡无响应', fix: '换窗口' }],
+  });
+  const hit = svc.search('注册 Oracle 云');
+  assert.ok(hit.length >= 1);
+  assert.ok(hit.some((g) => /Oracle/.test(g.title)));
+  assert.ok(hit.every((g) => g.score > 0));
+  assert.equal(svc.search('火星农业灌溉系统').length, 0);
+});
+
+test('跟做 JSON API：session_key 拉进度；本人步骤可写回；坏 key 拒绝', () => {
+  const { svc, mk } = setup();
+  const author = mk('跟做作者');
+  const runner = mk('跟做执行');
+  const { guide_id } = svc.publishGuide(author, GUIDE);
+  const s0 = svc.startRun(runner, guide_id, { env: { region: 'CN' } });
+  const key = new URL('http://x' + s0.follow_path).searchParams.get('k');
+  assert.throws(() => svc.followApiView(s0.run_id, 'bad'), /无效/);
+  let view = svc.followApiView(s0.run_id, key);
+  assert.equal(view.run_id, s0.run_id);
+  assert.equal(view.status, 'in_progress');
+  assert.equal(view.next_step_id, 's1');
+  assert.equal(view.steps.length, 4);
+  assert.equal(view.steps[2].actor, 'human');
+  svc.stepResult(runner, s0.run_id, { step_id: 's1', status: 'ok' });
+  svc.stepResult(runner, s0.run_id, { step_id: 's2', status: 'ok' });
+  view = svc.followApiView(s0.run_id, key);
+  assert.equal(view.next_step_id, 's3');
+  assert.equal(view.done_count, 2);
+  assert.ok(view.steps[0].result);
+  svc.humanDone(s0.run_id, key, 's3');
+  view = svc.followApiView(s0.run_id, key);
+  assert.equal(view.next_step_id, 's4');
+  assert.equal(view.done_count, 3);
+  assert.equal(view.steps[2].result.by, 'human');
+});
+
+test('互刷环管理：一键限制复用 resolveSignupRisk，账号进入 limited', () => {
+  const { svc, mk } = setup();
+  const admin = mk('互刷管理员');
+  svc.db.prepare("UPDATE owners SET role = 'admin' WHERE id = ?").run(admin.owner_id);
+  const a = mk('环甲');
+  const b = mk('环乙');
+  svc.rep.add(a.owner_id, 200, '测试', 'x');
+  svc.rep.add(b.owner_id, 200, '测试', 'y');
+  const g1 = svc.publishGuide(a, { ...GUIDE, title: '环甲一' }).guide_id;
+  const g2 = svc.publishGuide(a, { ...GUIDE, title: '环甲二', tags: ['二'] }).guide_id;
+  const gb = svc.publishGuide(b, { ...GUIDE, title: '环乙一', tags: ['乙'] }).guide_id;
+  runOk(svc, b, g1, { rating: 'helpful' });
+  runOk(svc, b, g2, { rating: 'helpful' });
+  svc.react(a, gb, { action: 'useful', context: '按这篇做完了注册流程顺利' });
+  const suspects = svc.collusionSuspects();
+  assert.ok(suspects.length >= 1);
+  svc.resolveSignupRisk(admin.owner_id, { owner_id: a.owner_id, action: 'limit', note: '互刷环人工限制' });
+  assert.equal(svc.db.prepare('SELECT risk_status FROM owners WHERE id = ?').get(a.owner_id).risk_status, 'limited');
+  assert.throws(() => svc.publishGuide(a, { ...GUIDE, title: '限制后不应发出' }), /限制/);
+});
+
+test('为你推荐：浏览噪声不压过真实关注', () => {
+  const { svc, mk } = setup();
+  const a = mk('噪声作者甲');
+  const b = mk('噪声作者乙');
+  const user = mk('噪声读者');
+  svc.rep.add(a.owner_id, 200, '测试', 'boost-noise');
+  const niche = svc.publishGuide(b, { ...GUIDE, title: 'Oracle 专项手册', tags: ['Oracle'] }).guide_id;
+  const noisy = [];
+  for (let i = 0; i < 6; i++) {
+    noisy.push(svc.publishGuide(a, { ...GUIDE, title: `Cloudflare 浏览帖 ${i}`, tags: ['Cloudflare'] }).guide_id);
+  }
+  for (const gid of noisy) svc.getGuide(gid, { presenceOwner: user.owner_id });
+  // 大量浏览 Cloudflare 后仍关注 Oracle → Oracle 应更靠前
+  svc.follow(user.owner_id, { type: 'tag', target: 'Oracle' });
+  const interests = svc.interestsOf(user.owner_id);
+  assert.ok(interests.weights.Oracle >= 4);
+  assert.ok((interests.weights.Cloudflare ?? 0) < interests.weights.Oracle,
+    `浏览权重应弱于关注：CF=${interests.weights.Cloudflare} Oracle=${interests.weights.Oracle}`);
+  const fy = svc.forYou(user.owner_id, { limit: 10 });
+  const nicheRank = fy.findIndex((g) => g.id === niche);
+  const firstCf = fy.findIndex((g) => g.tags.includes('Cloudflare'));
+  assert.ok(nicheRank >= 0);
+  assert.ok(firstCf < 0 || nicheRank < firstCf, '关注的 Oracle 应排在大量浏览的 Cloudflare 之前');
 });

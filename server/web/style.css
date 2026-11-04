@@ -621,6 +621,7 @@ body.is-bare .wrap { padding-top: 6px; }
 .radio-card input { width: 18px; height: 18px; margin-top: 3px; accent-color: var(--ink); }
 .radio-card span { display: flex; flex-direction: column; }
 .radio-card small { font-size: 12px; color: var(--muted); }
+.ed-sec-save { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 4px; }
 .ed-submit { position: sticky; bottom: 0; z-index: 5; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px; padding: 14px 0; background: linear-gradient(rgba(255,255,255,0), #fff 35%); }
 .ed-tips { position: sticky; top: 84px; display: flex; flex-direction: column; gap: 10px; }
 .tip { display: flex; flex-direction: column; gap: 4px; padding: 14px 16px; border-radius: 16px; background: var(--soft2); font-size: 13px; color: var(--text2); line-height: 1.7; }
@@ -737,7 +738,7 @@ body.is-bare .wrap { padding-top: 6px; }
   .logo-m { display: inline-block; }
   .tb-right { min-width: 0; }
   .run-chip span:nth-child(2) { display: none; }
-  .tb-login { display: none; }
+  .tb-login { display: inline-flex; height: 32px; padding: 0 10px; font-size: 13px; }
   .search { height: 38px; padding: 0 14px; }
   .wrap { padding: 0 12px 90px; }
   .tabbar { display: flex; position: fixed; z-index: 30; left: 0; right: 0; bottom: 0; height: 60px; padding-bottom: env(safe-area-inset-bottom); background: rgba(255,255,255,.97); border-top: 1px solid var(--line); }
@@ -825,3 +826,18 @@ body.is-bare .wrap { padding-top: 6px; }
 .auth-agree { margin: 4px 0 0; font-size: 12px; color: var(--muted); text-align: center; }
 .auth-agree a { color: var(--text2); }
 .report-form small a, .sticky span a { text-decoration: underline; }
+
+/* 专题合集列表 */
+.topic-packs { display: grid; gap: 12px; margin: 1rem 0 2rem; }
+.topic-pack { display: flex; flex-direction: column; gap: 4px; padding: 16px 18px; border: 1px solid var(--line, #e8e8e8); border-radius: 12px; text-decoration: none; color: inherit; background: var(--card, #fff); }
+.topic-pack:hover { border-color: var(--ink, #222); }
+.topic-pack b { font-size: 1.05rem; }
+.topic-pack span { color: var(--muted, #666); font-size: .92rem; }
+.topic-pack small { color: var(--muted, #888); }
+.topic-head { margin-bottom: 1.25rem; }
+.topic-head .chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: .5rem; }
+.crumb { font-size: .9rem; color: var(--muted, #888); margin-bottom: .5rem; }
+.crumb a { color: inherit; }
+.row-acts { display: flex; gap: 8px; align-items: center; }
+.editor-block label { display: block; margin: .6rem 0; }
+.editor-block input, .editor-block textarea, .editor-block select { width: 100%; max-width: 40rem; }

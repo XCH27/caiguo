@@ -1,6 +1,6 @@
 // HTTP 层。三类入口分开：
 //   给人看的网页（/、/g/<id>、/activity、/me、/f/<run>、/approve/<id>…）
-//   给 Agent 读的纯文本（/llms.txt、/g/<id>.md、/search.md、/feed.md）
+//   给 Agent 读的纯文本（/llms.txt、/g/<id>.md、/search.md、/feed.md、/topics.md）
 //   给程序/插件的接口（/api/*、远程 MCP /mcp）
 // 只用 node:http，零依赖。
 import { readFileSync } from 'node:fs';
@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { HttpError } from './service.js';
 import { createMcpHandler } from '../plugin/mcp/protocol.js';
-import { TOOLS, INSTRUCTIONS, VERSION, callTool, formatGuide, formatSearch, formatFeed } from '../plugin/mcp/tools.js';
+import { TOOLS, INSTRUCTIONS, VERSION, callTool, formatGuide, formatSearch, formatFeed, formatTopics, formatTopic } from '../plugin/mcp/tools.js';
 import * as V from './web/views.js';
 import { llmsTxt } from './agent-text.js';
 import { parseMultipart, guideFromForm, guideToModel, publishInput, editInput } from './web/forms.js';
@@ -124,21 +124,80 @@ export function createApp(svc, { publicUrl, feedPage = 40, trustProxy = false } 
       const [path, hash] = (safeBack(f.back) ?? '/').split('#');
       redirect(res, `${path}${path.includes('?') ? '&' : '?'}reported=1${hash ? `#${hash}` : ''}`);
     }],
+    ['POST', /^\/appeal$/, async (req, res) => {
+      const f = await form(req);
+      const me = requireMe(req, f);
+      try {
+        svc.submitAppeal(me.owner_id, { kind: f.kind, target_type: f.target_type, target_id: f.target_id, reason: f.reason });
+      } catch (e) {
+        if (e.status && e.status < 500) return redirect(res, `/me/appeals?err=${encodeURIComponent(e.message)}`);
+        throw e;
+      }
+      redirect(res, '/me/appeals?ok=1');
+    }],
     ['GET', /^\/(terms|privacy|rules)$/, (req, res, m) => page(req, res, (me) => V.renderLegal(m[1], { me }))],
     ['GET', /^\/admin$/, (req, res, m, url) => {
       const me = meInfo(req);
       if (!me) return loginPage(req, res);
       if (!me.admin) throw new HttpError(403, '只有管理员可以打开管理后台');
       const tab = url.searchParams.get('tab') || 'open';
-      return html(res, V.renderAdmin({ me, tab, queue: tab === 'banned' ? [] : svc.moderationQueue({ status: tab === 'done' ? 'done' : 'open' }), banned: svc.bannedOwners() }));
+      const appealsStatus = url.searchParams.get('status') === 'done' ? 'done' : 'open';
+      const riskStatus = ['recent', 'cleared', 'limited'].includes(url.searchParams.get('status')) ? url.searchParams.get('status') : 'review';
+      const skipQueue = tab === 'banned' || tab === 'appeals' || tab === 'risk' || tab === 'topics' || tab === 'rings';
+      const topics = tab === 'topics' ? svc.listTopicPacks({ status: 'all' }) : [];
+      const editId = url.searchParams.get('edit');
+      const topicEdit = editId ? (() => { try { return svc.getTopicPack(editId, { includeDraft: true }); } catch { return null; } })() : null;
+      const rings = tab === 'rings' ? svc.collusionSuspects() : [];
+      return html(res, V.renderAdmin({
+        me, tab, appealsStatus, riskStatus,
+        queue: skipQueue ? [] : svc.moderationQueue({ status: tab === 'done' ? 'done' : 'open' }),
+        banned: svc.bannedOwners(),
+        appeals: tab === 'appeals' ? svc.appealsQueue({ status: appealsStatus }) : [],
+        risk: tab === 'risk' ? svc.signupRiskQueue({ status: riskStatus }) : [],
+        riskCounts: svc.signupRiskCounts(),
+        topics, topicEdit, rings,
+      }));
     }],
-    ['POST', /^\/admin\/(resolve|unban|restore)$/, async (req, res, m) => {
+    ['POST', /^\/admin\/(resolve|unban|restore|appeal|risk)$/, async (req, res, m) => {
       const f = await form(req);
       const me = requireMe(req, f);
       if (m[1] === 'resolve') svc.resolveReports(me.owner_id, { target_type: f.target_type, target_id: f.target_id, action: f.action, note: f.note });
       if (m[1] === 'unban') svc.unban(me.owner_id, f.owner_id);
       if (m[1] === 'restore') svc.restoreContent(me.owner_id, { target_type: f.target_type, target_id: f.target_id });
-      redirect(res, m[1] === 'unban' ? '/admin?tab=banned' : m[1] === 'restore' ? '/admin?tab=done' : '/admin');
+      if (m[1] === 'appeal') svc.resolveAppeal(me.owner_id, { appeal_id: f.appeal_id, action: f.action, note: f.note });
+      if (m[1] === 'risk') svc.resolveSignupRisk(me.owner_id, { owner_id: f.owner_id, action: f.action, note: f.note });
+      const back = safeBack(f.back)
+        ?? (m[1] === 'unban' ? '/admin?tab=banned'
+          : m[1] === 'restore' ? '/admin?tab=done'
+          : m[1] === 'appeal' ? '/admin?tab=appeals'
+          : m[1] === 'risk' ? '/admin?tab=risk'
+          : '/admin');
+      redirect(res, back);
+    }],
+    ['POST', /^\/admin\/topics$/, async (req, res) => {
+      const f = await form(req);
+      const me = requireMe(req, f);
+      try {
+        svc.upsertTopicPack(me.owner_id, {
+          id: f.id || undefined,
+          slug: f.slug,
+          title: f.title,
+          summary: f.summary,
+          tags: f.tags,
+          guide_ids: f.guide_ids,
+          status: f.status,
+        });
+      } catch (e) {
+        if (e.status && e.status < 500) return redirect(res, `/admin?tab=topics&err=${encodeURIComponent(e.message)}`);
+        throw e;
+      }
+      redirect(res, '/admin?tab=topics');
+    }],
+    ['POST', /^\/admin\/topics\/delete$/, async (req, res) => {
+      const f = await form(req);
+      const me = requireMe(req, f);
+      svc.deleteTopicPack(me.owner_id, f.id);
+      redirect(res, '/admin?tab=topics');
     }],
     ['POST', /^\/follow$/, async (req, res) => {
       const f = await form(req);
@@ -182,7 +241,7 @@ export function createApp(svc, { publicUrl, feedPage = 40, trustProxy = false } 
       const f = await form(req);
       try {
         checkLogin(req, f);
-        const r = svc.loginWithCode(f.phone, f.code);
+        const r = svc.loginWithCode(f.phone, f.code, { ip: clientIp(req), device: deviceFingerprint(req) });
         res.writeHead(303, { location: safeBack(f.next) ?? (r.created ? '/me/settings' : '/me'), 'set-cookie': sessionCookie(r.session) });
         return res.end();
       } catch (e) {
@@ -229,7 +288,7 @@ export function createApp(svc, { publicUrl, feedPage = 40, trustProxy = false } 
       res.writeHead(303, { location: '/', 'set-cookie': `${COOKIE}=; Path=/; Max-Age=0` });
       res.end();
     }],
-    ['GET', /^\/me(?:\/(saved|history|runs|guides|messages|settings|following|useful))?$/, (req, res, m, url) => {
+    ['GET', /^\/me(?:\/(saved|history|runs|guides|messages|settings|following|useful|appeals))?$/, (req, res, m, url) => {
       const me = meInfo(req);
       if (!me) return loginPage(req, res);
       const d = svc.consoleData(me.owner_id);
@@ -260,6 +319,7 @@ export function createApp(svc, { publicUrl, feedPage = 40, trustProxy = false } 
         }
         case 'settings': return html(res, V.renderSettings(d, { me }));
         case 'following': return html(res, V.renderFollowing(d, { me, following: svc.followingOf(o), stats: svc.creatorStats(o) }));
+        case 'appeals': return html(res, V.renderAppeals(d, { me, actionable: svc.appealableOf(o), appeals: svc.myAppeals(o), notice: url.searchParams.get('ok') === '1' ? '申诉已提交，管理员会尽快处理' : null, error: url.searchParams.get('err') || null }));
         default: return html(res, V.renderMyGuides(d, { me, items: svc.myGuides(o), status: url.searchParams.get('status') || '' }));
       }
     }],
@@ -284,6 +344,29 @@ export function createApp(svc, { publicUrl, feedPage = 40, trustProxy = false } 
       const me = requireMe(req, f);
       svc.updateSettings(me.owner_id, { require_publish_approval: f.require_publish_approval === 'on', share_presence: f.share_presence === 'on' });
       redirect(res, '/me/settings');
+    }],
+    ['POST', /^\/me\/env-profile$/, async (req, res) => {
+      const f = await form(req);
+      const me = requireMe(req, f);
+      const env = {};
+      for (const k of ['region', 'os', 'system']) {
+        if (f[k] !== undefined) env[k] = String(f[k] ?? '').trim();
+      }
+      const skills = String(f.skills ?? '').split(/[,，\n]/).map((s) => s.trim()).filter(Boolean);
+      svc.updateEnvProfile(me.owner_id, { env, skills });
+      redirect(res, '/me/settings#env');
+    }],
+    ['POST', /^\/me\/delete$/, async (req, res) => {
+      const f = await form(req);
+      const me = requireMe(req, f);
+      try {
+        svc.deleteAccount(me.owner_id, { confirm: f.confirm });
+      } catch (e) {
+        if (e.status && e.status < 500) return html(res, V.renderSettings(svc.consoleData(me.owner_id), { me: meInfo(req), error: e.message }), e.status);
+        throw e;
+      }
+      res.writeHead(303, { location: '/', 'set-cookie': 'cg_s=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0' });
+      res.end();
     }],
     ['POST', /^\/me\/agents\/([\w-]+)\/revoke$/, async (req, res, m) => {
       const me = requireMe(req, await form(req));
@@ -371,8 +454,18 @@ export function createApp(svc, { publicUrl, feedPage = 40, trustProxy = false } 
     ['GET', /^\/static\/style\.css$/, (req, res) => send(res, 200, CSS, 'text/css; charset=utf-8', { 'cache-control': 'public, max-age=300' })],
     ['GET', /^\/healthz$/, (req, res) => json(res, { ok: true })],
 
+
+    // ───────────── 专题合集 ─────────────
+    ['GET', /^\/topics$/, (req, res) => {
+      const packs = svc.listTopicPacks({ status: 'published' });
+      html(res, V.renderTopics({ packs, me: meInfo(req) }));
+    }],
+    ['GET', /^\/topics\/([a-z0-9][a-z0-9-]{1,62})$/, (req, res, m) => {
+      const pack = svc.getTopicPack(m[1]);
+      html(res, V.renderTopicDetail({ pack, me: meInfo(req) }));
+    }],
     // ───────────── 给 Agent 读的纯文本 ─────────────
-    ['GET', /^\/llms\.txt$/, (req, res) => markdown(res, llmsTxt(baseUrl(req), svc.stats(), svc.tags()))],
+    ['GET', /^\/llms\.txt$/, (req, res) => markdown(res, llmsTxt(baseUrl(req), svc.stats(), svc.tags(), svc.listTopicPacks({ status: 'published', limit: 20 })))],
     ['GET', /^\/search\.md$/, (req, res, m, url) => {
       const q = url.searchParams.get('q') ?? '';
       markdown(res, formatSearch(svc.searchPage(q, { limit: url.searchParams.get('limit') ?? 10, offset: url.searchParams.get('offset') ?? 0 }), q));
@@ -382,9 +475,13 @@ export function createApp(svc, { publicUrl, feedPage = 40, trustProxy = false } 
       if (kind === 'mine') throw new HttpError(400, 'kind=mine 需要身份，请用 /api/feed 或 MCP');
       markdown(res, formatFeed(svc.feed({ owner_id: null }, { kind, since: url.searchParams.get('since') ?? undefined, limit: url.searchParams.get('limit') ?? 10 })));
     }],
+    ['GET', /^\/topics\.md$/, (req, res) => markdown(res, formatTopics(svc.listTopicPacks({ status: 'published' }), baseUrl(req)))],
+    ['GET', /^\/topics\/([a-z0-9][a-z0-9-]{1,62})\.md$/, (req, res, m) => markdown(res, formatTopic(svc.getTopicPack(m[1]), baseUrl(req)))],
 
     // ───────────── 接口 ─────────────
     ['GET', /^\/api\/stats$/, (req, res) => json(res, svc.stats())],
+    ['GET', /^\/api\/topics$/, (req, res, m, url) => json(res, { topics: svc.listTopicPacks({ status: 'published', limit: url.searchParams.get('limit') ?? 50 }) })],
+    ['GET', /^\/api\/topics\/([a-z0-9][a-z0-9-]{1,62})$/, (req, res, m) => json(res, svc.getTopicPack(m[1]))],
     ['GET', /^\/api\/guides$/, (req, res, m, url) => {
       const r = svc.searchPage(url.searchParams.get('q') ?? '', { tag: url.searchParams.get('tag') || undefined, kind: url.searchParams.get('kind') || undefined, limit: url.searchParams.get('limit') ?? 20, offset: url.searchParams.get('offset') ?? 0 });
       json(res, { guides: r.items, total: r.total, offset: r.offset });
@@ -414,6 +511,17 @@ export function createApp(svc, { publicUrl, feedPage = 40, trustProxy = false } 
     }],
     ['POST', /^\/api\/runs\/([\w-]+)\/steps$/, async (req, res, m) => json(res, svc.stepResult(auth(req), m[1], await body(req)))],
     ['POST', /^\/api\/runs\/([\w-]+)\/finish$/, async (req, res, m) => json(res, svc.finishRun(auth(req), m[1], await body(req)))],
+    // 跟做 JSON：凭 session_key（跟做链接里的 k）读写进度，给浏览器扩展 / 第三方 UI，不走 Agent Bearer
+    ['GET', /^\/api\/follow\/([\w-]+)$/, (req, res, m, url) => {
+      const k = url.searchParams.get('k');
+      json(res, svc.followApiView(m[1], k));
+    }],
+    ['POST', /^\/api\/follow\/([\w-]+)$/, async (req, res, m) => {
+      const b = await body(req);
+      const action = b.action === 'problem' ? 'problem' : 'done';
+      svc.humanDone(m[1], b.k, b.step_id, { problem: action === 'problem' ? (b.problem || '用户在扩展跟做中报告遇到问题') : null });
+      json(res, svc.followApiView(m[1], b.k));
+    }],
     ['POST', /^\/api\/guides\/([\w-]+)\/react$/, async (req, res, m) => json(res, svc.react(auth(req), m[1], await body(req)))],
     ['GET', /^\/api\/guides\/([\w-]+)\/comments$/, (req, res, m) => json(res, { comments: svc.commentsOf(m[1]) })],
     ['POST', /^\/api\/guides\/([\w-]+)\/comments$/, async (req, res, m) => json(res, svc.comment(auth(req), m[1], await body(req)), 201)],
@@ -547,6 +655,13 @@ export function createApp(svc, { publicUrl, feedPage = 40, trustProxy = false } 
     return `${kind}:${createHash('sha256').update(raw).digest('hex').slice(0, 16)}`;
   }
 
+  // 设备指纹：User-Agent + Accept-Language（不含 IP，和 IP 限流分开）。只用于注册计数，不存原文。
+  function deviceFingerprint(req) {
+    const ua = String(req.headers['user-agent'] ?? '');
+    const lang = String(req.headers['accept-language'] ?? '');
+    return createHash('sha256').update(`ua:${ua}|lang:${lang}`).digest('hex').slice(0, 32);
+  }
+
   function limitRegister(req) {
     const ip = clientIp(req);
     const now = Date.now();
@@ -588,6 +703,8 @@ export function createApp(svc, { publicUrl, feedPage = 40, trustProxy = false } 
       }[action] ?? (() => { throw new Error('action 只能是 post / helpful / verify / accept / reject'); }))(),
       follow: async (b) => svc.follow(agent().owner_id, b),
       manage: async (b) => svc.manage(agent(), b),
+      listTopics: async (o = {}) => svc.listTopicPacks({ status: 'published', limit: o.limit }),
+      getTopic: async (slug) => svc.getTopicPack(slug),
     };
     return createMcpHandler({ name: 'caiguo', version: VERSION, instructions: INSTRUCTIONS, tools: TOOLS, call: (n, a) => callTool(client, n, a) });
   }
